@@ -1,0 +1,52 @@
+{
+  "root_folder": "/Spoofy/Portrait/1. uk office folder/1_Salahs_test_file/1_Amazon",
+  "local_preview_root": "C:/Users/salah/Dropbox/Spoofy/Portrait/1. uk office folder/1_Salahs_test_file/1_Amazon",
+  "general_parent_images": [
+    "MAIN.png",
+    "1.png",
+    "2.jpg",
+    "3.jpg",
+    "4.jpg",
+    "5.jpg",
+    "6.jpg"
+  ],
+  "general_resource_images": [
+    "1_Resources/EMB1.png",
+    "1_Resources/EMB2.png",
+    "1_Resources/EMB_FONTS.png"
+  ],
+  "template_resource_root": "1_Resources",
+  "templates": {
+    "UC502": {
+      "variant_folder": "UC502",
+      "main_image_map": {
+        "Black": "UC502-BK-H.jpg",
+        "White": "UC502-WH-H.jpg",
+        "Heather Grey": "UC502-HG-H.jpg",
+        "Kelly Green": "UC502-KG-H.jpg",
+        "Red": "UC502-RD-H.jpg",
+        "Royal Blue": "UC502-RY-H.jpg",
+        "Navy": "UC502-NY-H.jpg"
+      }
+    },
+    "UC612": {
+      "variant_folder": "UC612",
+      "main_image_map": {
+        "Black": "UC612-BK-H.jpg",
+        "Navy": "UC612-NY-H.jpg",
+        "Red": "UC612-RD-H.jpg"
+      }
+    },
+    "TC013": {
+      "variant_folder": "TC013",
+      "main_image_map": {
+        "Black": "TC013-BLK.jpg",
+        "Fuchsia": "TC013-FUS.jpg",
+        "Navy": "TC013-NVY.jpg",
+        "Forest": "TC013-FOR.jpg",
+        "Red": "TC013-RED.jpg",
+        "White": "TC013-WHT.jpg"
+      }
+    }
+  }
+}

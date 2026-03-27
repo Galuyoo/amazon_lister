@@ -1,0 +1,56 @@
+{
+  "label": "UC612 Soft Shell Jacket",
+  "template_key": "UC612",
+  "template_file": "_shared/_amazon_apparel_master.xlsm",
+  "parent_sku": "UC612",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "product_category": "apparel",
+  "fulfillment_channel_code": "DEFAULT",
+  "apparel_size_height_type": "Regular",
+  "item_type_name": "softshell-jacket",
+  "brand_name": "Generic",
+  "manufacturer": "Generic",
+  "feed_product_type": "coat",
+  "department_name": "unisex-adult",
+  "target_gender": "unisex",
+  "age_range_description": "Adult",
+  "material_type": "93% Polyester, 7% Elastane",
+  "style_name": "Soft Shell Jacket",
+  "care_instructions": "Machine Wash",
+  "theme": "",
+  "recommended_browse_nodes": "1731289031",
+
+  "colors": [
+    "Black",
+    "Navy",
+    "Red"
+  ],
+  "sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL",
+    "3XL",
+    "4XL"
+  ],
+
+  "color_sku_map": {
+    "Black": "612BK",
+    "Navy": "612NY",
+    "Red": "612RD"
+  },
+
+  "size_code_map": {
+    "XS": "XS",
+    "S": "SM",
+    "M": "MD",
+    "L": "LG",
+    "XL": "XL",
+    "2XL": "2X",
+    "3XL": "3X",
+    "4XL": "4X"
+  }
+}

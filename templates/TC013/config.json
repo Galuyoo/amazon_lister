@@ -1,0 +1,43 @@
+{
+  "label": "Luxury Golf Towel TC013",
+  "template_key": "TC013",
+  "template_file": "TC013/TOWEL.xlsm",
+  "parent_sku": "TC013",
+  "feed_product_type": "towel",
+  "recommended_browse_nodes": "580172011",
+  "product_category": "accessory",
+  "brand_name": "Generic",
+  "manufacturer": "Generic",
+  "department_name": "",
+  "target_gender": "",
+  "age_range_description": "Adult",
+  "material_type": "100% Cotton Terry Towelling",
+  "style_name": "Luxury Golf Towel",
+  "variation_theme": "Color",
+  "condition_type": "New",
+  "item_type_name": "towel",
+  "care_instructions": "Wash at 40 degrees synthetic; Wash dark colours separately; Use colour sensitive detergent; Do not use fabric conditioner",
+  "theme": "Golf",
+  "colors": [
+    "Black",
+    "Fuchsia",
+    "Navy",
+    "Forest",
+    "Red",
+    "White"
+  ],
+  "sizes": [
+    "One Size"
+  ],
+  "size_code_map": {
+    "One Size": "ONE"
+  },
+  "color_sku_map": {
+    "Black": "TC013-BLK",
+    "Fuchsia": "TC013-FUS",
+    "Navy": "TC013-NVY",
+    "Forest": "TC013-FOR",
+    "Red": "TC013-RED",
+    "White": "TC013-WHT"
+  }
+}

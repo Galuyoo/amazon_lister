@@ -1,0 +1,53 @@
+{
+  "label": "Hoodie UC502",
+  "template_key": "UC502",
+  "template_file": "_shared/_amazon_apparel_master.xlsm",
+  "parent_sku": "UC502",
+  "feed_product_type": "sweatshirt",
+  "recommended_browse_nodes": "1731011031",
+  "product_category": "apparel",
+  "brand_name": "Generic",
+  "manufacturer": "Generic",
+  "department_name": "unisex",
+  "target_gender": "unisex",
+  "age_range_description": "Adult",
+  "material_type": "50% Polyester, 50% Cotton",
+  "style_name": "Classic Hooded Sweatshirt",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "fulfillment_channel_code": "DEFAULT",
+  "apparel_size_height_type": "Regular",
+  "item_type_name": "softshell-jacket",
+  "colors": [
+    "Black",
+    "White",
+    "Heather Grey",
+    "Kelly Green",
+    "Red",
+    "Royal Blue",
+    "Navy"
+  ],
+  "sizes": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+  "size_code_map": {
+    "XS": "XS",
+    "S": "SM",
+    "M": "MD",
+    "L": "LR",
+    "XL": "XL",
+    "2XL": "2XL",
+    "3XL": "3XL",
+    "4XL": "4XL",
+    "5XL": "5XL",
+    "6XL": "6XL"
+  },
+  "color_sku_map": {
+    "Black": "502BK",
+    "White": "502WH",
+    "Heather Grey": "502HG",
+    "Kelly Green": "502KG",
+    "Red": "502RD",
+    "Royal Blue": "502RY",
+    "Navy": "502NY"
+  }
+  
+}

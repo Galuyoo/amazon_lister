@@ -1,0 +1,44 @@
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs & caches
+*.log
+logs/
+coverage/
+.cache/
+.tmp/
+
+
+# Envs & secrets
+.env
+.env.*
+!.env.example
+dpbox.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Google Cloud service account keys
+*credentials.json
+*service-account.json
+*key.json
+*config-*.json
+aqueous-charger-*.json
+
+# App outputs / local artifacts
+.history/
+out/
+reports/
+
+# Data files (optional — only if you don't want them in git)
+*.csv
+.logo.png
