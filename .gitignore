@@ -11,6 +11,10 @@ coverage/
 .cache/
 .tmp/
 
+# App outputs
+outputs/
+*.xlsm
+
 
 # Envs & secrets
 .env
