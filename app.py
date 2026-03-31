@@ -264,6 +264,29 @@ def build_finished_folder_path(dropbox_cfg: dict[str, Any], final_sku: str) -> s
     finished_root = dropbox_cfg.get("finished_root", "").rstrip("/")
     return f"{finished_root}/{final_sku}"
 
+def restage_finished_dropbox_folder(
+    dropbox_cfg: dict[str, Any],
+    finished_folder_name: str,
+) -> str:
+    stage_root = dropbox_cfg.get("stage_root", "").rstrip("/")
+    finished_root = dropbox_cfg.get("finished_root", "").rstrip("/")
+
+    if not finished_folder_name:
+        raise ValueError("Finished folder name is required.")
+
+    source_path = f"{finished_root}/{finished_folder_name}"
+
+    candidate_name = f"{finished_folder_name}_restaged"
+    target_path = f"{stage_root}/{candidate_name}"
+
+    counter = 1
+    while path_exists(target_path):
+        candidate_name = f"{finished_folder_name}_restaged_{counter}"
+        target_path = f"{stage_root}/{candidate_name}"
+        counter += 1
+
+    moved_path = move_dropbox_folder(source_path, target_path)
+    return moved_path
 
 def finalize_staged_dropbox_folder(
     dropbox_cfg: dict[str, Any],
@@ -440,23 +463,56 @@ def build_dropbox_overview(profile: dict[str, Any], dropbox_cfg: dict[str, Any])
     for color, filename in template_block.get("main_image_map", {}).items():
         color_paths[color] = f"{resource_root}/{variant_folder}/{filename}"
 
+    design_color_paths: dict[str, dict[str, str]] = {}
+    for color, design_map in template_block.get("design_color_image_map", {}).items():
+        design_color_paths[color] = {}
+        for design, filename in design_map.items():
+            design_color_paths[color][design] = f"{resource_root}/{variant_folder}/{filename}"
+
     return {
         "resource_root": resource_root,
         "template_key": template_key,
         "variant_folder": variant_folder,
         "shared_resource_images": shared_resource_images,
         "color_paths": color_paths,
+        "design_color_paths": design_color_paths,
         "main_image_map": template_block.get("main_image_map", {}),
+        "design_color_image_map": template_block.get("design_color_image_map", {}),
     }
+
+def resolve_child_variant_image_url(
+    variant_values: dict[str, str],
+    color_image_map: dict[str, str],
+    design_color_image_url_map: dict[str, dict[str, str]] | None = None,
+) -> str:
+    design_color_image_url_map = design_color_image_url_map or {}
+
+    color_value = variant_values.get("color", "")
+    design_value = variant_values.get("design", "")
+
+    if color_value and design_value:
+        image_url = (
+            design_color_image_url_map
+            .get(color_value, {})
+            .get(design_value, "")
+        )
+        if image_url:
+            return image_url
+
+    if color_value:
+        return color_image_map.get(color_value, "")
+
+    return ""
 
 def resolve_workbook_image_urls(
     selected_colors: list[str],
     dropbox_overview: dict[str, Any],
     finished_folder_path: str,
-) -> tuple[str, list[str], dict[str, str]]:
+) -> tuple[str, list[str], dict[str, str], dict[str, dict[str, str]]]:
     finished_main_path, finished_other_paths = split_finished_folder_images(finished_folder_path)
     shared_resource_images = dropbox_overview.get("shared_resource_images", [])
     color_paths = dropbox_overview.get("color_paths", {})
+    design_color_paths = dropbox_overview.get("design_color_paths", {})
 
     parent_main_image_url = dropbox_preview_url(finished_main_path) if finished_main_path else ""
 
@@ -475,8 +531,23 @@ def resolve_workbook_image_urls(
         if url:
             color_image_map[color] = url
 
-    return parent_main_image_url, other_images, color_image_map
+    design_color_image_url_map: dict[str, dict[str, str]] = {}
+    for color in selected_colors:
+        design_map = design_color_paths.get(color, {})
+        design_color_image_url_map[color] = {}
+        for design, path in design_map.items():
+            if not path:
+                continue
+            url = dropbox_preview_url(path)
+            if url:
+                design_color_image_url_map[color][design] = url
 
+    return (
+        parent_main_image_url,
+        other_images,
+        color_image_map,
+        design_color_image_url_map,
+    )
 
 def render_path_grid(
     title: str,
@@ -697,7 +768,11 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
         price_key = size_value if size_value else "default"
         price = data["size_price_map"].get(price_key, 0)
 
-        image_url = data.get("color_image_map", {}).get(color_value, "")
+        image_url = resolve_child_variant_image_url(
+            variant_values=variant_values,
+            color_image_map=data.get("color_image_map", {}),
+            design_color_image_url_map=data.get("design_color_image_url_map", {}),
+        )        
 
         values = {
             "item_sku": build_child_sku(profile, data["parent_sku"], variant_values),
@@ -805,6 +880,8 @@ def debug_find_headers(header_map: dict[str, int], patterns: list[str]) -> None:
     for pattern in patterns:
         matches = [key for key in header_map.keys() if pattern.lower() in key.lower()]
         st.write(f"{pattern}: {matches}")
+
+
 
 def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Path, dict[str, float]]:
     template_file = profile.get("template_file", "")
@@ -954,8 +1031,9 @@ def main() -> None:
 
     try:
         staged_folder_names = list_folder_names(stage_root)
+        finished_folder_names = list_folder_names(finished_root)
     except Exception as exc:
-        st.error(f"Could not read Dropbox stage folders: {exc}")
+        st.error(f"Could not read Dropbox folders: {exc}")
         st.stop()
 
     if not profiles:
@@ -968,6 +1046,39 @@ def main() -> None:
         labels,
         key="listing_template_select",
     )
+
+    st.subheader("Recovery tools")
+
+    with st.expander("Re-stage finished folder", expanded=False):
+        if not finished_folder_names:
+            st.caption("No finished folders available.")
+        else:
+            selected_finished_folder = st.selectbox(
+                "Finished folder to move back to stage",
+                finished_folder_names,
+                index=None,
+                placeholder="Select a finished folder",
+                key="restage_finished_folder",
+            )
+
+            if st.button("Move finished folder back to stage", key="restage_button"):
+                if not selected_finished_folder:
+                    st.error("Select a finished folder first.")
+                else:
+                    try:
+                        moved_path = restage_finished_dropbox_folder(
+                            dropbox_cfg=dropbox_cfg,
+                            finished_folder_name=selected_finished_folder,
+                        )
+
+                        st.session_state.pop("finalized_stage_folder", None)
+                        st.session_state.pop("finalized_finished_folder_path", None)
+                        st.session_state.pop("finalized_sku", None)
+
+                        st.success(f"Finished folder moved back to stage: {moved_path}")
+                    except Exception as exc:
+                        st.error(f"Could not re-stage finished folder: {exc}")
+
     profile = profiles[labels.index(selected_label)]
 
     st.sidebar.markdown("### Active template")
@@ -1249,7 +1360,8 @@ def main() -> None:
         "sizes": selected_sizes,
         "other_images": [],
         "color_image_map": {},
-    }
+        "design_color_image_url_map": {},
+            }
 
     payload_errors = validate_payload(payload)
     if payload_errors:
@@ -1300,10 +1412,10 @@ def main() -> None:
         progress_text.write("Fetching Dropbox image links...")
         progress_bar.progress(35)
 
-        parent_main_image_url, other_images, color_image_map = resolve_workbook_image_urls(
-            selected_colors=selected_colors,
-            dropbox_overview=dropbox_overview,
-            finished_folder_path=finished_folder_path,
+        parent_main_image_url, other_images, color_image_map, design_color_image_url_map = resolve_workbook_image_urls(
+            selected_colors,
+            dropbox_overview,
+            finished_folder_path,
         )
         t2 = time.perf_counter()
 
@@ -1311,6 +1423,7 @@ def main() -> None:
         payload["parent_main_image_url"] = parent_main_image_url
         payload["other_images"] = other_images
         payload["color_image_map"] = color_image_map
+        payload["design_color_image_url_map"] = design_color_image_url_map
 
         progress_text.write("Building workbook...")
         progress_bar.progress(75)
