@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
+from dropbox.files import WriteMode
 
 import dropbox
 from dropbox.exceptions import ApiError, AuthError
@@ -99,10 +100,10 @@ def path_exists(path: str) -> bool:
 def file_exists(path: str) -> bool:
     dbx = get_dropbox_client()
     try:
-        dbx.files_get_metadata(path)
-        return True
-    except ApiError as exc:
-        raise ValueError(f"Dropbox metadata lookup failed for {path}: {exc}") from exc
+        metadata = dbx.files_get_metadata(path)
+        return isinstance(metadata, dropbox.files.FileMetadata)
+    except ApiError:
+        return False
 
 
 def get_or_create_shared_link(path: str) -> str:
@@ -131,3 +132,24 @@ def to_direct_url(shared_url: str) -> str:
     if "?dl=1" in shared_url:
         return shared_url.replace("?dl=1", "?raw=1")
     return shared_url + ("&raw=1" if "?" in shared_url else "?raw=1")
+
+def upload_text_file(path: str, content: str) -> str:
+    dbx = get_dropbox_client()
+    try:
+        result = dbx.files_upload(
+            content.encode("utf-8"),
+            path,
+            mode=WriteMode.overwrite,
+        )
+        return result.path_display
+    except ApiError as exc:
+        raise ValueError(f"Dropbox text upload failed for {path}: {exc}") from exc
+
+
+def download_text_file(path: str) -> str:
+    dbx = get_dropbox_client()
+    try:
+        _, response = dbx.files_download(path)
+        return response.content.decode("utf-8")
+    except ApiError as exc:
+        raise ValueError(f"Dropbox text download failed for {path}: {exc}") from exc    

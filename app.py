@@ -18,6 +18,9 @@ from utils.dropbox_client import (
     create_folder_if_missing,
     move_dropbox_folder,
     path_exists,
+    file_exists,
+    upload_text_file,
+    download_text_file,
 )
 
 GLOBAL_BRAND_NAME = "Generic"
@@ -287,6 +290,90 @@ def restage_finished_dropbox_folder(
 
     moved_path = move_dropbox_folder(source_path, target_path)
     return moved_path
+
+def build_listing_memory_path(folder_path: str) -> str:
+    return f"{folder_path.rstrip('/')}/listing_inputs.json"
+
+
+def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "template_label": profile.get("label", profile.get("_slug", "")),
+        "template_slug": profile.get("_slug", ""),
+        "template_key": profile.get("template_key", ""),
+        "parent_sku": payload.get("parent_sku", ""),
+        "title": payload.get("title", ""),
+        "brand_name": payload.get("brand_name", ""),
+        "manufacturer": payload.get("manufacturer", ""),
+        "recommended_browse_nodes": payload.get("recommended_browse_nodes", ""),
+        "product_description": payload.get("product_description", ""),
+        "generic_keywords": payload.get("generic_keywords", ""),
+        "bullet_points": payload.get("bullet_points", []),
+        "selected_variants": payload.get("selected_variants", {}),
+        "size_price_map": payload.get("size_price_map", {}),
+        "quantity": payload.get("quantity", 0),
+        "department_name": payload.get("department_name", ""),
+        "target_gender": payload.get("target_gender", ""),
+        "age_range_description": payload.get("age_range_description", ""),
+        "feed_product_type": payload.get("feed_product_type", ""),
+        "variation_theme": payload.get("variation_theme", ""),
+        "product_category": payload.get("product_category", ""),
+        "condition_type": payload.get("condition_type", ""),
+        "item_type_name": payload.get("item_type_name", ""),
+        "material_type": payload.get("material_type", ""),
+        "style_name": payload.get("style_name", ""),
+        "care_instructions": payload.get("care_instructions", ""),
+        "theme": payload.get("theme", ""),
+        "extra_fields": payload.get("extra_fields", {}),
+    }
+
+
+def save_listing_memory_to_dropbox(
+    profile: dict[str, Any],
+    payload: dict[str, Any],
+    folder_path: str,
+) -> str:
+    json_path = build_listing_memory_path(folder_path)
+    memory_payload = build_listing_memory_payload(profile, payload)
+    upload_text_file(
+        json_path,
+        json.dumps(memory_payload, indent=2, ensure_ascii=False),
+    )
+    return json_path
+
+
+def load_listing_memory_from_dropbox(folder_path: str) -> dict[str, Any]:
+    json_path = build_listing_memory_path(folder_path)
+    if not path_exists(json_path):
+        return {}
+    content = download_text_file(json_path)
+    return json.loads(content)  
+
+def apply_listing_memory_to_session(listing_memory: dict[str, Any], profile: dict[str, Any]) -> None:
+    st.session_state["title_input"] = listing_memory.get("title", "")
+
+    bullet_points = listing_memory.get("bullet_points", [])
+    bullet_points = (bullet_points + ["", "", "", "", ""])[:5]
+    for idx, value in enumerate(bullet_points, start=1):
+        st.session_state[f"bullet_{idx}"] = value
+
+    st.session_state["product_description"] = listing_memory.get("product_description", "")
+    st.session_state["generic_keywords"] = listing_memory.get("generic_keywords", "")
+    st.session_state["variant_quantity"] = int(listing_memory.get("quantity", 100))
+
+    saved_prices = listing_memory.get("size_price_map", {})
+    for size, price in saved_prices.items():
+        st.session_state[f"price_{size}"] = float(price)
+
+    saved_selected_variants = listing_memory.get("selected_variants", {})
+    variant_dimensions = profile.get("variant_dimensions", [])
+
+    if variant_dimensions:
+        for dim in variant_dimensions:
+            dim_name = dim.get("name", "")
+            st.session_state[f"variant_{dim_name}"] = saved_selected_variants.get(dim_name, dim.get("options", []))
+    else:
+        st.session_state["selected_colours"] = saved_selected_variants.get("color", profile.get("colors", []))
+        st.session_state["selected_sizes"] = saved_selected_variants.get("size", profile.get("sizes", []))
 
 def finalize_staged_dropbox_folder(
     dropbox_cfg: dict[str, Any],
@@ -629,11 +716,16 @@ def trim_search_terms(value: str, max_bytes: int = 249) -> str:
 
     return current.rstrip(" ,;")
 
-def build_size_price_inputs(sizes: list[str]) -> dict[str, float]:
+def build_size_price_inputs(
+    sizes: list[str],
+    saved_prices: dict[str, float] | None = None,
+) -> dict[str, float]:
     st.markdown("**Price by size**")
     if not sizes:
         st.caption("No sizes configured.")
         return {}
+
+    saved_prices = saved_prices or {}
 
     cols_per_row = 4
     cols = st.columns(cols_per_row)
@@ -644,12 +736,13 @@ def build_size_price_inputs(sizes: list[str]) -> dict[str, float]:
             size_price_map[size] = st.number_input(
                 f"{size} price",
                 min_value=0.0,
-                value=29.99,
+                value=float(saved_prices.get(size, 29.99)),
                 step=0.50,
                 key=f"price_{size}",
             )
 
     return size_price_map
+
 
 def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> None:
     clear_row_values(ws, PARENT_ROW)
@@ -1116,16 +1209,35 @@ def main() -> None:
             value=parent_sku_from_config,
             disabled=True,
         )
+
         staged_folder_name = st.selectbox(
             "Staged Dropbox folder",
             staged_folder_names,
             index=None,
             placeholder="Select a staged folder",
         )
+
+        listing_memory: dict[str, Any] = {}
+        if staged_folder_name:
+            stage_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+            try:
+                listing_memory = load_listing_memory_from_dropbox(stage_folder_path)
+                if listing_memory:
+                    last_loaded_folder = st.session_state.get("last_loaded_listing_memory_folder")
+                    if last_loaded_folder != staged_folder_name:
+                        apply_listing_memory_to_session(listing_memory, profile)
+                        st.session_state["last_loaded_listing_memory_folder"] = staged_folder_name
+                    st.info("Loaded saved listing inputs from staged folder.")
+            except Exception as exc:
+                st.warning(f"Could not load saved listing inputs: {exc}")
         
         staged_preview_paths = build_stage_preview_paths(dropbox_cfg, staged_folder_name) if staged_folder_name else []
 
-        title = st.text_input("Product title")
+        title = st.text_input(
+            "Product title",
+            value=listing_memory.get("title", ""),
+            key="title_input",
+        )
 
     with col2:
         st.text_input("Brand", value=GLOBAL_BRAND_NAME, disabled=True)
@@ -1143,17 +1255,33 @@ def main() -> None:
         )
 
     st.subheader("Bullets")
+
+    saved_bullets = listing_memory.get("bullet_points", [])
+    saved_bullets = (saved_bullets + ["", "", "", "", ""])[:5]
+
     bullets = [
-        st.text_input("Bullet 1"),
-        st.text_input("Bullet 2"),
-        st.text_input("Bullet 3"),
-        st.text_input("Bullet 4"),
-        st.text_input("Bullet 5"),
+        st.text_input("Bullet 1", value=saved_bullets[0], key="bullet_1"),
+        st.text_input("Bullet 2", value=saved_bullets[1], key="bullet_2"),
+        st.text_input("Bullet 3", value=saved_bullets[2], key="bullet_3"),
+        st.text_input("Bullet 4", value=saved_bullets[3], key="bullet_4"),
+        st.text_input("Bullet 5", value=saved_bullets[4], key="bullet_5"),
     ]
 
     st.subheader("Description and search terms")
-    product_description = st.text_area("Product description", height=120, key="product_description")
-    generic_keywords = st.text_area("Search terms", height=100, key="generic_keywords")
+
+    product_description = st.text_area(
+        "Product description",
+        height=120,
+        key="product_description",
+        value=listing_memory.get("product_description", ""),
+    )
+
+    generic_keywords = st.text_area(
+        "Search terms",
+        height=100,
+        key="generic_keywords",
+        value=listing_memory.get("generic_keywords", ""),
+    )
 
     byte_count = len(generic_keywords.encode("utf-8"))
     max_bytes = 249
@@ -1177,28 +1305,33 @@ def main() -> None:
     selected_variants: dict[str, list[str]] = {}
 
     if variant_dimensions:
+        saved_selected_variants = listing_memory.get("selected_variants", {})
+
         for dim in variant_dimensions:
             dim_name = dim.get("name", "")
             dim_label = dim.get("label", dim_name.title())
             dim_options = dim.get("options", [])
+            default_options = saved_selected_variants.get(dim_name, dim_options)
 
             selected_variants[dim_name] = st.multiselect(
                 dim_label,
                 dim_options,
-                default=dim_options,
+                default=default_options,
                 key=f"variant_{dim_name}",
             )
     else:
+        saved_selected_variants = listing_memory.get("selected_variants", {})
+
         selected_colors = st.multiselect(
             "Colours",
             colors_available,
-            default=colors_available,
+            default=saved_selected_variants.get("color", colors_available),
             key="selected_colours",
         )
         selected_sizes = st.multiselect(
             "Sizes",
             sizes_available,
-            default=sizes_available,
+            default=saved_selected_variants.get("size", sizes_available),
             key="selected_sizes",
         )
         selected_variants = {
@@ -1220,13 +1353,16 @@ def main() -> None:
         )
 
     price_dimension_values = selected_variants.get("size", ["default"])
-    size_price_map = build_size_price_inputs(price_dimension_values)
+    size_price_map = build_size_price_inputs(
+        price_dimension_values,
+        saved_prices=listing_memory.get("size_price_map", {}),
+    )
 
     st.subheader("Inventory setup")
     quantity = st.number_input(
         "Quantity for all child variants",
         min_value=0,
-        value=100,
+        value=int(listing_memory.get("quantity", 100)),
         step=1,
         key="variant_quantity",
     )
@@ -1429,6 +1565,13 @@ def main() -> None:
         progress_bar.progress(75)
 
         output_path, workbook_timings = build_workbook(profile, payload)
+
+        listing_memory_path = save_listing_memory_to_dropbox(
+            profile=profile,
+            payload=payload,
+            folder_path=finished_folder_path,
+        )
+
         t3 = time.perf_counter()
 
         progress_text.write("Finalizing output...")
