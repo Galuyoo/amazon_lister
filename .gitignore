@@ -14,7 +14,7 @@ coverage/
 # App outputs
 outputs/
 *.xlsm
-
+listing_inputs.json
 
 # Envs & secrets
 .env
