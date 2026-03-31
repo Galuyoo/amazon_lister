@@ -53,6 +53,49 @@ def list_folder_files(path: str) -> list[str]:
 
     return files
 
+def list_folder_names(path: str) -> list[str]:
+    dbx = get_dropbox_client()
+    entries = []
+
+    result = dbx.files_list_folder(path)
+    entries.extend(result.entries)
+
+    while result.has_more:
+        result = dbx.files_list_folder_continue(result.cursor)
+        entries.extend(result.entries)
+
+    folders = []
+    for entry in entries:
+        if isinstance(entry, dropbox.files.FolderMetadata):
+            folders.append(entry.name)
+
+    return sorted(folders)
+
+
+def create_folder_if_missing(path: str) -> None:
+    dbx = get_dropbox_client()
+    try:
+        dbx.files_get_metadata(path)
+    except ApiError:
+        dbx.files_create_folder_v2(path)
+
+
+def move_dropbox_folder(from_path: str, to_path: str) -> str:
+    dbx = get_dropbox_client()
+    try:
+        result = dbx.files_move_v2(from_path=from_path, to_path=to_path, autorename=False)
+        return result.metadata.path_display
+    except ApiError as exc:
+        raise ValueError(f"Dropbox folder move failed from {from_path} to {to_path}: {exc}") from exc
+
+def path_exists(path: str) -> bool:
+    dbx = get_dropbox_client()
+    try:
+        dbx.files_get_metadata(path)
+        return True
+    except ApiError:
+        return False
+
 def file_exists(path: str) -> bool:
     dbx = get_dropbox_client()
     try:

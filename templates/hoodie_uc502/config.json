@@ -25,9 +25,34 @@
     "Kelly Green",
     "Red",
     "Royal Blue",
-    "Navy"
+    "Navy",
+    "Hot Pink",
+    "Purple",
+    "Sapphire Blue",
+    "Jade",
+    "Soft Pink",
+    "Sky",
+    "Charcoal",
+    "Orange",
+    "Bottle Green",
+    "Military Green",
+    "Yellow",
+    "Olive",
+    "Violet",
+    "Maroon"
   ],
-  "sizes": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+  "sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL",
+    "3XL",
+    "4XL",
+    "5XL",
+    "6XL"
+  ],
   "size_code_map": {
     "XS": "XS",
     "S": "SM",
@@ -47,7 +72,20 @@
     "Kelly Green": "502KG",
     "Red": "502RD",
     "Royal Blue": "502RY",
-    "Navy": "502NY"
+    "Navy": "502NY",
+    "Hot Pink": "502HP",
+    "Purple": "502PU",
+    "Sapphire Blue": "502SB",
+    "Jade": "502JD",
+    "Soft Pink": "502SP",
+    "Sky": "502SK",
+    "Charcoal": "502CH",
+    "Orange": "502OR",
+    "Bottle Green": "502BG",
+    "Military Green": "502MG",
+    "Yellow": "502YL",
+    "Olive": "502OL",
+    "Violet": "502VI",
+    "Maroon": "502MA"
   }
-  
 }

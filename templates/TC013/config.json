@@ -13,11 +13,20 @@
   "age_range_description": "Adult",
   "material_type": "100% Cotton Terry Towelling",
   "style_name": "Luxury Golf Towel",
-  "variation_theme": "Color",
+  "variation_theme": "Colour & Style",
   "condition_type": "New",
   "item_type_name": "towel",
   "care_instructions": "Wash at 40 degrees synthetic; Wash dark colours separately; Use colour sensitive detergent; Do not use fabric conditioner",
   "theme": "Golf",
+  "extra_fields": {
+    "Display Length": "50",
+    "Unit of Measure (Per Unit Pricing)": "count",
+    "Unit Count (Per Unit Pricing)": "1",
+    "Item Length Longer Edge": "50",
+    "Item Length Unit": "Centimetres",
+    "Item Width Shorter Edge": "30",
+    "Item Width Unit": "Centimetres"
+  },
   "colors": [
     "Black",
     "Fuchsia",

@@ -1,5 +1,6 @@
 from __future__ import annotations
-
+from datetime import datetime
+import time
 import json
 from copy import copy
 from pathlib import Path
@@ -7,8 +8,17 @@ from typing import Any
 from utils.image_resolver import resolve_one
 import streamlit as st
 from openpyxl import load_workbook
+from itertools import product
 
-from utils.dropbox_client import get_or_create_shared_link, to_direct_url, list_folder_files
+from utils.dropbox_client import (
+    get_or_create_shared_link,
+    to_direct_url,
+    list_folder_files,
+    list_folder_names,
+    create_folder_if_missing,
+    move_dropbox_folder,
+    path_exists,
+)
 
 GLOBAL_BRAND_NAME = "Generic"
 
@@ -127,7 +137,7 @@ def write_values_with_debug(
         if not written:
             missing_fields.append(field)
 
-    if missing_fields:
+    if missing_fields and st.session_state.get("show_header_debug", False):
         st.warning(f"{row_label}: {len(missing_fields)} field(s) not found in template headers")
         st.code("\n".join(missing_fields), language=None)
 
@@ -142,42 +152,178 @@ def normalize_size(size: str) -> str:
     }
     return size_map.get(size, size)
 
+def build_variant_combinations(selected_variants: dict[str, list[str]]) -> list[dict[str, str]]:
+    keys = list(selected_variants.keys())
+    if not keys:
+        return []
+
+    value_lists = [selected_variants[k] for k in keys]
+    combos = []
+
+    for values in product(*value_lists):
+        combos.append(dict(zip(keys, values)))
+
+    return combos
+
+
+def build_child_sku(profile: dict[str, Any], parent_sku: str, variant_values: dict[str, str]) -> str:
+    color_map = profile.get("color_sku_map", {})
+    size_map = profile.get("size_code_map", {})
+    design_map = profile.get("design_sku_map", {})
+
+    color_code = ""
+    size_code = ""
+    design_code = ""
+
+    if "color" in variant_values:
+        color_value = variant_values["color"]
+        color_code = color_map.get(color_value, slugify_part(color_value))
+
+    if "size" in variant_values:
+        size_value = variant_values["size"]
+        size_code = size_map.get(size_value, slugify_part(size_value))
+
+    if "design" in variant_values:
+        design_value = variant_values["design"]
+        design_code = design_map.get(design_value, slugify_part(design_value))
+
+    parts: list[str] = []
+
+    if color_code:
+        if color_code.startswith(parent_sku):
+            parts.append(color_code)
+        else:
+            parts.append(parent_sku)
+            parts.append(color_code)
+    else:
+        parts.append(parent_sku)
+
+    if size_code:
+        parts.append(size_code)
+
+    if design_code:
+        parts.append(design_code)
+
+    return "-".join(parts)
+
+def build_variant_field_values(profile: dict[str, Any], variant_values: dict[str, str]) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+
+    if "color" in variant_values:
+        values["color_name"] = variant_values["color"]
+
+    if "size" in variant_values:
+        normalized_size = normalize_size(variant_values["size"])
+        values["size_name"] = normalized_size
+        values["apparel_size"] = normalized_size
+
+    if "design" in variant_values:
+        values["style_name"] = variant_values["design"]
+
+    return values
+
+
+def validate_variant_dimensions(selected_variants: dict[str, list[str]]) -> list[str]:
+    errors: list[str] = []
+
+    for dim_name, items in selected_variants.items():
+        if not items:
+            errors.append(f"At least one option is required for {dim_name}.")
+
+    return errors
+
 def slugify_part(value: str) -> str:
     safe = value.strip().replace(" ", "-").replace("/", "-")
     while "--" in safe:
         safe = safe.replace("--", "-")
     return safe
 
+def sanitize_sku(value: str) -> str:
+    safe = value.strip()
+    for ch in ['\\', '/', ':', '*', '?', '"', '<', '>', '|', ' ']:
+        safe = safe.replace(ch, '-')
+    while '--' in safe:
+        safe = safe.replace('--', '-')
+    return safe.strip('-')
 
-def build_child_sku(profile: dict[str, Any], color: str, size: str) -> str:
-    color_sku_map = profile.get("color_sku_map", {})
-    size_code_map = profile.get("size_code_map", {})
-    variation_theme = profile.get("variation_theme", "SizeColor")
 
-    color_base = color_sku_map.get(color)
-    size_code = size_code_map.get(size)
+def generate_unique_sku(prefix: str = "AMZ") -> str:
+    return f"{prefix}{datetime.now().strftime('%y%m%d%H%M%S')}"
 
-    if variation_theme == "Color":
-        if color_base:
-            return color_base
-        parent_sku = str(profile.get("parent_sku", "PARENT"))
-        return f"{parent_sku}-{slugify_part(color)}"
 
-    if variation_theme == "Size":
-        parent_sku = str(profile.get("parent_sku", "PARENT"))
-        if size_code:
-            return f"{parent_sku}-{size_code}"
-        return f"{parent_sku}-{slugify_part(size)}"
+def build_final_folder_sku(parent_sku: str, unique_sku: str) -> str:
+    return f"{unique_sku}-{sanitize_sku(parent_sku)}"
 
-    if color_base and size_code:
-        return f"{color_base}{size_code}"
 
-    if color_base:
-        return f"{color_base}-{slugify_part(size)}"
+def build_stage_folder_path(dropbox_cfg: dict[str, Any], staged_folder_name: str) -> str:
+    stage_root = dropbox_cfg.get("stage_root", "").rstrip("/")
+    return f"{stage_root}/{staged_folder_name}"
 
-    parent_sku = str(profile.get("parent_sku", "PARENT"))
-    return f"{parent_sku}-{slugify_part(color)}-{slugify_part(size)}"
 
+def build_finished_folder_path(dropbox_cfg: dict[str, Any], final_sku: str) -> str:
+    finished_root = dropbox_cfg.get("finished_root", "").rstrip("/")
+    return f"{finished_root}/{final_sku}"
+
+
+def finalize_staged_dropbox_folder(
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+    parent_sku: str,
+) -> tuple[str, str]:
+    parent_sku = sanitize_sku(parent_sku)
+    if not parent_sku:
+        raise ValueError("Template parent_sku is missing.")
+
+    finished_root = dropbox_cfg.get("finished_root", "").rstrip("/")
+    stage_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+
+    create_folder_if_missing(finished_root)
+
+    max_attempts = 20
+    final_sku = ""
+    final_folder_path = ""
+
+    for _ in range(max_attempts):
+        unique_sku = generate_unique_sku()
+        final_sku = build_final_folder_sku(parent_sku, unique_sku)
+        final_folder_path = build_finished_folder_path(dropbox_cfg, final_sku)
+
+        if not path_exists(final_folder_path):
+            moved_path = move_dropbox_folder(stage_path, final_folder_path)
+            return final_sku, moved_path
+
+    raise ValueError("Could not generate a unique finished folder SKU after multiple attempts.")
+
+def split_finished_folder_images(folder_path: str) -> tuple[str, list[str]]:
+    files = [p for p in list_folder_files(folder_path) if is_image_file(p)]
+    files = sorted(files, key=lambda p: Path(p).name.lower())
+
+    parent_main = ""
+    other_images: list[str] = []
+
+    for path in files:
+        stem = Path(path).stem.lower()
+
+        if stem == "main":
+            parent_main = path
+        else:
+            other_images.append(path)
+
+    if not parent_main and other_images:
+        parent_main = other_images[0]
+        other_images = other_images[1:]
+
+    return parent_main, other_images
+
+def build_stage_preview_paths(dropbox_cfg: dict[str, Any], staged_folder_name: str) -> list[str]:
+    if not staged_folder_name:
+        return []
+
+    stage_root = dropbox_cfg.get("stage_root", "").rstrip("/")
+    stage_folder_path = f"{stage_root}/{staged_folder_name}"
+
+    files = [p for p in list_folder_files(stage_folder_path) if is_image_file(p)]
+    return sorted(files, key=lambda p: Path(p).name.lower())
 
 def padded_list(values: list[str], target_len: int = 8) -> list[str]:
     trimmed = values[:target_len]
@@ -187,6 +333,93 @@ def is_image_file(path: str) -> bool:
     suffix = Path(path).suffix.lower()
     return suffix in {".png", ".jpg", ".jpeg", ".webp"}
 
+def build_design_color_preview_paths(
+    profile: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+    selected_variants: dict[str, list[str]],
+) -> list[dict[str, str]]:
+    template_key = profile.get("template_key", "")
+    templates_map = dropbox_cfg.get("templates", {})
+    template_block = templates_map.get(template_key, {})
+
+    resource_root = dropbox_cfg.get("resource_root", "").rstrip("/")
+    variant_folder = template_block.get("variant_folder", template_key)
+    combo_map = template_block.get("design_color_image_map", {})
+
+    selected_colors = selected_variants.get("color", [])
+    selected_designs = selected_variants.get("design", [])
+
+    rows: list[dict[str, str]] = []
+
+    for color in selected_colors:
+        design_map = combo_map.get(color, {})
+        for design in selected_designs:
+            filename = design_map.get(design, "")
+            path = f"{resource_root}/{variant_folder}/{filename}" if filename else ""
+            rows.append({
+                "color": color,
+                "design": design,
+                "path": path,
+            })
+
+    return rows
+
+
+def render_design_color_grid(
+    rows: list[dict[str, str]],
+    cols_per_row: int = 5,
+    image_width: int = 150,
+) -> None:
+    st.markdown("**Design/colour image mapping**")
+
+    if not rows:
+        st.caption("No design/colour combinations configured.")
+        return
+
+    cols = st.columns(cols_per_row)
+    for idx, row in enumerate(rows):
+        with cols[idx % cols_per_row]:
+            label = f"{row['color']} / {row['design']}"
+            st.caption(label)
+
+            path = row.get("path", "")
+            if not path:
+                st.warning("Missing")
+                continue
+
+            try:
+                result = resolve_one(path, label)
+                if result["exists"] and result["direct_url"]:
+                    st.image(result["direct_url"], width=image_width)
+                else:
+                    st.warning("Not found")
+                    st.code(path, language=None)
+            except Exception as exc:
+                st.error(str(exc))
+                st.code(path, language=None)    
+
+def render_variant_combinations_preview(
+    profile: dict[str, Any],
+    parent_sku: str,
+    selected_variants: dict[str, list[str]],
+) -> None:
+    combos = build_variant_combinations(selected_variants)
+
+    st.markdown("**Selected variant combinations**")
+
+    if not combos:
+        st.caption("No combinations selected.")
+        return
+
+    rows = []
+    for idx, combo in enumerate(combos, start=1):
+        row = {"#": idx}
+        row.update(combo)
+        row["child_sku"] = build_child_sku(profile, parent_sku, combo)
+        rows.append(row)
+
+    st.dataframe(rows, width="stretch", hide_index=True)
+
 def build_dropbox_overview(profile: dict[str, Any], dropbox_cfg: dict[str, Any]) -> dict[str, Any]:
     if not dropbox_cfg:
         return {}
@@ -195,67 +428,40 @@ def build_dropbox_overview(profile: dict[str, Any], dropbox_cfg: dict[str, Any])
     templates_map = dropbox_cfg.get("templates", {})
     template_block = templates_map.get(template_key, {})
 
-    root_folder = dropbox_cfg.get("root_folder", "")
-    resource_root = dropbox_cfg.get("template_resource_root", "1_Resources")
+    resource_root = dropbox_cfg.get("resource_root", "").rstrip("/")
     variant_folder = template_block.get("variant_folder", template_key)
 
-    all_root_files = list_folder_files(root_folder)
-
-    root_image_files = []
-    for path in all_root_files:
-        relative = path[len(root_folder):].lstrip("/")
-        if "/" in relative:
-            continue
-        if is_image_file(path):
-            root_image_files.append(path)
-
-    parent_main_image = ""
-    parent_other_images: list[str] = []
-
-    for path in sorted(root_image_files):
-        name = Path(path).name.lower()
-        stem = Path(path).stem.lower()
-
-        if stem == "main":
-            parent_main_image = path
-        else:
-            parent_other_images.append(path)
-
-    parent_images = [parent_main_image] + parent_other_images if parent_main_image else parent_other_images
-
     shared_resource_images = [
-        f"{root_folder}/{name}"
+        f"{resource_root}/{name}"
         for name in dropbox_cfg.get("general_resource_images", [])
     ]
 
     color_paths: dict[str, str] = {}
     for color, filename in template_block.get("main_image_map", {}).items():
-        color_paths[color] = f"{root_folder}/{resource_root}/{variant_folder}/{filename}"
+        color_paths[color] = f"{resource_root}/{variant_folder}/{filename}"
 
     return {
-        "root_folder": root_folder,
+        "resource_root": resource_root,
         "template_key": template_key,
         "variant_folder": variant_folder,
-        "parent_images": parent_images,
         "shared_resource_images": shared_resource_images,
         "color_paths": color_paths,
         "main_image_map": template_block.get("main_image_map", {}),
     }
 
-
 def resolve_workbook_image_urls(
     selected_colors: list[str],
     dropbox_overview: dict[str, Any],
+    finished_folder_path: str,
 ) -> tuple[str, list[str], dict[str, str]]:
-    parent_images = dropbox_overview.get("parent_images", [])
+    finished_main_path, finished_other_paths = split_finished_folder_images(finished_folder_path)
     shared_resource_images = dropbox_overview.get("shared_resource_images", [])
     color_paths = dropbox_overview.get("color_paths", {})
 
-    parent_main_image_url = dropbox_preview_url(parent_images[0]) if parent_images else ""
+    parent_main_image_url = dropbox_preview_url(finished_main_path) if finished_main_path else ""
 
-    other_image_candidates = parent_images[1:] + shared_resource_images
     other_images: list[str] = []
-    for path in other_image_candidates:
+    for path in finished_other_paths + shared_resource_images:
         url = dropbox_preview_url(path)
         if url:
             other_images.append(url)
@@ -335,7 +541,7 @@ def trim_search_terms(value: str, max_bytes: int = 249) -> str:
     if not value:
         return ""
 
-    # Split on commas first, since Amazon search terms are usually entered that way
+    # Split on commas first, since Amazon search terms are usually entered that way sasd
     terms = [term.strip() for term in value.split(",") if term.strip()]
 
     result_terms: list[str] = []
@@ -432,6 +638,7 @@ def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> No
         "fulfillment_availability#1.quantity": "",
         "fulfillment_availability#1.lead_time_to_ship_max_days": "",
         "purchasable_offer[marketplace_id=A1F83G8C2ARO7P]#1.our_price#1.schedule#1.value_with_tax": "",
+        "list_price_with_tax": "",
 
         "main_image_url": data.get("parent_main_image_url", ""),
 
@@ -452,6 +659,8 @@ def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> No
         "other_image_url_ps06": other_images[13],
     }
 
+    values.update(data.get("extra_fields", {}))
+
     if "dangerous_goods_regulation" in header_map:
         values["dangerous_goods_regulation"] = "Not Applicable"
 
@@ -469,111 +678,127 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
     variation_theme = data.get("variation_theme", "")
     product_category = data.get("product_category", "apparel")
     is_apparel = product_category == "apparel"
-    has_size = "Size" in variation_theme
-    has_color = "Color" in variation_theme
 
-    for color in data["colors"]:
-        image_url = data.get("color_image_map", {}).get(color, "")
-        for size in data["sizes"]:
-            if row_idx != template_row:
-                copy_row_format(ws, template_row, row_idx)
-            clear_row_values(ws, row_idx)
+    selected_variants = data.get("selected_variants", {})
+    variant_combos = build_variant_combinations(selected_variants)
 
-            normalized_size = normalize_size(size)
-            price = data["size_price_map"].get(size, 0)
+    for variant_values in variant_combos:
+        if row_idx != template_row and st.session_state.get("copy_row_styles", True):
+            copy_row_format(ws, template_row, row_idx)
+        clear_row_values(ws, row_idx)
 
-            values = {
-                "item_sku": build_child_sku(profile, color, size),
-                "parent_sku": data["parent_sku"],
-                "item_name": data["title"],
-                "brand_name": data["brand_name"],
-                "manufacturer": data["manufacturer"],
-                "product_description": data["product_description"],
-                "generic_keywords": data["generic_keywords"],
+        variant_field_values = build_variant_field_values(profile, variant_values)
 
-                "bullet_point1": data["bullet_points"][0],
-                "bullet_point2": data["bullet_points"][1],
-                "bullet_point3": data["bullet_points"][2],
-                "bullet_point4": data["bullet_points"][3],
-                "bullet_point5": data["bullet_points"][4],
+        size_value = variant_values.get("size", "")
+        normalized_size = normalize_size(size_value) if size_value else ""
+        design_value = variant_values.get("design", "")
+        color_value = variant_values.get("color", "")
 
-                "recommended_browse_nodes": data["recommended_browse_nodes"],
+        price_key = size_value if size_value else "default"
+        price = data["size_price_map"].get(price_key, 0)
 
-                "condition_type": data["condition_type"],
+        image_url = data.get("color_image_map", {}).get(color_value, "")
 
-                "parent_child": "child",
-                "relationship_type": "variation",
-                "variation_theme": variation_theme,
+        values = {
+            "item_sku": build_child_sku(profile, data["parent_sku"], variant_values),
+            "parent_sku": data["parent_sku"],
+            "item_name": data["title"],
+            "brand_name": data["brand_name"],
+            "manufacturer": data["manufacturer"],
+            "product_description": data["product_description"],
+            "generic_keywords": data["generic_keywords"],
 
-                "color_name": color if has_color else "",
-                "size_name": normalized_size if has_size else "",
-                "apparel_size": normalized_size if has_size and is_apparel else "",
+            "bullet_point1": data["bullet_points"][0],
+            "bullet_point2": data["bullet_points"][1],
+            "bullet_point3": data["bullet_points"][2],
+            "bullet_point4": data["bullet_points"][3],
+            "bullet_point5": data["bullet_points"][4],
 
-                "department_name": data["department_name"],
-                "feed_product_type": data["feed_product_type"],
-                "target_gender": data["target_gender"],
-                "age_range_description": data["age_range_description"],
+            "recommended_browse_nodes": data["recommended_browse_nodes"],
+            "condition_type": data["condition_type"],
 
-                "outer_material_type": data["material_type"],
-                "material_type1": data["material_type"],
-                "fabric_type": data["material_type"],
+            "parent_child": "child",
+            "relationship_type": "variation",
+            "variation_theme": variation_theme,
 
-                "style_name": data["style_name"],
-                "care_instructions": data["care_instructions"],
-                "theme": data["theme"],
+            "color_name": color_value,
+            "size_name": normalized_size,
+            "apparel_size": normalized_size if is_apparel else "",
 
-                "apparel_size_system": "UK" if has_size and is_apparel else "",
-                "apparel_size_class": "Alpha" if has_size and is_apparel else "",
-                "apparel_body_type": "Regular" if is_apparel else "",
-                "apparel_height_type": "Regular" if is_apparel else "",
+            "department_name": data["department_name"],
+            "feed_product_type": data["feed_product_type"],
+            "target_gender": data["target_gender"],
+            "age_range_description": data["age_range_description"],
 
-                "item_type_name": data["item_type_name"],
-                "country_of_origin": "United Kingdom",
+            "outer_material_type": data["material_type"],
+            "material_type1": data["material_type"],
+            "fabric_type": data["material_type"],
 
-                "fulfillment_availability#1.fulfillment_channel_code": "DEFAULT",
-                "fulfillment_availability#1.quantity": data["quantity"],
-                "fulfillment_availability#1.lead_time_to_ship_max_days": 5,
-                "purchasable_offer[marketplace_id=A1F83G8C2ARO7P]#1.our_price#1.schedule#1.value_with_tax": price,
+            "style_name": design_value or data["style_name"],
+            "care_instructions": data["care_instructions"],
+            "theme": data["theme"],
 
-                "main_image_url": image_url,
+            "apparel_size_system": "UK" if normalized_size and is_apparel else "",
+            "apparel_size_class": "Alpha" if normalized_size and is_apparel else "",
+            "apparel_body_type": "Regular" if is_apparel else "",
+            "apparel_height_type": "Regular" if is_apparel else "",
 
-                "other_image_url1": other_images[0],
-                "other_image_url2": other_images[1],
-                "other_image_url3": other_images[2],
-                "other_image_url4": other_images[3],
-                "other_image_url5": other_images[4],
-                "other_image_url6": other_images[5],
-                "other_image_url7": other_images[6],
-                "other_image_url8": other_images[7],
+            "item_type_name": data["item_type_name"],
+            "country_of_origin": "United Kingdom",
 
-                "other_image_url_ps01": other_images[8],
-                "other_image_url_ps02": other_images[9],
-                "other_image_url_ps03": other_images[10],
-                "other_image_url_ps04": other_images[11],
-                "other_image_url_ps05": other_images[12],
-                "other_image_url_ps06": other_images[13],
-            }
+            "fulfillment_availability#1.fulfillment_channel_code": "DEFAULT",
+            "fulfillment_availability#1.quantity": data["quantity"],
+            "fulfillment_availability#1.lead_time_to_ship_max_days": 5,
+            "purchasable_offer[marketplace_id=A1F83G8C2ARO7P]#1.our_price#1.schedule#1.value_with_tax": price,
+            "list_price_with_tax": price,
 
-            if "dangerous_goods_regulation" in header_map:
-                values["dangerous_goods_regulation"] = "Not Applicable"
+            "main_image_url": image_url,
 
-            if "search_terms" in header_map:
-                values["search_terms"] = trim_search_terms(data["generic_keywords"])
+            "other_image_url1": other_images[0],
+            "other_image_url2": other_images[1],
+            "other_image_url3": other_images[2],
+            "other_image_url4": other_images[3],
+            "other_image_url5": other_images[4],
+            "other_image_url6": other_images[5],
+            "other_image_url7": other_images[6],
+            "other_image_url8": other_images[7],
 
-            write_values_with_debug(
-                ws,
-                row_idx,
-                header_map,
-                values,
-                f"Child row {row_idx} ({color} / {size})",
-            )
+            "other_image_url_ps01": other_images[8],
+            "other_image_url_ps02": other_images[9],
+            "other_image_url_ps03": other_images[10],
+            "other_image_url_ps04": other_images[11],
+            "other_image_url_ps05": other_images[12],
+            "other_image_url_ps06": other_images[13],
+        }
 
-            row_idx += 1
-            variants_written += 1
+        values.update(data.get("extra_fields", {}))
+
+        values.update(variant_field_values)
+
+        if "dangerous_goods_regulation" in header_map:
+            values["dangerous_goods_regulation"] = "Not Applicable"
+
+        if "search_terms" in header_map:
+            values["search_terms"] = trim_search_terms(data["generic_keywords"])
+
+        label_bits = [v for v in [color_value, size_value, design_value] if v]
+        row_label = " / ".join(label_bits) if label_bits else f"row {row_idx}"
+
+        write_values_with_debug(
+            ws,
+            row_idx,
+            header_map,
+            values,
+            f"Child row {row_idx} ({row_label})",
+        )
+
+        row_idx += 1
+        variants_written += 1
 
     return variants_written
 
-
+def get_extra_fields(profile: dict[str, Any]) -> dict[str, Any]:
+    return profile.get("extra_fields", {})
 
 def debug_find_headers(header_map: dict[str, int], patterns: list[str]) -> None:
     st.write("Header matches:")
@@ -581,44 +806,59 @@ def debug_find_headers(header_map: dict[str, int], patterns: list[str]) -> None:
         matches = [key for key in header_map.keys() if pattern.lower() in key.lower()]
         st.write(f"{pattern}: {matches}")
 
-def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> Path:
+def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Path, dict[str, float]]:
     template_file = profile.get("template_file", "")
     template_path = (BASE_DIR / "templates" / template_file).resolve()
 
     if not template_path.exists():
         raise FileNotFoundError(f"Template not found: {template_path}")
 
+    t0 = time.perf_counter()
     wb = load_workbook(template_path, keep_vba=True)
+    t1 = time.perf_counter()
+
     ws = wb[SHEET_NAME]
     header_map = build_header_map(ws, HEADER_ROW)
 
-    debug_find_headers(
-        header_map,
-        [
-            "body",
-            "height",
-            "fulfillment",
-            "quantity",
-            "lead_time",
-            "ship",
-            "price",
-            "value_with_tax",
-        ],
-    )
+    if st.session_state.get("show_header_debug", False):
+        debug_find_headers(
+            header_map,
+            [
+                "body",
+                "height",
+                "fulfillment",
+                "quantity",
+                "lead_time",
+                "ship",
+                "price",
+                "value_with_tax",
+            ],
+        )
 
     write_parent_row(ws, header_map, payload)
+    t2 = time.perf_counter()
+
     variants_written = write_child_rows(ws, header_map, profile, payload)
+    t3 = time.perf_counter()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     output_name = f"{payload['parent_sku']}_{profile['_slug']}_amazon_listing.xlsm"
     output_path = OUTPUT_DIR / output_name
     wb.save(output_path)
+    t4 = time.perf_counter()
 
     if variants_written == 0:
         raise ValueError("No child variants were generated.")
 
-    return output_path
+    timings = {
+        "load_workbook": t1 - t0,
+        "write_parent_row": t2 - t1,
+        "write_child_rows": t3 - t2,
+        "save_workbook": t4 - t3,
+        "total_build": t4 - t0,
+    }
 
+    return output_path, timings
 def validate_payload(payload: dict[str, Any]) -> list[str]:
     errors: list[str] = []
 
@@ -644,9 +884,9 @@ def validate_payload(payload: dict[str, Any]) -> list[str]:
         elif value in (None, "", []):
             errors.append(f"{field} is required.")
 
-    allowed_variation_themes = {"SizeColor", "Color", "Size", ""}
+    allowed_variation_themes = {"SizeColor","Colour & Style", ""}
     if payload.get("variation_theme", "") not in allowed_variation_themes:
-        errors.append("variation_theme must be one of: SizeColor, Color, Size, or empty.")
+        errors.append("variation_theme must be one of: SizeColor, Colour & Style, or empty.")
 
     allowed_product_categories = {"apparel", "accessory"}
     if payload.get("product_category", "") not in allowed_product_categories:
@@ -655,28 +895,22 @@ def validate_payload(payload: dict[str, Any]) -> list[str]:
     return errors
 
 def validate_variants(
-    colors: list[str],
-    sizes: list[str],
+    selected_variants: dict[str, list[str]],
     size_price_map: dict[str, float],
     quantity: int,
-    variation_theme: str,
 ) -> list[str]:
     errors: list[str] = []
 
-    has_color = "Color" in variation_theme
-    has_size = "Size" in variation_theme
-
-    if has_color and not colors:
-        errors.append("At least one colour is required.")
-
-    if has_size and not sizes:
-        errors.append("At least one size is required.")
+    for dim_name, values in selected_variants.items():
+        if not values:
+            errors.append(f"At least one option is required for {dim_name}.")
 
     if quantity < 0:
         errors.append("Quantity cannot be negative.")
 
-    if has_size:
-        for size in sizes:
+    size_values = selected_variants.get("size", [])
+    if size_values:
+        for size in size_values:
             if size_price_map.get(size, 0) <= 0:
                 errors.append(f"Invalid price for size {size}.")
     else:
@@ -693,9 +927,9 @@ def validate_parent_child_structure(payload: dict[str, Any]) -> list[str]:
     if not payload.get("parent_sku", "").strip():
         errors.append("parent_sku is required.")
 
-    allowed_variation_themes = {"SizeColor", "Color", "Size", ""}
+    allowed_variation_themes = {"SizeColor","Colour & Style", ""}
     if payload.get("variation_theme", "") not in allowed_variation_themes:
-        errors.append("variation_theme must be one of: SizeColor, Color, Size, or empty.")
+        errors.append("variation_theme must be one of: SizeColor, Colour & Style, or empty.")
 
     allowed_product_categories = {"apparel", "accessory"}
     if payload.get("product_category", "") not in allowed_product_categories:
@@ -710,6 +944,19 @@ def main() -> None:
 
     profiles = list_template_profiles()
     dropbox_cfg = load_dropbox_templates_config()
+
+    stage_root = dropbox_cfg.get("stage_root", "")
+    finished_root = dropbox_cfg.get("finished_root", "")
+
+    if not stage_root or not finished_root:
+        st.error("stage_root and finished_root must be set in config/dropbox_templates.json")
+        st.stop()
+
+    try:
+        staged_folder_names = list_folder_names(stage_root)
+    except Exception as exc:
+        st.error(f"Could not read Dropbox stage folders: {exc}")
+        st.stop()
 
     if not profiles:
         st.error("No template profiles found. Create folders under templates/ with a config.json and base .xlsm file.")
@@ -727,6 +974,8 @@ def main() -> None:
     st.sidebar.write(f"Folder: `{profile['_slug']}`")
     st.sidebar.write(f"Workbook: `{profile.get('template_file', '')}`")
     st.sidebar.write(f"Variation theme: `{profile.get('variation_theme', '')}`")
+    st.sidebar.checkbox("Show troubleshooting debug", key="show_header_debug", value=False)
+    st.sidebar.checkbox("Copy row styles", key="copy_row_styles", value=True)
 
     colors_available = profile.get("colors", [])
     sizes_available = profile.get("sizes", [])
@@ -734,21 +983,37 @@ def main() -> None:
 
     with st.sidebar.expander("Dropbox debug"):
         try:
-            test_path = dropbox_overview["parent_images"][0] if dropbox_overview.get("parent_images") else ""
+            test_path = ""
+            if dropbox_overview.get("shared_resource_images"):
+                test_path = dropbox_overview["shared_resource_images"][0]
+
             st.write("Test path:", test_path)
             if test_path:
                 st.write("Preview URL:", dropbox_preview_url(test_path))
         except Exception as exc:
             st.error(f"Dropbox debug failed: {exc}")
 
+
+    parent_sku_from_config = str(get_default(profile, "parent_sku", "")).strip()
+
     col1, col2 = st.columns(2)
 
     with col1:
-        parent_sku = st.text_input(
+        # base_sku = st.text_input("Base SKU")
+        st.text_input(
             "Parent SKU",
-            value=str(get_default(profile, "parent_sku", "JH001")),
+            value=parent_sku_from_config,
             disabled=True,
         )
+        staged_folder_name = st.selectbox(
+            "Staged Dropbox folder",
+            staged_folder_names,
+            index=None,
+            placeholder="Select a staged folder",
+        )
+        
+        staged_preview_paths = build_stage_preview_paths(dropbox_cfg, staged_folder_name) if staged_folder_name else []
+
         title = st.text_input("Product title")
 
     with col2:
@@ -795,21 +1060,56 @@ def main() -> None:
         st.code(trimmed_keywords)
 
     st.subheader("Variants")
-    selected_colors = st.multiselect(
-        "Colours",
-        colors_available,
-        default=colors_available,
-        key="selected_colours",
-    )
-    selected_sizes = st.multiselect(
-        "Sizes",
-        sizes_available,
-        default=sizes_available,
-        key="selected_sizes",
+
+    variant_dimensions = profile.get("variant_dimensions", [])
+
+    selected_variants: dict[str, list[str]] = {}
+
+    if variant_dimensions:
+        for dim in variant_dimensions:
+            dim_name = dim.get("name", "")
+            dim_label = dim.get("label", dim_name.title())
+            dim_options = dim.get("options", [])
+
+            selected_variants[dim_name] = st.multiselect(
+                dim_label,
+                dim_options,
+                default=dim_options,
+                key=f"variant_{dim_name}",
+            )
+    else:
+        selected_colors = st.multiselect(
+            "Colours",
+            colors_available,
+            default=colors_available,
+            key="selected_colours",
+        )
+        selected_sizes = st.multiselect(
+            "Sizes",
+            sizes_available,
+            default=sizes_available,
+            key="selected_sizes",
+        )
+        selected_variants = {
+            "color": selected_colors,
+            "size": selected_sizes,
+        }
+        
+    design_color_preview_rows = build_design_color_preview_paths(
+        profile=profile,
+        dropbox_cfg=dropbox_cfg,
+        selected_variants=selected_variants,
     )
 
-    st.caption("Child SKUs are generated from config.json using color_sku_map + size_code_map.")
-    size_price_map = build_size_price_inputs(selected_sizes)
+    with st.expander("Selected combinations preview", expanded=False):
+        render_variant_combinations_preview(
+            profile=profile,
+            parent_sku=parent_sku_from_config,
+            selected_variants=selected_variants,
+        )
+
+    price_dimension_values = selected_variants.get("size", ["default"])
+    size_price_map = build_size_price_inputs(price_dimension_values)
 
     st.subheader("Inventory setup")
     quantity = st.number_input(
@@ -824,20 +1124,23 @@ def main() -> None:
         if not dropbox_overview:
             st.warning("No shared Dropbox config loaded yet.")
         else:
-            st.write(f"Root: `{dropbox_overview['root_folder']}`")
+            st.write(f"Resource root: `{dropbox_overview['resource_root']}`")
             st.write(f"Variant folder: `{dropbox_overview['variant_folder']}`")
 
-            parent_tab, resources_tab, colours_tab = st.tabs(
-                ["Parent images", "Shared resources", "Colour variants"]
-            )
+            tab_names = ["Staged images", "Shared resources", "Colour variants", "Variant combinations"]
+            stage_tab, resources_tab, colours_tab, combos_tab = st.tabs(tab_names)
 
-            with parent_tab:
-                render_path_grid(
-                    "Parent / general images",
-                    dropbox_overview["parent_images"],
-                    cols_per_row=5,
-                    image_width=150,
-                )
+            with stage_tab:
+                if not staged_folder_name:
+                    st.caption("Select a staged Dropbox folder to preview its images.")
+                else:
+                    st.write(f"Stage folder: `{staged_folder_name}`")
+                    render_path_grid(
+                        "Selected staged images",
+                        staged_preview_paths,
+                        cols_per_row=5,
+                        image_width=150,
+                    )
 
             with resources_tab:
                 render_path_grid(
@@ -855,6 +1158,13 @@ def main() -> None:
                     image_width=150,
                 )
 
+            with combos_tab:
+                render_design_color_grid(
+                    design_color_preview_rows,
+                    cols_per_row=5,
+                    image_width=150,
+                )    
+
     submitted = st.button("Generate workbook")
 
     if not submitted:
@@ -869,12 +1179,10 @@ def main() -> None:
 
     variation_theme = profile.get("variation_theme", "SizeColor")
 
-    if "Color" in variation_theme and not selected_colors:
-        st.error("Select at least one colour.")
-        st.stop()
-
-    if "Size" in variation_theme and not selected_sizes:
-        st.error("Select at least one size.")
+    variant_dimension_errors = validate_variant_dimensions(selected_variants)
+    if variant_dimension_errors:
+        for err in variant_dimension_errors:
+            st.error(err)
         st.stop()
 
     if any(not bullet.strip() for bullet in bullets):
@@ -882,6 +1190,8 @@ def main() -> None:
         st.stop()
 
     variation_theme = profile.get("variation_theme", "SizeColor")
+
+    selected_sizes = selected_variants.get("size", [])
 
     if "Size" in variation_theme:
         invalid_prices = [size for size in selected_sizes if size_price_map.get(size, 0) <= 0]
@@ -893,13 +1203,24 @@ def main() -> None:
             st.error("At least one valid price is required.")
             st.stop()
 
-    parent_main_image_url, other_images, color_image_map = resolve_workbook_image_urls(
-        selected_colors,
-        dropbox_overview,
-    )
+    if not staged_folder_name:
+        st.error("Select a staged Dropbox folder.")
+        st.stop()
+
+    parent_sku_from_config = str(get_default(profile, "parent_sku", "")).strip()
+
+    if not parent_sku_from_config:
+        st.error("This template is missing parent_sku in its config.")
+        st.stop()
+
+    selected_colors = selected_variants.get("color", [])
+    selected_sizes = selected_variants.get("size", [])
+
+    # Build a pre-validation payload first, before moving anything
+    preview_parent_sku = parent_sku_from_config
 
     payload = {
-        "parent_sku": parent_sku.strip(),
+        "parent_sku": preview_parent_sku,
         "title": title.strip(),
         "brand_name": GLOBAL_BRAND_NAME,
         "manufacturer": profile.get("manufacturer", ""),
@@ -918,14 +1239,16 @@ def main() -> None:
         "style_name": profile.get("style_name", ""),
         "care_instructions": profile.get("care_instructions", ""),
         "theme": profile.get("theme", ""),
-        "parent_main_image_url": parent_main_image_url,
+        "extra_fields": get_extra_fields(profile),
+        "parent_main_image_url": "",
         "product_description": product_description.strip(),
         "generic_keywords": generic_keywords.strip(),
         "bullet_points": [bullet.strip() for bullet in bullets],
+        "selected_variants": selected_variants,
         "colors": selected_colors,
         "sizes": selected_sizes,
-        "other_images": other_images,
-        "color_image_map": color_image_map,
+        "other_images": [],
+        "color_image_map": {},
     }
 
     payload_errors = validate_payload(payload)
@@ -933,15 +1256,12 @@ def main() -> None:
         for err in payload_errors:
             st.error(err)
         st.stop()
-        
+
     variant_errors = validate_variants(
-        selected_colors,
-        selected_sizes,
+        selected_variants,
         size_price_map,
         quantity,
-        payload["variation_theme"],
     )
-
     if variant_errors:
         for err in variant_errors:
             st.error(err)
@@ -951,17 +1271,75 @@ def main() -> None:
     if structure_errors:
         for err in structure_errors:
             st.error(err)
-        st.stop()
+        st.stop()         
 
     try:
-        output_path = build_workbook(profile, payload)
-        variation_theme = payload["variation_theme"]
-        color_count = len(selected_colors) if "Color" in variation_theme else 1
-        size_count = len(selected_sizes) if "Size" in variation_theme else 1
-        child_count = color_count * size_count
+        progress_text = st.empty()
+        progress_bar = st.progress(0)
+
+        t0 = time.perf_counter()
+
+        if st.session_state.get("finalized_stage_folder") == staged_folder_name:
+            progress_text.error("This staged folder was already finalized in the current session.")
+            st.stop()
+
+        progress_text.write("Moving staged folder into finished...")
+        progress_bar.progress(10)
+
+        final_sku, finished_folder_path = finalize_staged_dropbox_folder(
+            dropbox_cfg=dropbox_cfg,
+            staged_folder_name=staged_folder_name,
+            parent_sku=parent_sku_from_config,
+        )
+        t1 = time.perf_counter()
+
+        st.session_state["finalized_stage_folder"] = staged_folder_name
+        st.session_state["finalized_finished_folder_path"] = finished_folder_path
+        st.session_state["finalized_sku"] = final_sku
+
+        progress_text.write("Fetching Dropbox image links...")
+        progress_bar.progress(35)
+
+        parent_main_image_url, other_images, color_image_map = resolve_workbook_image_urls(
+            selected_colors=selected_colors,
+            dropbox_overview=dropbox_overview,
+            finished_folder_path=finished_folder_path,
+        )
+        t2 = time.perf_counter()
+
+        payload["parent_sku"] = final_sku
+        payload["parent_main_image_url"] = parent_main_image_url
+        payload["other_images"] = other_images
+        payload["color_image_map"] = color_image_map
+
+        progress_text.write("Building workbook...")
+        progress_bar.progress(75)
+
+        output_path, workbook_timings = build_workbook(profile, payload)
+        t3 = time.perf_counter()
+
+        progress_text.write("Finalizing output...")
+        progress_bar.progress(95)
+
+        variant_combos = build_variant_combinations(selected_variants)
+        child_count = len(variant_combos)
+
+        progress_bar.progress(100)
+        progress_text.success("Workbook generated successfully.")
 
         st.success(f"Workbook generated successfully: {output_path.name}")
         st.info(f"Generated 1 parent row and {child_count} child variants.")
+
+        with st.expander("Performance breakdown", expanded=False):
+            st.write(f"Move staged folder: {t1 - t0:.2f}s")
+            st.write(f"Resolve Dropbox image URLs: {t2 - t1:.2f}s")
+            st.write(f"Build workbook: {t3 - t2:.2f}s")
+            st.write(f"Total: {t3 - t0:.2f}s")
+            st.write("---")
+            st.write(f"Load workbook: {workbook_timings['load_workbook']:.2f}s")
+            st.write(f"Write parent row: {workbook_timings['write_parent_row']:.2f}s")
+            st.write(f"Write child rows: {workbook_timings['write_child_rows']:.2f}s")
+            st.write(f"Save workbook: {workbook_timings['save_workbook']:.2f}s")
 
         with output_path.open("rb") as f:
             st.download_button(
@@ -970,7 +1348,18 @@ def main() -> None:
                 file_name=output_path.name,
                 mime="application/vnd.ms-excel.sheet.macroEnabled.12",
             )
+
     except Exception as exc:
+        if "progress_bar" in locals():
+            progress_bar.progress(100)
+        if "progress_text" in locals():
+            progress_text.error("Generation failed.")
+
+        st.error("Workbook generation failed after finalizing Dropbox assets.")
+        if "finished_folder_path" in locals():
+            st.write(f"Finalized folder path: `{finished_folder_path}`")
+        if "final_sku" in locals():
+            st.write(f"Finalized SKU: `{final_sku}`")
         st.exception(exc)
 
 if __name__ == "__main__":

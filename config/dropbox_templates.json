@@ -1,21 +1,12 @@
 {
-  "root_folder": "/Spoofy/Portrait/1. uk office folder/1_Salahs_test_file/1_Amazon",
-  "local_preview_root": "C:/Users/salah/Dropbox/Spoofy/Portrait/1. uk office folder/1_Salahs_test_file/1_Amazon",
-  "general_parent_images": [
-    "MAIN.png",
-    "1.png",
-    "2.jpg",
-    "3.jpg",
-    "4.jpg",
-    "5.jpg",
-    "6.jpg"
-  ],
+  "stage_root": "/Spoofy/Portrait/1. uk office folder/1_Salahs_test_file/1_Amazon/_stage",
+  "finished_root": "/Spoofy/Portrait/1. uk office folder/1_Salahs_test_file/1_Amazon/finished",
+  "resource_root": "/Spoofy/Portrait/1. uk office folder/1_Salahs_test_file/1_Amazon/1_Resources",
   "general_resource_images": [
-    "1_Resources/EMB1.png",
-    "1_Resources/EMB2.png",
-    "1_Resources/EMB_FONTS.png"
+    "EMB1.png",
+    "EMB2.png",
+    "EMB_FONTS.png"
   ],
-  "template_resource_root": "1_Resources",
   "templates": {
     "UC502": {
       "variant_folder": "UC502",
@@ -26,7 +17,22 @@
         "Kelly Green": "UC502-KG-H.jpg",
         "Red": "UC502-RD-H.jpg",
         "Royal Blue": "UC502-RY-H.jpg",
-        "Navy": "UC502-NY-H.jpg"
+        "Navy": "UC502-NY-H.jpg",
+
+        "Bottle Green": "Bottle Green.jpg",
+        "Charcoal": "Charcoal.jpg",
+        "Hot Pink": "Hot Pink.jpg",
+        "Jade": "Jade.jpg",
+        "Maroon": "Maroon.jpg",
+        "Military Green": "Military Green.jpg",
+        "Olive": "Olive.jpg",
+        "Orange": "Orange.jpg",
+        "Purple": "Purple.jpg",
+        "Sapphire Blue": "Sapphire Blue.jpg",
+        "Sky": "Sky.jpg",
+        "Soft Pink": "Soft Pink.jpg",
+        "Violet": "Violet.jpg",
+        "Yellow": "Yellow.jpg"
       }
     },
     "UC612": {
@@ -47,6 +53,44 @@
         "Red": "TC013-RED.jpg",
         "White": "TC013-WHT.jpg"
       }
+    },
+    "UX4": {
+    "variant_folder": "UX4",
+    "main_image_map": {
+        "Bottle Green": "UX4BG.jpg",
+        "Black": "UX4BK.jpg",
+        "Charcoal": "UX4CH.jpg",
+        "Heather Grey": "UX4HG.jpg",
+        "Maroon": "UX4MR.jpg",
+        "Navy": "UX4NY.jpg",
+        "Red": "UX4RD.jpg",
+        "Royal": "UX4RY.jpg",
+        "White": "UX04-WH.jpg",
+        "Sand": "UX04-SN.jpg",
+        "Sky": "UX04-SK.jpg",
+        "Pink": "UX04-PI.jpg",
+        "Brown": "UX04-BR.jpg"
     }
+    },
+"TC013_3designs": {
+  "variant_folder": "TC013_3designs",
+  "main_image_map": {
+    "Black": "BK_D1.jpg",
+    "Navy": "NV_D1.jpg"
+  },
+  "design_color_image_map": {
+    "Black": {
+      "Design 1": "BK_D1.jpg",
+      "Design 2": "BK_D2.jpg",
+      "Design 3": "BK_D3.jpg"
+    },
+    "Navy": {
+      "Design 1": "NV_D1.jpg",
+      "Design 2": "NV_D2.jpg",
+      "Design 3": "NV_D3.jpg"
+    }
+  }
+}
+
   }
 }
