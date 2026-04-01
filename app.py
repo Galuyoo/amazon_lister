@@ -9,6 +9,7 @@ from utils.image_resolver import resolve_one
 import streamlit as st
 from openpyxl import load_workbook
 from itertools import product
+from services.quality_checks import validate_listing_quality
 
 from utils.dropbox_client import (
     get_or_create_shared_link,
@@ -18,7 +19,6 @@ from utils.dropbox_client import (
     create_folder_if_missing,
     move_dropbox_folder,
     path_exists,
-    file_exists,
     upload_text_file,
     download_text_file,
 )
@@ -404,7 +404,7 @@ def finalize_staged_dropbox_folder(
 
     raise ValueError("Could not generate a unique finished folder SKU after multiple attempts.")
 
-def split_finished_folder_images(folder_path: str) -> tuple[str, list[str]]:
+def split_folder_images(folder_path: str) -> tuple[str, list[str]]:
     files = [p for p in list_folder_files(folder_path) if is_image_file(p)]
     files = sorted(files, key=lambda p: Path(p).name.lower())
 
@@ -591,20 +591,20 @@ def resolve_child_variant_image_url(
 
     return ""
 
-def resolve_workbook_image_urls(
+def resolve_folder_image_urls(
     selected_colors: list[str],
     dropbox_overview: dict[str, Any],
-    finished_folder_path: str,
+    folder_path: str,
 ) -> tuple[str, list[str], dict[str, str], dict[str, dict[str, str]]]:
-    finished_main_path, finished_other_paths = split_finished_folder_images(finished_folder_path)
+    main_path, other_paths = split_folder_images(folder_path)
     shared_resource_images = dropbox_overview.get("shared_resource_images", [])
     color_paths = dropbox_overview.get("color_paths", {})
     design_color_paths = dropbox_overview.get("design_color_paths", {})
 
-    parent_main_image_url = dropbox_preview_url(finished_main_path) if finished_main_path else ""
+    parent_main_image_url = dropbox_preview_url(main_path) if main_path else ""
 
     other_images: list[str] = []
-    for path in finished_other_paths + shared_resource_images:
+    for path in other_paths + shared_resource_images:
         url = dropbox_preview_url(path)
         if url:
             other_images.append(url)
@@ -1107,6 +1107,124 @@ def validate_parent_child_structure(payload: dict[str, Any]) -> list[str]:
 
     return errors
 
+def build_preflight_report(
+    profile: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+    dropbox_overview: dict[str, Any],
+    staged_folder_name: str,
+    title: str,
+    bullets: list[str],
+    product_description: str,
+    generic_keywords: str,
+    selected_variants: dict[str, list[str]],
+    size_price_map: dict[str, float],
+    quantity: int,
+) -> dict[str, Any]:
+    preview_parent_sku = str(get_default(profile, "parent_sku", "")).strip()
+    preview_selected_colors = selected_variants.get("color", [])
+    preview_selected_sizes = selected_variants.get("size", [])
+
+    preview_payload = {
+        "parent_sku": preview_parent_sku,
+        "title": title.strip(),
+        "brand_name": GLOBAL_BRAND_NAME,
+        "manufacturer": profile.get("manufacturer", ""),
+        "recommended_browse_nodes": profile.get("recommended_browse_nodes", ""),
+        "size_price_map": size_price_map,
+        "quantity": quantity,
+        "department_name": profile.get("department_name", ""),
+        "target_gender": profile.get("target_gender", ""),
+        "age_range_description": profile.get("age_range_description", ""),
+        "feed_product_type": profile.get("feed_product_type", ""),
+        "variation_theme": profile.get("variation_theme", "SizeColor"),
+        "product_category": profile.get("product_category", "apparel"),
+        "condition_type": profile.get("condition_type", "New"),
+        "item_type_name": profile.get("item_type_name", ""),
+        "material_type": profile.get("material_type", ""),
+        "style_name": profile.get("style_name", ""),
+        "care_instructions": profile.get("care_instructions", ""),
+        "theme": profile.get("theme", ""),
+        "extra_fields": get_extra_fields(profile),
+        "parent_main_image_url": "",
+        "product_description": product_description.strip(),
+        "generic_keywords": generic_keywords.strip(),
+        "bullet_points": [bullet.strip() for bullet in bullets],
+        "selected_variants": selected_variants,
+        "colors": preview_selected_colors,
+        "sizes": preview_selected_sizes,
+        "other_images": [],
+        "color_image_map": {},
+        "design_color_image_url_map": {},
+    }
+
+    if staged_folder_name and preview_selected_colors:
+        try:
+            stage_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+            (
+                preview_payload["parent_main_image_url"],
+                preview_payload["other_images"],
+                preview_payload["color_image_map"],
+                preview_payload["design_color_image_url_map"],
+            ) = resolve_folder_image_urls(
+                preview_selected_colors,
+                dropbox_overview,
+                stage_folder_path,
+            )
+        except Exception:
+            pass
+
+    preview_payload_errors = validate_payload(preview_payload)
+    preview_variant_errors = validate_variants(
+        selected_variants,
+        size_price_map,
+        quantity,
+    )
+    preview_structure_errors = validate_parent_child_structure(preview_payload)
+
+    all_preview_errors = [
+        *preview_payload_errors,
+        *preview_variant_errors,
+        *preview_structure_errors,
+    ]
+
+    quality_report = validate_listing_quality(profile, preview_payload)
+
+    return {
+        "preview_payload": preview_payload,
+        "all_preview_errors": all_preview_errors,
+        "quality_report": quality_report,
+    }    
+
+def render_listing_score_result(
+    quality_report: dict[str, Any],
+    all_preview_errors: list[str],
+) -> None:
+    st.subheader("Listing score result")
+    st.metric("Internal quality score", f"{quality_report['score']}/100")
+
+    with st.expander("Quality details", expanded=True):
+        st.write("Breakdown:")
+        st.json(quality_report["breakdown"])
+
+        if all_preview_errors:
+            st.error("Validation errors:")
+            for item in all_preview_errors:
+                st.write(f"- {item}")
+
+        if quality_report["blockers"]:
+            st.error("Quality blockers:")
+            for item in quality_report["blockers"]:
+                st.write(f"- {item}")
+        else:
+            st.success("No quality blockers found.")
+
+        if quality_report["warnings"]:
+            st.warning("Warnings:")
+            for item in quality_report["warnings"]:
+                st.write(f"- {item}")
+        else:
+            st.info("No warnings.")    
+
 def main() -> None:
     st.set_page_config(page_title="Amazon Listing Generator", layout="wide")
     st.title("Amazon Listing Generator")
@@ -1412,10 +1530,43 @@ def main() -> None:
                     image_width=150,
                 )    
 
-    submitted = st.button("Generate workbook")
+    st.caption("Check listing score to review quality before generating the workbook.")
+    btn_col1, btn_col2 = st.columns(2)
 
-    if not submitted:
+    with btn_col1:
+        score_clicked = st.button("Check listing score", use_container_width=True)
+
+    with btn_col2:
+        submitted = st.button("Generate workbook", use_container_width=True)
+
+    if not score_clicked and not submitted:
         return
+
+    preflight = build_preflight_report(
+        profile=profile,
+        dropbox_cfg=dropbox_cfg,
+        dropbox_overview=dropbox_overview,
+        staged_folder_name=staged_folder_name or "",
+        title=title,
+        bullets=bullets,
+        product_description=product_description,
+        generic_keywords=generic_keywords,
+        selected_variants=selected_variants,
+        size_price_map=size_price_map,
+        quantity=quantity,
+    )
+
+    preview_payload = preflight["preview_payload"]
+    all_preview_errors = preflight["all_preview_errors"]
+    quality_report = preflight["quality_report"]
+
+    render_listing_score_result(
+        quality_report=quality_report,
+        all_preview_errors=all_preview_errors,
+    )
+
+    if score_clicked and not submitted:
+        st.stop()
 
     product_description = st.session_state.get("product_description", "").strip()
     generic_keywords = st.session_state.get("generic_keywords", "").strip()
@@ -1436,7 +1587,6 @@ def main() -> None:
         st.error("All five bullet points are required.")
         st.stop()
 
-    variation_theme = profile.get("variation_theme", "SizeColor")
 
     selected_sizes = selected_variants.get("size", [])
 
@@ -1463,63 +1613,14 @@ def main() -> None:
     selected_colors = selected_variants.get("color", [])
     selected_sizes = selected_variants.get("size", [])
 
-    # Build a pre-validation payload first, before moving anything
-    preview_parent_sku = parent_sku_from_config
 
-    payload = {
-        "parent_sku": preview_parent_sku,
-        "title": title.strip(),
-        "brand_name": GLOBAL_BRAND_NAME,
-        "manufacturer": profile.get("manufacturer", ""),
-        "recommended_browse_nodes": profile.get("recommended_browse_nodes", ""),
-        "size_price_map": size_price_map,
-        "quantity": quantity,
-        "department_name": profile.get("department_name", ""),
-        "target_gender": profile.get("target_gender", ""),
-        "age_range_description": profile.get("age_range_description", ""),
-        "feed_product_type": profile.get("feed_product_type", ""),
-        "variation_theme": profile.get("variation_theme", "SizeColor"),
-        "product_category": profile.get("product_category", "apparel"),
-        "condition_type": profile.get("condition_type", "New"),
-        "item_type_name": profile.get("item_type_name", ""),
-        "material_type": profile.get("material_type", ""),
-        "style_name": profile.get("style_name", ""),
-        "care_instructions": profile.get("care_instructions", ""),
-        "theme": profile.get("theme", ""),
-        "extra_fields": get_extra_fields(profile),
-        "parent_main_image_url": "",
-        "product_description": product_description.strip(),
-        "generic_keywords": generic_keywords.strip(),
-        "bullet_points": [bullet.strip() for bullet in bullets],
-        "selected_variants": selected_variants,
-        "colors": selected_colors,
-        "sizes": selected_sizes,
-        "other_images": [],
-        "color_image_map": {},
-        "design_color_image_url_map": {},
-            }
-
-    payload_errors = validate_payload(payload)
-    if payload_errors:
-        for err in payload_errors:
-            st.error(err)
+    if all_preview_errors:
+        st.error("Fix the validation errors before generating.")
         st.stop()
 
-    variant_errors = validate_variants(
-        selected_variants,
-        size_price_map,
-        quantity,
-    )
-    if variant_errors:
-        for err in variant_errors:
-            st.error(err)
+    if quality_report["blockers"]:
+        st.error("Fix the listing quality blockers before generating.")
         st.stop()
-
-    structure_errors = validate_parent_child_structure(payload)
-    if structure_errors:
-        for err in structure_errors:
-            st.error(err)
-        st.stop()         
 
     try:
         progress_text = st.empty()
@@ -1548,18 +1649,23 @@ def main() -> None:
         progress_text.write("Fetching Dropbox image links...")
         progress_bar.progress(35)
 
-        parent_main_image_url, other_images, color_image_map, design_color_image_url_map = resolve_workbook_image_urls(
+        parent_main_image_url, other_images, color_image_map, design_color_image_url_map = resolve_folder_image_urls(
             selected_colors,
             dropbox_overview,
             finished_folder_path,
         )
         t2 = time.perf_counter()
 
+        payload = dict(preview_payload)
         payload["parent_sku"] = final_sku
         payload["parent_main_image_url"] = parent_main_image_url
         payload["other_images"] = other_images
         payload["color_image_map"] = color_image_map
         payload["design_color_image_url_map"] = design_color_image_url_map
+        payload["product_description"] = st.session_state.get("product_description", "").strip()
+        payload["generic_keywords"] = st.session_state.get("generic_keywords", "").strip()
+        payload["bullet_points"] = [bullet.strip() for bullet in bullets]
+        payload["title"] = title.strip()
 
         progress_text.write("Building workbook...")
         progress_bar.progress(75)
