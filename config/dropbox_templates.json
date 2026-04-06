@@ -90,6 +90,48 @@
       "Design 3": "NV_D3.jpg"
     }
   }
+},
+"UC101": {
+  "variant_folder": "UC101",
+  "main_image_map": {
+    "Bottle Green": "UC101BG.jpg",
+    "Black": "UC101BK.jpg",
+    "Charcoal": "UC101CH.jpg",
+    "French Navy": "UC101FN.jpg",
+    "Heather Grey": "UC101HG.jpg",
+    "Hot Pink": "UC101HP.jpg",
+    "Kelly Green": "UC101KG.jpg",
+    "Maroon": "UC101MR.jpg",
+    "Navy": "UC101NY.jpg",
+    "Orange": "UC101OR.jpg",
+    "Purple": "UC101PR.jpg",
+    "Red": "UC101RD.jpg",
+    "Royal": "UC101RY.jpg",
+    "Sky": "UC101SK.jpg",
+    "Sapphire Blue": "UC101SP.jpg",
+    "White": "UC101WH.jpg",
+    "Yellow": "UC101YW.jpg"
+  }
+},
+"UC604": {
+  "variant_folder": "UC604",
+  "main_image_map": {
+    "Bottle Green": "UC604BG.jpg",
+    "Black": "UC604BK.jpg",
+    "Charcoal": "UC604CH.jpg",
+    "Maroon": "UC604MR.jpg",
+    "Navy": "UC604NY.jpg",
+    "Red": "UC604RD.jpg",
+    "Royal": "UC604RY.jpg"
+  }
+},
+"UC620": {
+  "variant_folder": "UC620",
+  "main_image_map": {
+    "Black/Grey": "UC620BG.jpg",
+    "Deep Grey/Black": "UC620DG.jpg",
+    "Navy": "UC620NY.jpg"
+  }
 }
 
   }

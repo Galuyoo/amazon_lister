@@ -1,0 +1,111 @@
+{
+  "label": "UC101 Classic Poloshirt",
+  "template_key": "UC101",
+  "template_file": "UC101/SHIRT.xlsm",
+  "parent_sku": "UC101",
+  "feed_product_type": "shirt",
+  "recommended_browse_nodes": "1730998031",
+  "product_category": "apparel",
+  "brand_name": "Generic",
+  "manufacturer": "Generic",
+  "department_name": "unisex-adult",
+  "target_gender": "unisex",
+  "age_range_description": "Adult",
+  "material_type": "50% Polyester, 50% Cotton",
+  "style_name": "Classic Poloshirt",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "polo-shirt",
+  "care_instructions": "Machine Wash; Washable at 60 Degrees",
+  "theme": "Custom Embroidered Workwear",
+  "colors": [
+    "Bottle Green",
+    "Black",
+    "Charcoal",
+    "French Navy",
+    "Heather Grey",
+    "Hot Pink",
+    "Kelly Green",
+    "Maroon",
+    "Navy",
+    "Orange",
+    "Purple",
+    "Red",
+    "Royal",
+    "Sky",
+    "Sapphire Blue",
+    "White",
+    "Yellow"
+  ],
+  "sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL",
+    "3XL",
+    "4XL"
+  ],
+  "size_code_map": {
+    "XS": "XS",
+    "S": "SM",
+    "M": "MD",
+    "L": "LG",
+    "XL": "XL",
+    "2XL": "2X",
+    "3XL": "3X",
+    "4XL": "4X"
+  },
+  "color_sku_map": {
+    "Bottle Green": "101BG",
+    "Black": "101BK",
+    "Charcoal": "101CH",
+    "French Navy": "101FN",
+    "Heather Grey": "101HG",
+    "Hot Pink": "101HP",
+    "Kelly Green": "101KG",
+    "Maroon": "101MR",
+    "Navy": "101NY",
+    "Orange": "101OR",
+    "Purple": "101PR",
+    "Red": "101RD",
+    "Royal": "101RY",
+    "Sky": "101SK",
+    "Sapphire Blue": "101SP",
+    "White": "101WH",
+    "Yellow": "101YW"
+  },
+  "field_aliases": {
+    "apparel_size_system": [
+      "shirt_size_system",
+      "tops_size_system",
+      "outerwear_size_system"
+    ],
+    "apparel_size_class": [
+      "shirt_size_class",
+      "tops_size_class",
+      "outerwear_size_class"
+    ],
+    "apparel_size": [
+      "shirt_size",
+      "tops_size_value",
+      "outerwear_size_value"
+    ],
+    "apparel_body_type": [
+      "shirt_body_type",
+      "tops_body_type",
+      "outerwear_body_type"
+    ],
+    "apparel_height_type": [
+      "shirt_height_type",
+      "tops_height_type",
+      "outerwear_height_type"
+    ],
+    "outer_material_type": [
+      "material_type",
+      "material_type1",
+      "fabric_type"
+    ]
+  }
+}

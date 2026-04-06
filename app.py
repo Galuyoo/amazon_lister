@@ -300,30 +300,13 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
         "template_label": profile.get("label", profile.get("_slug", "")),
         "template_slug": profile.get("_slug", ""),
         "template_key": profile.get("template_key", ""),
-        "parent_sku": payload.get("parent_sku", ""),
         "title": payload.get("title", ""),
-        "brand_name": payload.get("brand_name", ""),
-        "manufacturer": payload.get("manufacturer", ""),
-        "recommended_browse_nodes": payload.get("recommended_browse_nodes", ""),
         "product_description": payload.get("product_description", ""),
         "generic_keywords": payload.get("generic_keywords", ""),
         "bullet_points": payload.get("bullet_points", []),
         "selected_variants": payload.get("selected_variants", {}),
         "size_price_map": payload.get("size_price_map", {}),
         "quantity": payload.get("quantity", 0),
-        "department_name": payload.get("department_name", ""),
-        "target_gender": payload.get("target_gender", ""),
-        "age_range_description": payload.get("age_range_description", ""),
-        "feed_product_type": payload.get("feed_product_type", ""),
-        "variation_theme": payload.get("variation_theme", ""),
-        "product_category": payload.get("product_category", ""),
-        "condition_type": payload.get("condition_type", ""),
-        "item_type_name": payload.get("item_type_name", ""),
-        "material_type": payload.get("material_type", ""),
-        "style_name": payload.get("style_name", ""),
-        "care_instructions": payload.get("care_instructions", ""),
-        "theme": payload.get("theme", ""),
-        "extra_fields": payload.get("extra_fields", {}),
     }
 
 
@@ -823,7 +806,9 @@ def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> No
         "other_image_url_ps06": other_images[13],
     }
 
-    values.update(data.get("extra_fields", {}))
+    field_aliases = data.get("field_aliases", {})
+    extra_parent_fields = data.get("extra_parent_fields", {})
+    values = prepare_row_values(values, field_aliases, extra_parent_fields)
 
     if "dangerous_goods_regulation" in header_map:
         values["dangerous_goods_regulation"] = "Not Applicable"
@@ -939,9 +924,21 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
             "other_image_url_ps06": other_images[13],
         }
 
-        values.update(data.get("extra_fields", {}))
-
         values.update(variant_field_values)
+
+        field_aliases = data.get("field_aliases", {})
+        extra_child_fields = data.get("extra_child_fields", {})
+        values = prepare_row_values(values, field_aliases, extra_child_fields)
+
+        if st.session_state.get("show_header_debug", False) and row_idx == FIRST_CHILD_ROW:
+            st.write("First child size values snapshot")
+            st.json({
+                "apparel_size_system": values.get("apparel_size_system"),
+                "apparel_size_class": values.get("apparel_size_class"),
+                "apparel_body_type": values.get("apparel_body_type"),
+                "apparel_height_type": values.get("apparel_height_type"),
+                "field_aliases": field_aliases,
+            })        
 
         if "dangerous_goods_regulation" in header_map:
             values["dangerous_goods_regulation"] = "Not Applicable"
@@ -965,8 +962,14 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
 
     return variants_written
 
-def get_extra_fields(profile: dict[str, Any]) -> dict[str, Any]:
-    return profile.get("extra_fields", {})
+def get_extra_parent_fields(profile: dict[str, Any]) -> dict[str, Any]:
+    return profile.get("extra_parent_fields", profile.get("extra_fields", {}))
+
+def get_extra_child_fields(profile: dict[str, Any]) -> dict[str, Any]:
+    return profile.get("extra_child_fields", profile.get("extra_fields", {}))
+
+def get_field_aliases(profile: dict[str, Any]) -> dict[str, list[str]]:
+    return profile.get("field_aliases", {})
 
 def debug_find_headers(header_map: dict[str, int], patterns: list[str]) -> None:
     st.write("Header matches:")
@@ -974,7 +977,24 @@ def debug_find_headers(header_map: dict[str, int], patterns: list[str]) -> None:
         matches = [key for key in header_map.keys() if pattern.lower() in key.lower()]
         st.write(f"{pattern}: {matches}")
 
+def expand_field_aliases(values: dict[str, Any], field_aliases: dict[str, list[str]]) -> dict[str, Any]:
+    expanded = dict(values)
 
+    for source_field, aliases in field_aliases.items():
+        if source_field in expanded:
+            for alias in aliases:
+                expanded[alias] = expanded[source_field]
+
+    return expanded
+
+def prepare_row_values(
+    values: dict[str, Any],
+    field_aliases: dict[str, list[str]],
+    extra_fields: dict[str, Any],
+) -> dict[str, Any]:
+    values = expand_field_aliases(values, field_aliases)
+    values.update(extra_fields)
+    return values
 
 def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Path, dict[str, float]]:
     template_file = profile.get("template_file", "")
@@ -989,6 +1009,8 @@ def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Pa
 
     ws = wb[SHEET_NAME]
     header_map = build_header_map(ws, HEADER_ROW)
+
+    debug_size_headers(header_map)
 
     if st.session_state.get("show_header_debug", False):
         debug_find_headers(
@@ -1144,7 +1166,9 @@ def build_preflight_report(
         "style_name": profile.get("style_name", ""),
         "care_instructions": profile.get("care_instructions", ""),
         "theme": profile.get("theme", ""),
-        "extra_fields": get_extra_fields(profile),
+        "field_aliases": get_field_aliases(profile),
+        "extra_parent_fields": get_extra_parent_fields(profile),
+        "extra_child_fields": get_extra_child_fields(profile),
         "parent_main_image_url": "",
         "product_description": product_description.strip(),
         "generic_keywords": generic_keywords.strip(),
@@ -1224,6 +1248,24 @@ def render_listing_score_result(
                 st.write(f"- {item}")
         else:
             st.info("No warnings.")    
+
+def debug_size_headers(header_map: dict[str, int]) -> None:
+    if not st.session_state.get("show_header_debug", False):
+        return
+
+    patterns = [
+        "size_system",
+        "size_class",
+        "size_value",
+        "apparel_size",
+        "body_type",
+        "height_type",
+    ]
+
+    st.write("Detailed size/header matches")
+    for pattern in patterns:
+        matches = [key for key in header_map.keys() if pattern.lower() in key.lower()]
+        st.write({pattern: matches})
 
 def main() -> None:
     st.set_page_config(page_title="Amazon Listing Generator", layout="wide")
@@ -1656,16 +1698,41 @@ def main() -> None:
         )
         t2 = time.perf_counter()
 
-        payload = dict(preview_payload)
-        payload["parent_sku"] = final_sku
-        payload["parent_main_image_url"] = parent_main_image_url
-        payload["other_images"] = other_images
-        payload["color_image_map"] = color_image_map
-        payload["design_color_image_url_map"] = design_color_image_url_map
-        payload["product_description"] = st.session_state.get("product_description", "").strip()
-        payload["generic_keywords"] = st.session_state.get("generic_keywords", "").strip()
-        payload["bullet_points"] = [bullet.strip() for bullet in bullets]
-        payload["title"] = title.strip()
+        payload = {
+            "parent_sku": final_sku,
+            "title": title.strip(),
+            "brand_name": GLOBAL_BRAND_NAME,
+            "manufacturer": profile.get("manufacturer", ""),
+            "recommended_browse_nodes": profile.get("recommended_browse_nodes", ""),
+            "size_price_map": size_price_map,
+            "quantity": quantity,
+            "department_name": profile.get("department_name", ""),
+            "target_gender": profile.get("target_gender", ""),
+            "age_range_description": profile.get("age_range_description", ""),
+            "feed_product_type": profile.get("feed_product_type", ""),
+            "variation_theme": profile.get("variation_theme", "SizeColor"),
+            "product_category": profile.get("product_category", "apparel"),
+            "condition_type": profile.get("condition_type", "New"),
+            "item_type_name": profile.get("item_type_name", ""),
+            "material_type": profile.get("material_type", ""),
+            "style_name": profile.get("style_name", ""),
+            "care_instructions": profile.get("care_instructions", ""),
+            "theme": profile.get("theme", ""),
+            "field_aliases": get_field_aliases(profile),
+            "extra_parent_fields": get_extra_parent_fields(profile),
+            "extra_child_fields": get_extra_child_fields(profile),
+            "parent_main_image_url": parent_main_image_url,
+            "product_description": st.session_state.get("product_description", "").strip(),
+            "generic_keywords": st.session_state.get("generic_keywords", "").strip(),
+            "bullet_points": [bullet.strip() for bullet in bullets],
+            "selected_variants": selected_variants,
+            "colors": selected_variants.get("color", []),
+            "sizes": selected_variants.get("size", []),
+            "other_images": other_images,
+            "color_image_map": color_image_map,
+            "design_color_image_url_map": design_color_image_url_map,
+        }
+
 
         progress_text.write("Building workbook...")
         progress_bar.progress(75)

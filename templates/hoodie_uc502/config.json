@@ -87,5 +87,27 @@
     "Olive": "502OL",
     "Violet": "502VI",
     "Maroon": "502MA"
+  },
+    "field_aliases": {
+    "apparel_size_system": [
+      "shirt_size_system",
+      "tops_size_system",
+      "outerwear_size_system"
+    ],
+    "apparel_size_class": [
+      "shirt_size_class",
+      "tops_size_class",
+      "outerwear_size_class"
+    ],
+    "apparel_size": [
+      "shirt_size_value",
+      "tops_size_value",
+      "outerwear_size_value"
+    ],
+    "outer_material_type": [
+      "material_type",
+      "material_type1",
+      "fabric_type"
+    ]
   }
 }

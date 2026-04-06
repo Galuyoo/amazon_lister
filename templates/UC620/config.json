@@ -1,0 +1,83 @@
+{
+  "label": "UC620 Premium Outdoor Jacket",
+  "template_key": "UC620",
+  "template_file": "UC620/COAT.xlsm",
+  "parent_sku": "UC620",
+  "feed_product_type": "coat",
+  "recommended_browse_nodes": "1731289031",
+  "product_category": "apparel",
+  "brand_name": "Generic",
+  "manufacturer": "Generic",
+  "department_name": "unisex-adult",
+  "target_gender": "unisex",
+  "age_range_description": "Adult",
+  "material_type": "100% Polyester Waterproof Coated Fabric; 220 gsm 100% Polyester Super Soft Micro Fleece Lining",
+  "style_name": "Premium Outdoor Jacket",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "outdoor-jacket",
+  "care_instructions": "Machine Wash at 40 Degrees",
+  "theme": "Custom Embroidered Workwear",
+  "colors": [
+    "Black/Grey",
+    "Deep Grey/Black",
+    "Navy"
+  ],
+  "sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL",
+    "3XL",
+    "4XL"
+  ],
+  "size_code_map": {
+    "XS": "XS",
+    "S": "SM",
+    "M": "MD",
+    "L": "LG",
+    "XL": "XL",
+    "2XL": "2X",
+    "3XL": "3X",
+    "4XL": "4X"
+  },
+  "color_sku_map": {
+    "Black/Grey": "620BG",
+    "Deep Grey/Black": "620DG",
+    "Navy": "620NY"
+  },
+  "field_aliases": {
+    "apparel_size_system": [
+      "shirt_size_system",
+      "tops_size_system",
+      "outerwear_size_system"
+    ],
+    "apparel_size_class": [
+      "shirt_size_class",
+      "tops_size_class",
+      "outerwear_size_class"
+    ],
+    "apparel_size": [
+      "shirt_size",
+      "tops_size_value",
+      "outerwear_size_value"
+    ],
+    "apparel_body_type": [
+      "shirt_body_type",
+      "tops_body_type",
+      "outerwear_body_type"
+    ],
+    "apparel_height_type": [
+      "shirt_height_type",
+      "tops_height_type",
+      "outerwear_height_type"
+    ],
+    "outer_material_type": [
+      "material_type",
+      "material_type1",
+      "fabric_type"
+    ]
+  }
+}
