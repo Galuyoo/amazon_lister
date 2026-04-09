@@ -996,9 +996,72 @@ def prepare_row_values(
     values.update(extra_fields)
     return values
 
+
+def validate_template_file(profile: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+
+    template_file = profile.get("template_file", "")
+    profile_folder = profile.get("_folder")
+    if profile_folder:
+        template_path = (Path(profile_folder) / template_file).resolve()
+    else:
+        template_path = (BASE_DIR / "templates" / template_file).resolve()
+
+    if not template_file:
+        return ["Template file is missing in config."]
+
+    if not template_path.exists():
+        return [f"Template file not found: {template_path}"]
+
+    try:
+        wb = load_workbook(template_path, keep_vba=True, read_only=True)
+    except Exception as exc:
+        return [f"Template workbook could not be opened: {exc}"]
+
+    if SHEET_NAME not in wb.sheetnames:
+        return [f"Sheet '{SHEET_NAME}' not found in template workbook."]
+
+    ws = wb[SHEET_NAME]
+    header_map = build_header_map(ws, HEADER_ROW)
+
+    required_headers = [
+        "item_sku",
+        "item_name",
+        "brand_name",
+        "manufacturer",
+        "product_description",
+        "bullet_point1",
+        "bullet_point2",
+        "bullet_point3",
+        "bullet_point4",
+        "bullet_point5",
+        "generic_keywords",
+        "recommended_browse_nodes",
+        "parent_child",
+        "relationship_type",
+        "variation_theme",
+        "condition_type",
+        "main_image_url",
+    ]
+
+    missing_headers = [header for header in required_headers if header not in header_map]
+    if missing_headers:
+        errors.append(
+            "Template is missing required headers: " + ", ".join(missing_headers)
+        )
+
+    return errors
+
+
+
 def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Path, dict[str, float]]:
     template_file = profile.get("template_file", "")
-    template_path = (BASE_DIR / "templates" / template_file).resolve()
+    profile_folder = profile.get("_folder")
+
+    if profile_folder:
+        template_path = (Path(profile_folder) / template_file).resolve()
+    else:
+        template_path = (BASE_DIR / "templates" / template_file).resolve()
 
     if not template_path.exists():
         raise FileNotFoundError(f"Template not found: {template_path}")
@@ -1051,6 +1114,8 @@ def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Pa
     }
 
     return output_path, timings
+
+
 def validate_payload(payload: dict[str, Any]) -> list[str]:
     errors: list[str] = []
 
@@ -1205,10 +1270,13 @@ def build_preflight_report(
     )
     preview_structure_errors = validate_parent_child_structure(preview_payload)
 
+    template_errors = validate_template_file(profile)
+
     all_preview_errors = [
         *preview_payload_errors,
         *preview_variant_errors,
         *preview_structure_errors,
+        *template_errors,
     ]
 
     quality_report = validate_listing_quality(profile, preview_payload)
@@ -1217,7 +1285,69 @@ def build_preflight_report(
         "preview_payload": preview_payload,
         "all_preview_errors": all_preview_errors,
         "quality_report": quality_report,
-    }    
+    }
+
+def render_preflight_dashboard(
+    quality_report: dict[str, Any],
+    all_preview_errors: list[str],
+) -> None:
+    blockers = quality_report.get("blockers", [])
+    warnings = quality_report.get("warnings", [])
+    breakdown = quality_report.get("breakdown", {})
+    search_terms_bytes = quality_report.get("search_terms_bytes", 0)
+
+    template_ok = not any("Template" in err or "Sheet" in err for err in all_preview_errors)
+    variants_ok = breakdown.get("variant_integrity", 0) > 0 and not any(
+        "price" in err.lower() or "variant" in err.lower() or "parent_sku" in err.lower()
+        for err in all_preview_errors + blockers
+    )
+    images_ok = breakdown.get("image_integrity", 0) > 0 and not any(
+        "image" in err.lower() for err in blockers
+    )
+
+    copy_status = "Pass"
+    if blockers:
+        copy_status = "Fail"
+    elif warnings:
+        copy_status = "Warn"
+
+    template_status = "Pass" if template_ok else "Fail"
+    variants_status = "Pass" if variants_ok else "Fail"
+
+    if any("image" in item.lower() for item in blockers):
+        images_status = "Fail"
+    elif any("image" in item.lower() for item in warnings):
+        images_status = "Warn"
+    else:
+        images_status = "Pass"
+
+    ready_to_generate = not all_preview_errors and not blockers
+
+    st.subheader("Preflight dashboard")
+
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1.metric("Template", template_status)
+    col2.metric("Copy", copy_status)
+    col3.metric("Variants", variants_status)
+    col4.metric("Images", images_status)
+    col5.metric("Search terms", f"{search_terms_bytes}/249")
+    col6.metric("Ready", "Yes" if ready_to_generate else "No")
+
+    top_fixes: list[str] = []
+    top_fixes.extend(all_preview_errors[:3])
+    top_fixes.extend(blockers[:3])
+
+    for warning in warnings:
+        if len(top_fixes) >= 6:
+            break
+        top_fixes.append(warning)
+
+    if top_fixes:
+        st.markdown("**Top fixes**")
+        for item in top_fixes[:6]:
+            st.write(f"- {item}")
+    else:
+        st.success("Everything looks ready.")
 
 def render_listing_score_result(
     quality_report: dict[str, Any],
@@ -1229,6 +1359,17 @@ def render_listing_score_result(
     with st.expander("Quality details", expanded=True):
         st.write("Breakdown:")
         st.json(quality_report["breakdown"])
+
+        st.write("Copy metrics:")
+        st.write(f"- Title characters: {quality_report.get('title_chars', 0)}")
+        st.write(f"- Description characters: {quality_report.get('description_chars', 0)}")
+        st.write(f"- Search terms bytes: {quality_report.get('search_terms_bytes', 0)}/249")
+
+        bullet_char_counts = quality_report.get("bullet_char_counts", [])
+        if bullet_char_counts:
+            st.write("- Bullet character counts:")
+            for idx, count in enumerate(bullet_char_counts, start=1):
+                st.write(f"  - Bullet {idx}: {count}")
 
         if all_preview_errors:
             st.error("Validation errors:")
@@ -1247,7 +1388,8 @@ def render_listing_score_result(
             for item in quality_report["warnings"]:
                 st.write(f"- {item}")
         else:
-            st.info("No warnings.")    
+            st.info("No warnings.")
+
 
 def debug_size_headers(header_map: dict[str, int]) -> None:
     if not st.session_state.get("show_header_debug", False):
@@ -1399,6 +1541,14 @@ def main() -> None:
             key="title_input",
         )
 
+        title_chars = len(title.strip())
+        if title_chars < 150:
+            st.caption(f"Title: {title_chars} chars - target 150 chars")
+        elif title_chars >= 150:
+            st.caption(f"Title: {title_chars} chars - good")
+        else:
+            st.caption(f"Title: {title_chars} chars - check readability")
+
     with col2:
         st.text_input("Brand", value=GLOBAL_BRAND_NAME, disabled=True)
         st.text_input("Manufacturer", value=str(get_default(profile, "manufacturer", "Generic")), disabled=True)
@@ -1427,6 +1577,13 @@ def main() -> None:
         st.text_input("Bullet 5", value=saved_bullets[4], key="bullet_5"),
     ]
 
+    for idx, bullet in enumerate(bullets, start=1):
+        bullet_len = len(bullet.strip())
+        if bullet_len < 150:
+            st.caption(f"Bullet {idx}: {bullet_len} chars - target 150+")
+        else:
+            st.caption(f"Bullet {idx}: {bullet_len} chars - good")    
+
     st.subheader("Description and search terms")
 
     product_description = st.text_area(
@@ -1435,6 +1592,12 @@ def main() -> None:
         key="product_description",
         value=listing_memory.get("product_description", ""),
     )
+
+    description_chars = len(product_description.strip())
+    if description_chars < 1000:
+        st.caption(f"Description: {description_chars} chars - target 1000+")
+    else:
+        st.caption(f"Description: {description_chars} chars - good")    
 
     generic_keywords = st.text_area(
         "Search terms",
@@ -1473,25 +1636,33 @@ def main() -> None:
             dim_options = dim.get("options", [])
             default_options = saved_selected_variants.get(dim_name, dim_options)
 
+            valid_default_options = [option for option in default_options if option in dim_options]
+
             selected_variants[dim_name] = st.multiselect(
                 dim_label,
                 dim_options,
-                default=default_options,
+                default=valid_default_options if valid_default_options else dim_options,
                 key=f"variant_{dim_name}",
             )
     else:
         saved_selected_variants = listing_memory.get("selected_variants", {})
 
+        saved_colors = saved_selected_variants.get("color", colors_available)
+        saved_sizes = saved_selected_variants.get("size", sizes_available)
+
+        valid_saved_colors = [color for color in saved_colors if color in colors_available]
+        valid_saved_sizes = [size for size in saved_sizes if size in sizes_available]
+
         selected_colors = st.multiselect(
             "Colours",
             colors_available,
-            default=saved_selected_variants.get("color", colors_available),
+            default=valid_saved_colors if valid_saved_colors else colors_available,
             key="selected_colours",
         )
         selected_sizes = st.multiselect(
             "Sizes",
             sizes_available,
-            default=saved_selected_variants.get("size", sizes_available),
+            default=valid_saved_sizes if valid_saved_sizes else sizes_available,
             key="selected_sizes",
         )
         selected_variants = {
@@ -1601,6 +1772,11 @@ def main() -> None:
     preview_payload = preflight["preview_payload"]
     all_preview_errors = preflight["all_preview_errors"]
     quality_report = preflight["quality_report"]
+
+    render_preflight_dashboard(
+        quality_report=quality_report,
+        all_preview_errors=all_preview_errors,
+    )
 
     render_listing_score_result(
         quality_report=quality_report,

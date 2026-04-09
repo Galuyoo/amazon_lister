@@ -132,6 +132,54 @@
     "Deep Grey/Black": "UC620DG.jpg",
     "Navy": "UC620NY.jpg"
   }
+},
+"UC921": {
+  "variant_folder": "UC921",
+  "main_image_map": {
+    "Aqua": "UC921-AQ.jpg",
+    "Bottle Green": "UC921-BG.jpg",
+    "Black": "UC921-BK.jpg",
+    "Convoy Grey": "UC921-CG.jpg",
+    "Emerald": "UC921-EM.jpg",
+    "Hospital Blue": "UC921-HB.jpg",
+    "Maroon": "UC921-MR.jpg",
+    "Navy": "UC921-NV.jpg",
+    "Purple": "UC921-PR.jpg",
+    "Royal": "UC921-RY.jpg",
+    "Sky": "UC921-SK.jpg",
+    "White": "UC921-WH.jpg"
+  }
+},
+"UC106": {
+  "variant_folder": "UC106",
+  "main_image_map": {
+    "Bottle Green": "UC106BG.jpg",
+    "Black": "UC106BK.jpg",
+    "Charcoal": "UC106CH.jpg",
+    "Heather Grey": "UC106HG.jpg",
+    "Hot Pink": "UC106HP.jpg",
+    "Lilac": "UC106LI.jpg",
+    "Lime": "UC106LM.jpg",
+    "Maroon": "UC106MR.jpg",
+    "Navy": "UC106NY.jpg",
+    "Orange": "UC106OR.jpg",
+    "Pink": "UC106PI.jpg",
+    "Purple": "UC106PR.jpg",
+    "Red": "UC106RD.jpg",
+    "Royal": "UC106RY.jpg",
+    "Sky": "UC106SK.jpg",
+    "White": "UC106WH.jpg",
+    "Yellow": "UC106YW.jpg"
+  }
+},
+"UC608": {
+  "variant_folder": "UC608",
+  "main_image_map": {
+    "Black": "UC608BK.jpg",
+    "Royal": "UC608RY.jpg",
+    "Red": "UC608RD.jpg",
+    "Navy": "UC608NY.jpg"
+  }
 }
 
   }
