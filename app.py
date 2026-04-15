@@ -2,6 +2,7 @@ from __future__ import annotations
 from datetime import datetime
 import time
 import json
+import re
 import random
 import string
 
@@ -475,13 +476,14 @@ def build_design_color_preview_paths(
     profile: dict[str, Any],
     dropbox_cfg: dict[str, Any],
     selected_variants: dict[str, list[str]],
+    staged_folder_name: str,
 ) -> list[dict[str, str]]:
     template_key = profile.get("template_key", "")
     templates_map = dropbox_cfg.get("templates", {})
     template_block = templates_map.get(template_key, {})
 
-    resource_root = dropbox_cfg.get("resource_root", "").rstrip("/")
-    variant_folder = template_block.get("variant_folder", template_key)
+    stage_root = dropbox_cfg.get("stage_root", "").rstrip("/")
+    stage_folder_path = f"{stage_root}/{staged_folder_name}" if staged_folder_name else ""
     combo_map = template_block.get("design_color_image_map", {})
 
     selected_colors = selected_variants.get("color", [])
@@ -493,7 +495,7 @@ def build_design_color_preview_paths(
         design_map = combo_map.get(color, {})
         for design in selected_designs:
             filename = design_map.get(design, "")
-            path = f"{resource_root}/{variant_folder}/{filename}" if filename else ""
+            path = f"{stage_folder_path}/{filename}" if stage_folder_path and filename else ""
             rows.append({
                 "color": color,
                 "design": design,
@@ -504,36 +506,31 @@ def build_design_color_preview_paths(
 
 
 def render_design_color_grid(
-    rows: list[dict[str, str]],
+    entries: list[dict[str, Any]],
     cols_per_row: int = 5,
     image_width: int = 150,
 ) -> None:
     st.markdown("**Design/colour image mapping**")
 
-    if not rows:
+    if not entries:
         st.caption("No design/colour combinations configured.")
         return
 
     cols = st.columns(cols_per_row)
-    for idx, row in enumerate(rows):
+    for idx, entry in enumerate(entries):
         with cols[idx % cols_per_row]:
-            label = f"{row['color']} / {row['design']}"
+            label = entry.get("label", "")
             st.caption(label)
 
-            path = row.get("path", "")
+            path = entry.get("path", "")
             if not path:
                 st.warning("Missing")
                 continue
 
-            try:
-                result = resolve_one(path, label)
-                if result["exists"] and result["direct_url"]:
-                    st.image(result["direct_url"], width=image_width)
-                else:
-                    st.warning("Not found")
-                    st.code(path, language=None)
-            except Exception as exc:
-                st.error(str(exc))
+            if entry.get("exists") and entry.get("direct_url"):
+                st.image(entry["direct_url"], width=image_width)
+            else:
+                st.warning("Not found")
                 st.code(path, language=None)    
 
 def render_variant_combinations_preview(
@@ -595,23 +592,35 @@ def build_dropbox_overview(profile: dict[str, Any], dropbox_cfg: dict[str, Any])
         for name in dropbox_cfg.get("general_resource_images", [])
     ]
 
-    color_paths: dict[str, str] = {}
-    for color, filename in template_block.get("main_image_map", {}).items():
-        color_paths[color] = f"{resource_root}/{variant_folder}/{filename}"
+    garment_resource_root = f"{resource_root}/{variant_folder}" if resource_root and variant_folder else ""
+    garment_resource_images: list[str] = []
+    garment_resource_warning = ""
 
-    design_color_paths: dict[str, dict[str, str]] = {}
-    for color, design_map in template_block.get("design_color_image_map", {}).items():
-        design_color_paths[color] = {}
-        for design, filename in design_map.items():
-            design_color_paths[color][design] = f"{resource_root}/{variant_folder}/{filename}"
+    if garment_resource_root:
+        try:
+            garment_resource_images = [
+                p for p in list_folder_files(garment_resource_root)
+                if is_image_file(p)
+            ]
+            garment_resource_images = sorted(
+                garment_resource_images,
+                key=lambda p: Path(p).name.lower(),
+            )
+            if not garment_resource_images:
+                garment_resource_warning = (
+                    f"No garment support images found in {garment_resource_root}."
+                )
+        except Exception as exc:
+            garment_resource_warning = f"Garment support images unavailable: {exc}"
 
     return {
         "resource_root": resource_root,
         "template_key": template_key,
         "variant_folder": variant_folder,
+        "garment_resource_root": garment_resource_root,
+        "garment_resource_images": garment_resource_images,
+        "garment_resource_warning": garment_resource_warning,
         "shared_resource_images": shared_resource_images,
-        "color_paths": color_paths,
-        "design_color_paths": design_color_paths,
         "main_image_map": template_block.get("main_image_map", {}),
         "design_color_image_map": template_block.get("design_color_image_map", {}),
     }
@@ -640,51 +649,301 @@ def resolve_child_variant_image_url(
 
     return ""
 
+
+def build_parent_main_image_options(
+    profile: dict[str, Any],
+    selected_variants: dict[str, list[str]],
+    color_image_map: dict[str, str],
+    design_color_image_url_map: dict[str, dict[str, str]] | None = None,
+) -> list[tuple[str, str]]:
+    options: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    variant_combos = build_variant_combinations(profile, selected_variants)
+
+    for combo in variant_combos:
+        image_url = resolve_child_variant_image_url(
+            variant_values=combo,
+            color_image_map=color_image_map,
+            design_color_image_url_map=design_color_image_url_map,
+        )
+        if not image_url or image_url in seen_urls:
+            continue
+
+        label = " / ".join([v for v in combo.values() if v]) or "Unnamed variant"
+        options.append((label, image_url))
+        seen_urls.add(image_url)
+
+    return options
+
+
+def build_dropbox_overview_cache_key(
+    profile: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+) -> str:
+    template_key = profile.get("template_key", "")
+    cache_parts = {
+        "template_key": template_key,
+        "template_cfg": dropbox_cfg.get("templates", {}).get(template_key, {}),
+        "general_resource_images": dropbox_cfg.get("general_resource_images", []),
+        "resource_root": dropbox_cfg.get("resource_root", ""),
+    }
+    return json.dumps(cache_parts, sort_keys=True)
+
+
+def get_cached_dropbox_overview(
+    profile: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+) -> dict[str, Any]:
+    cache_key = build_dropbox_overview_cache_key(profile, dropbox_cfg)
+    cache = st.session_state.get("dropbox_overview_cache", {})
+
+    if cache.get("key") == cache_key:
+        return cache.get("data", {})
+
+    data = build_dropbox_overview(profile, dropbox_cfg)
+    st.session_state["dropbox_overview_cache"] = {
+        "key": cache_key,
+        "data": data,
+    }
+    return data
+
+
+def build_preview_image_cache_key(
+    profile: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+    selected_variants: dict[str, list[str]],
+) -> str:
+    template_key = profile.get("template_key", "")
+    cache_parts = {
+        "template_key": template_key,
+        "staged_folder_name": staged_folder_name,
+        "selected_colors": selected_variants.get("color", []),
+        "selected_designs": selected_variants.get("design", []),
+        "template_cfg": dropbox_cfg.get("templates", {}).get(template_key, {}),
+        "general_resource_images": dropbox_cfg.get("general_resource_images", []),
+    }
+    return json.dumps(cache_parts, sort_keys=True)
+
+
+def get_cached_preview_image_data(
+    profile: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+    selected_variants: dict[str, list[str]],
+    dropbox_overview: dict[str, Any],
+) -> dict[str, Any]:
+    cache_key = build_preview_image_cache_key(
+        profile,
+        dropbox_cfg,
+        staged_folder_name,
+        selected_variants,
+    )
+    cache = st.session_state.get("preview_image_cache", {})
+
+    if cache.get("key") == cache_key:
+        return cache.get("data", {})
+
+    staged_preview_paths = build_stage_preview_paths(dropbox_cfg, staged_folder_name) if staged_folder_name else []
+    design_color_preview_rows = build_design_color_preview_paths(
+        profile=profile,
+        dropbox_cfg=dropbox_cfg,
+        selected_variants=selected_variants,
+        staged_folder_name=staged_folder_name or "",
+    )
+
+    preview_color_image_map: dict[str, str] = {}
+    preview_design_color_image_url_map: dict[str, dict[str, str]] = {}
+    parent_main_image_options: list[tuple[str, str]] = []
+
+    def resolve_display_entries(items: list[tuple[str, str]]) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for label, path in items:
+            if not path:
+                entries.append({
+                    "label": label,
+                    "path": path,
+                    "exists": False,
+                    "direct_url": "",
+                })
+                continue
+
+            try:
+                result = resolve_one(path, label)
+                entries.append({
+                    "label": label,
+                    "path": path,
+                    "exists": result.get("exists", False),
+                    "direct_url": result.get("direct_url", ""),
+                })
+            except Exception:
+                entries.append({
+                    "label": label,
+                    "path": path,
+                    "exists": False,
+                    "direct_url": "",
+                })
+        return entries
+
+    if staged_folder_name:
+        try:
+            preview_stage_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+            _, _, preview_color_image_map, preview_design_color_image_url_map = resolve_folder_image_urls(
+                profile,
+                selected_variants,
+                selected_variants.get("color", []),
+                dropbox_overview,
+                preview_stage_folder_path,
+            )
+            parent_main_image_options = build_parent_main_image_options(
+                profile=profile,
+                selected_variants=selected_variants,
+                color_image_map=preview_color_image_map,
+                design_color_image_url_map=preview_design_color_image_url_map,
+            )
+        except Exception:
+            preview_color_image_map = {}
+            preview_design_color_image_url_map = {}
+            parent_main_image_options = []
+
+    staged_preview_entries = resolve_display_entries([
+        (Path(path).name, path) for path in staged_preview_paths
+    ])
+    garment_resource_entries = resolve_display_entries([
+        (Path(path).name, path) for path in dropbox_overview.get("garment_resource_images", [])
+    ])
+    global_resource_entries = resolve_display_entries([
+        (Path(path).name, path) for path in dropbox_overview.get("shared_resource_images", [])
+    ])
+
+    stage_folder_path_for_preview = (
+        build_stage_folder_path(dropbox_cfg, staged_folder_name)
+        if staged_folder_name else ""
+    )
+    staged_variant_entries = resolve_display_entries([
+        (
+            color,
+            f"{stage_folder_path_for_preview}/{dropbox_overview.get('main_image_map', {}).get(color, '')}"
+            if stage_folder_path_for_preview and dropbox_overview.get("main_image_map", {}).get(color, "")
+            else "",
+        )
+        for color in profile.get("colors", [])
+    ])
+    design_color_preview_entries = resolve_display_entries([
+        (f"{row['color']} / {row['design']}", row.get("path", ""))
+        for row in design_color_preview_rows
+    ])
+
+    data = {
+        "staged_preview_paths": staged_preview_paths,
+        "staged_preview_entries": staged_preview_entries,
+        "design_color_preview_rows": design_color_preview_rows,
+        "design_color_preview_entries": design_color_preview_entries,
+        "color_image_map": preview_color_image_map,
+        "design_color_image_url_map": preview_design_color_image_url_map,
+        "parent_main_image_options": parent_main_image_options,
+        "garment_resource_entries": garment_resource_entries,
+        "global_resource_entries": global_resource_entries,
+        "staged_variant_entries": staged_variant_entries,
+    }
+    st.session_state["preview_image_cache"] = {
+        "key": cache_key,
+        "data": data,
+    }
+    return data
+
 def resolve_folder_image_urls(
+    profile: dict[str, Any],
+    selected_variants: dict[str, list[str]],
     selected_colors: list[str],
     dropbox_overview: dict[str, Any],
     folder_path: str,
+    selected_parent_main_image_url: str = "",
 ) -> tuple[str, list[str], dict[str, str], dict[str, dict[str, str]]]:
-    main_path, other_paths = split_folder_images(folder_path)
+    main_image_map = dropbox_overview.get("main_image_map", {})
+    design_color_image_map = dropbox_overview.get("design_color_image_map", {})
+    garment_resource_images = dropbox_overview.get("garment_resource_images", [])
     shared_resource_images = dropbox_overview.get("shared_resource_images", [])
-    color_paths = dropbox_overview.get("color_paths", {})
-    design_color_paths = dropbox_overview.get("design_color_paths", {})
-
-    parent_main_image_url = dropbox_preview_url(main_path) if main_path else ""
-
-    shared_resource_urls: list[str] = []
-    for path in shared_resource_images:
-        url = dropbox_preview_url(path)
-        if url:
-            shared_resource_urls.append(url)
-
-    staged_other_urls: list[str] = []
-    for path in other_paths:
-        url = dropbox_preview_url(path)
-        if url:
-            staged_other_urls.append(url)
-
-    other_images = list(dict.fromkeys(shared_resource_urls + staged_other_urls))
+    variant_combos = build_variant_combinations(profile, selected_variants)
 
     color_image_map: dict[str, str] = {}
     for color in selected_colors:
-        path = color_paths.get(color, "")
-        if not path:
+        filename = main_image_map.get(color, "")
+        if not filename:
             continue
+        path = f"{folder_path}/{filename}"
+        if not path_exists(path):
+            raise ValueError(f"Missing staged mapped image for colour '{color}': {filename}")
         url = dropbox_preview_url(path)
         if url:
             color_image_map[color] = url
 
     design_color_image_url_map: dict[str, dict[str, str]] = {}
     for color in selected_colors:
-        design_map = design_color_paths.get(color, {})
+        design_map = design_color_image_map.get(color, {})
         design_color_image_url_map[color] = {}
-        for design, path in design_map.items():
-            if not path:
+        for design, filename in design_map.items():
+            if not filename:
+                continue
+            path = f"{folder_path}/{filename}"
+            if not path_exists(path):
                 continue
             url = dropbox_preview_url(path)
             if url:
                 design_color_image_url_map[color][design] = url
+
+    parent_main_image_url = ""
+    missing_variant_labels: list[str] = []
+
+    parent_main_options = build_parent_main_image_options(
+        profile=profile,
+        selected_variants=selected_variants,
+        color_image_map=color_image_map,
+        design_color_image_url_map=design_color_image_url_map,
+    )
+
+    for combo in variant_combos:
+        image_url = resolve_child_variant_image_url(
+            variant_values=combo,
+            color_image_map=color_image_map,
+            design_color_image_url_map=design_color_image_url_map,
+        )
+        if not image_url:
+            label = " / ".join([v for v in combo.values() if v]) or "Unnamed variant"
+            missing_variant_labels.append(label)
+
+    if missing_variant_labels:
+        raise ValueError(
+            "Missing staged mapped image for variant(s): " + ", ".join(missing_variant_labels)
+        )
+
+    if selected_parent_main_image_url:
+        parent_main_image_url = selected_parent_main_image_url
+    elif parent_main_options:
+        parent_main_image_url = parent_main_options[0][1]
+
+    if not parent_main_image_url:
+        raise ValueError("No staged mapped image exists for the selected variants.")
+
+    garment_resource_urls: list[str] = []
+    for path in garment_resource_images:
+        try:
+            url = dropbox_preview_url(path)
+        except Exception:
+            continue
+        if url:
+            garment_resource_urls.append(url)
+
+    shared_resource_urls: list[str] = []
+    for path in shared_resource_images:
+        try:
+            url = dropbox_preview_url(path)
+        except Exception:
+            continue
+        if url:
+            shared_resource_urls.append(url)
+
+    other_images = list(dict.fromkeys(garment_resource_urls + shared_resource_urls))
 
     return (
         parent_main_image_url,
@@ -695,60 +954,51 @@ def resolve_folder_image_urls(
 
 def render_path_grid(
     title: str,
-    paths: list[str],
+    entries: list[dict[str, Any]],
     cols_per_row: int = 5,
     image_width: int = 150,
 ) -> None:
     st.markdown(f"**{title}**")
-    if not paths:
+    if not entries:
         st.caption("No files configured.")
         return
 
     cols = st.columns(cols_per_row)
-    for idx, path in enumerate(paths):
+    for idx, entry in enumerate(entries):
         with cols[idx % cols_per_row]:
-            st.caption(Path(path).name)
-            try:
-                result = resolve_one(path, Path(path).name)
-                if result["exists"] and result["direct_url"]:
-                    st.image(result["direct_url"], width=image_width)
-                else:
-                    st.warning("Not found")
-                    st.code(path, language=None)
-            except Exception as exc:
-                st.error(str(exc))
+            path = entry.get("path", "")
+            st.caption(entry.get("label", Path(path).name if path else ""))
+            if entry.get("exists") and entry.get("direct_url"):
+                st.image(entry["direct_url"], width=image_width)
+            else:
+                st.warning("Not found")
                 st.code(path, language=None)
 
 
 def render_color_grid(
-    colors: list[str],
-    color_paths: dict[str, str],
+    entries: list[dict[str, Any]],
     cols_per_row: int = 5,
     image_width: int = 150,
 ) -> None:
     st.markdown("**Colour image mapping**")
-    if not colors:
+    if not entries:
         st.caption("No colours configured.")
         return
 
     cols = st.columns(cols_per_row)
-    for idx, color in enumerate(colors):
+    for idx, entry in enumerate(entries):
         with cols[idx % cols_per_row]:
-            st.caption(color)
-            path = color_paths.get(color, "")
+            label = entry.get("label", "")
+            path = entry.get("path", "")
+            st.caption(label)
             if not path:
                 st.warning("Missing")
                 continue
 
-            try:
-                result = resolve_one(path, color)
-                if result["exists"] and result["direct_url"]:
-                    st.image(result["direct_url"], width=image_width)
-                else:
-                    st.warning("Not found")
-                    st.code(path, language=None)
-            except Exception as exc:
-                st.error(str(exc))
+            if entry.get("exists") and entry.get("direct_url"):
+                st.image(entry["direct_url"], width=image_width)
+            else:
+                st.warning("Not found")
                 st.code(path, language=None)
 
 def trim_search_terms(value: str, max_bytes: int = 249) -> str:
@@ -1423,6 +1673,8 @@ def build_preflight_report(
                 preview_payload["color_image_map"],
                 preview_payload["design_color_image_url_map"],
             ) = resolve_folder_image_urls(
+                profile,
+                selected_variants,
                 preview_selected_colors,
                 dropbox_overview,
                 stage_folder_path,
@@ -1471,6 +1723,92 @@ def build_preflight_report(
     return {
         "preview_payload": preview_payload,
         "all_preview_errors": all_preview_errors,
+        "quality_report": quality_report,
+    }
+
+
+def prepare_generation_payload(
+    profile: dict[str, Any],
+    title: str,
+    bullets: list[str],
+    product_description: str,
+    generic_keywords: str,
+    selected_variants: dict[str, list[str]],
+    size_price_map: dict[str, float],
+    quantity: int,
+    staged_folder_name: str,
+) -> dict[str, Any]:
+    parent_sku = str(get_default(profile, "parent_sku", "")).strip()
+
+    payload = {
+        "parent_sku": parent_sku,
+        "title": title.strip(),
+        "brand_name": GLOBAL_BRAND_NAME,
+        "manufacturer": profile.get("manufacturer", ""),
+        "recommended_browse_nodes": profile.get("recommended_browse_nodes", ""),
+        "size_price_map": size_price_map,
+        "use_same_price_for_all_sizes": st.session_state.get("use_same_price_for_all_sizes", False),
+        "quantity": quantity,
+        "department_name": profile.get("department_name", ""),
+        "target_gender": profile.get("target_gender", ""),
+        "age_range_description": profile.get("age_range_description", ""),
+        "feed_product_type": profile.get("feed_product_type", ""),
+        "variation_theme": profile.get("variation_theme", "SizeColor"),
+        "product_category": profile.get("product_category", "apparel"),
+        "condition_type": profile.get("condition_type", "New"),
+        "item_type_name": profile.get("item_type_name", ""),
+        "country_of_origin": profile.get("country_of_origin", "United Kingdom"),
+        "material_type": profile.get("material_type", ""),
+        "style_name": profile.get("style_name", ""),
+        "care_instructions": profile.get("care_instructions", ""),
+        "theme": profile.get("theme", ""),
+        "field_aliases": get_field_aliases(profile),
+        "extra_parent_fields": get_extra_parent_fields(profile),
+        "extra_child_fields": get_extra_child_fields(profile),
+        "parent_main_image_url": "",
+        "product_description": product_description.strip(),
+        "generic_keywords": generic_keywords.strip(),
+        "bullet_points": [bullet.strip() for bullet in bullets],
+        "selected_variants": selected_variants,
+        "colors": selected_variants.get("color", []),
+        "sizes": selected_variants.get("size", []),
+        "other_images": [],
+        "color_image_map": {},
+        "design_color_image_url_map": {},
+        "dynamic_profile_fields": {},
+    }
+
+    errors: list[str] = []
+
+    description_chars = len(payload["product_description"])
+    if description_chars < 1000:
+        errors.append("Description must be at least 1000 characters.")
+    if description_chars > 2000:
+        errors.append("Description must be under 2000 characters.")
+
+    if not payload["title"]:
+        errors.append("Title is required.")
+
+    if any(not bullet for bullet in payload["bullet_points"]):
+        errors.append("All five bullet points are required.")
+
+    if not staged_folder_name:
+        errors.append("Select a staged Dropbox folder.")
+
+    if not parent_sku:
+        errors.append("This template is missing parent_sku in its config.")
+
+    errors.extend(validate_variant_dimensions(selected_variants))
+    errors.extend(validate_payload(payload))
+    errors.extend(validate_variants(selected_variants, size_price_map, quantity))
+    errors.extend(validate_parent_child_structure(payload))
+    errors.extend(validate_template_file(profile))
+
+    quality_report = validate_listing_quality(profile, payload)
+
+    return {
+        "payload": payload,
+        "errors": errors,
         "quality_report": quality_report,
     }
 
@@ -1598,6 +1936,50 @@ def render_listing_score_result(
             st.info("No warnings.")
 
 
+def find_template_matches_for_staged_folder(
+    staged_folder_name: str,
+    profiles: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    folder_name = (staged_folder_name or "").strip()
+    if not folder_name:
+        return []
+
+    folder_upper = folder_name.upper()
+
+    def bounded_match(code: str) -> bool:
+        code = (code or "").strip().upper()
+        if not code:
+            return False
+        pattern = rf"(?<![A-Z0-9]){re.escape(code)}(?![A-Z0-9])"
+        return bool(re.search(pattern, folder_upper))
+
+    matches: list[tuple[int, dict[str, Any]]] = []
+    seen_slugs: set[str] = set()
+
+    for profile in profiles:
+        template_key = str(profile.get("template_key", "")).strip()
+        parent_sku = str(profile.get("parent_sku", "")).strip()
+
+        score = 0
+        if bounded_match(template_key):
+            score = 2
+        elif bounded_match(parent_sku):
+            score = 1
+
+        if score <= 0:
+            continue
+
+        slug = profile.get("_slug", "")
+        if slug in seen_slugs:
+            continue
+
+        seen_slugs.add(slug)
+        matches.append((score, profile))
+
+    matches.sort(key=lambda item: (-item[0], item[1].get("_family_slug", ""), item[1].get("label", item[1].get("_slug", ""))))
+    return [profile for _, profile in matches]
+
+
 def debug_size_headers(header_map: dict[str, int]) -> None:
     if not st.session_state.get("show_header_debug", False):
         return
@@ -1643,6 +2025,48 @@ def main() -> None:
         st.stop()
 
     families = sorted({profile.get("_family_slug", "") for profile in profiles if profile.get("_family_slug")})
+    detection_message = ""
+    detection_level = ""
+
+    current_folder_source_mode = st.session_state.get("folder_source_mode", "Use staged folder")
+    current_detect_folder = st.session_state.get("staged_folder_select", "") if current_folder_source_mode == "Use staged folder" else ""
+
+    if current_detect_folder:
+        last_detect_folder = st.session_state.get("last_detected_template_folder", "")
+        if last_detect_folder != current_detect_folder:
+            matches = find_template_matches_for_staged_folder(current_detect_folder, profiles)
+            st.session_state["last_detected_template_folder"] = current_detect_folder
+
+            if len(matches) == 1:
+                matched = matches[0]
+                st.session_state["template_family_select"] = matched.get("_family_slug", "")
+                st.session_state["listing_template_select"] = matched.get("label", matched.get("_slug", ""))
+                st.session_state["template_detection_message"] = (
+                    f"Auto-detected template `{matched.get('label', matched.get('_slug', ''))}` from staged folder `{current_detect_folder}`."
+                )
+                st.session_state["template_detection_level"] = "info"
+            elif len(matches) > 1:
+                matched_families = {match.get("_family_slug", "") for match in matches}
+                if len(matched_families) == 1:
+                    matched_family = next(iter(matched_families))
+                    st.session_state["template_family_select"] = matched_family
+                    match_labels = ", ".join(match.get("label", match.get("_slug", "")) for match in matches)
+                    st.session_state["template_detection_message"] = (
+                        f"Detected family `{matched_family}` from staged folder `{current_detect_folder}`. "
+                        f"Please confirm which template to use: {match_labels}."
+                    )
+                    st.session_state["template_detection_level"] = "warning"
+                else:
+                    st.session_state["template_detection_message"] = (
+                        f"Found multiple possible template matches for `{current_detect_folder}`. Please choose manually."
+                    )
+                    st.session_state["template_detection_level"] = "warning"
+            else:
+                st.session_state.pop("template_detection_message", None)
+                st.session_state.pop("template_detection_level", None)
+
+    detection_message = st.session_state.get("template_detection_message", "")
+    detection_level = st.session_state.get("template_detection_level", "")
 
     selected_family = st.sidebar.selectbox(
         "Template family",
@@ -1665,6 +2089,12 @@ def main() -> None:
 
     profile = family_profiles[family_labels.index(selected_label)]
 
+    if detection_message:
+        if detection_level == "warning":
+            st.sidebar.warning(detection_message)
+        else:
+            st.sidebar.info(detection_message)
+
     st.sidebar.markdown("### Active template")
     st.sidebar.write(f"Family: `{profile.get('_family_slug', '')}`")
     st.sidebar.write(f"Template: `{profile['_slug']}`")
@@ -1672,10 +2102,13 @@ def main() -> None:
     st.sidebar.write(f"Variation theme: `{profile.get('variation_theme', '')}`")
     st.sidebar.checkbox("Show troubleshooting debug", key="show_header_debug", value=False)
     st.sidebar.checkbox("Copy row styles", key="copy_row_styles", value=True)
+    if st.sidebar.button("Reload images", use_container_width=True):
+        st.session_state.pop("dropbox_overview_cache", None)
+        st.session_state.pop("preview_image_cache", None)
 
     colors_available = profile.get("colors", [])
     sizes_available = profile.get("sizes", [])
-    dropbox_overview = build_dropbox_overview(profile, dropbox_cfg)
+    dropbox_overview = get_cached_dropbox_overview(profile, dropbox_cfg)
 
     with st.sidebar.expander("Dropbox debug"):
         try:
@@ -1931,11 +2364,19 @@ def main() -> None:
             "size": selected_sizes,
         }
         
-    design_color_preview_rows = build_design_color_preview_paths(
+    preview_image_data = get_cached_preview_image_data(
         profile=profile,
         dropbox_cfg=dropbox_cfg,
+        staged_folder_name=staged_folder_name or "",
         selected_variants=selected_variants,
+        dropbox_overview=dropbox_overview,
     )
+    staged_preview_entries = preview_image_data.get("staged_preview_entries", [])
+    design_color_preview_entries = preview_image_data.get("design_color_preview_entries", [])
+    parent_main_image_options = preview_image_data.get("parent_main_image_options", [])
+    garment_resource_entries = preview_image_data.get("garment_resource_entries", [])
+    global_resource_entries = preview_image_data.get("global_resource_entries", [])
+    staged_variant_entries = preview_image_data.get("staged_variant_entries", [])
 
     with st.expander("Selected combinations preview", expanded=False):
         render_variant_combinations_preview(
@@ -1965,41 +2406,61 @@ def main() -> None:
         else:
             st.write(f"Resource root: `{dropbox_overview['resource_root']}`")
             st.write(f"Variant folder: `{dropbox_overview['variant_folder']}`")
+            if dropbox_overview.get("garment_resource_warning"):
+                st.warning(dropbox_overview["garment_resource_warning"])
 
-            tab_names = ["Staged images", "Shared resources", "Colour variants", "Variant combinations"]
-            stage_tab, resources_tab, colours_tab, combos_tab = st.tabs(tab_names)
+            tab_names = ["Shared resources", "Staged variant images", "Variant combinations"]
+            resources_tab, colours_tab, combos_tab = st.tabs(tab_names)
 
-            with stage_tab:
+            with st.expander("Raw staged folder contents", expanded=False):
                 if not staged_folder_name:
                     st.caption("Select a staged Dropbox folder to preview its images.")
                 else:
                     st.write(f"Stage folder: `{staged_folder_name}`")
                     render_path_grid(
                         "Selected staged images",
-                        staged_preview_paths,
+                        staged_preview_entries,
                         cols_per_row=5,
                         image_width=150,
                     )
 
             with resources_tab:
                 render_path_grid(
-                    "Shared resource images",
-                    dropbox_overview["shared_resource_images"],
+                    "Garment support images",
+                    garment_resource_entries,
+                    cols_per_row=5,
+                    image_width=150,
+                )
+                render_path_grid(
+                    "Global resource images",
+                    global_resource_entries,
                     cols_per_row=5,
                     image_width=150,
                 )
 
             with colours_tab:
+                st.caption("These are the staged mapped variant images expected from the selected staged folder.")
+                parent_main_option_labels = ["Automatic (recommended)"] + [
+                    label for label, _ in parent_main_image_options
+                ]
+                current_parent_main_label = st.session_state.get("parent_main_image_choice", "Automatic (recommended)")
+                if current_parent_main_label not in parent_main_option_labels:
+                    current_parent_main_label = "Automatic (recommended)"
+                st.selectbox(
+                    "Parent main image",
+                    parent_main_option_labels,
+                    index=parent_main_option_labels.index(current_parent_main_label),
+                    key="parent_main_image_choice",
+                )
                 render_color_grid(
-                    colors_available,
-                    dropbox_overview.get("color_paths", {}),
+                    staged_variant_entries,
                     cols_per_row=5,
                     image_width=150,
                 )
 
             with combos_tab:
                 render_design_color_grid(
-                    design_color_preview_rows,
+                    design_color_preview_entries,
                     cols_per_row=5,
                     image_width=150,
                 )    
@@ -2047,59 +2508,27 @@ def main() -> None:
     if score_clicked and not submitted:
         st.stop()
 
-    description_chars = len(product_description.strip())
-    if description_chars < 1000:
-        st.error("Description must be at least 1000 characters.")
-        st.stop()
+    generation_prep = prepare_generation_payload(
+        profile=profile,
+        title=title,
+        bullets=bullets,
+        product_description=product_description,
+        generic_keywords=generic_keywords,
+        selected_variants=selected_variants,
+        size_price_map=size_price_map,
+        quantity=quantity,
+        staged_folder_name=staged_folder_name or "",
+    )
 
-    if description_chars > 2000:
-        st.error("Description must be under 2000 characters.")
-        st.stop()
+    generation_payload = generation_prep["payload"]
+    generation_errors = generation_prep["errors"]
+    selected_parent_main_label = st.session_state.get("parent_main_image_choice", "Automatic (recommended)")
+    selected_parent_main_image_url = next(
+        (url for label, url in parent_main_image_options if label == selected_parent_main_label),
+        "",
+    )
 
-    if not title.strip():
-        st.error("Title is required.")
-        st.stop()
-
-    variation_theme = profile.get("variation_theme", "SizeColor")
-
-    variant_dimension_errors = validate_variant_dimensions(selected_variants)
-    if variant_dimension_errors:
-        for err in variant_dimension_errors:
-            st.error(err)
-        st.stop()
-
-    if any(not bullet.strip() for bullet in bullets):
-        st.error("All five bullet points are required.")
-        st.stop()
-
-
-    selected_sizes = selected_variants.get("size", [])
-
-    if "Size" in variation_theme:
-        invalid_prices = [size for size in selected_sizes if size_price_map.get(size, 0) <= 0]
-        if invalid_prices:
-            st.error(f"Prices must be greater than 0 for sizes: {', '.join(invalid_prices)}")
-            st.stop()
-    else:
-        if not size_price_map or all(price <= 0 for price in size_price_map.values()):
-            st.error("At least one valid price is required.")
-            st.stop()
-
-    if not staged_folder_name:
-        st.error("Select a staged Dropbox folder.")
-        st.stop()
-
-    parent_sku_from_config = str(get_default(profile, "parent_sku", "")).strip()
-
-    if not parent_sku_from_config:
-        st.error("This template is missing parent_sku in its config.")
-        st.stop()
-
-    selected_colors = selected_variants.get("color", [])
-    selected_sizes = selected_variants.get("size", [])
-
-
-    if all_preview_errors:
+    if generation_errors:
         st.error("Fix the validation errors before generating.")
         st.stop()
 
@@ -2113,70 +2542,70 @@ def main() -> None:
 
         t0 = time.perf_counter()
 
+        staged_folder_name = staged_folder_name or ""
+        parent_sku_from_config = generation_payload["parent_sku"]
+        selected_colors = generation_payload["colors"]
+        selected_variants = generation_payload["selected_variants"]
+        stage_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+
         if st.session_state.get("finalized_stage_folder") == staged_folder_name:
             progress_text.error("This staged folder was already finalized in the current session.")
             st.stop()
 
-        progress_text.write("Moving staged folder into finished...")
+        progress_text.write("Checking workbook template...")
         progress_bar.progress(10)
+
+        template_path = resolve_template_path(profile)
+        wb = load_workbook(template_path, keep_vba=True, read_only=True)
+        wb.close()
+        t1 = time.perf_counter()
+
+        progress_text.write("Checking staged Dropbox assets...")
+        progress_bar.progress(20)
+
+        resolve_folder_image_urls(
+            profile,
+            selected_variants,
+            selected_colors,
+            dropbox_overview,
+            stage_folder_path,
+            selected_parent_main_image_url=selected_parent_main_image_url,
+        )
+        t2 = time.perf_counter()
+
+        progress_text.write("Moving staged folder into finished...")
+        progress_bar.progress(35)
 
         final_sku, finished_folder_path = finalize_staged_dropbox_folder(
             dropbox_cfg=dropbox_cfg,
             staged_folder_name=staged_folder_name,
             parent_sku=parent_sku_from_config,
         )
-        t1 = time.perf_counter()
+        t3 = time.perf_counter()
 
         st.session_state["finalized_stage_folder"] = staged_folder_name
         st.session_state["finalized_finished_folder_path"] = finished_folder_path
         st.session_state["finalized_sku"] = final_sku
 
         progress_text.write("Fetching Dropbox image links...")
-        progress_bar.progress(35)
+        progress_bar.progress(50)
 
         parent_main_image_url, other_images, color_image_map, design_color_image_url_map = resolve_folder_image_urls(
+            profile,
+            selected_variants,
             selected_colors,
             dropbox_overview,
             finished_folder_path,
+            selected_parent_main_image_url=selected_parent_main_image_url,
         )
-        t2 = time.perf_counter()
+        t4 = time.perf_counter()
 
-        payload = {
-            "parent_sku": final_sku,
-            "title": title.strip(),
-            "brand_name": GLOBAL_BRAND_NAME,
-            "manufacturer": profile.get("manufacturer", ""),
-            "recommended_browse_nodes": profile.get("recommended_browse_nodes", ""),
-            "size_price_map": size_price_map,
-            "use_same_price_for_all_sizes": st.session_state.get("use_same_price_for_all_sizes", False),
-            "quantity": quantity,
-            "department_name": profile.get("department_name", ""),
-            "target_gender": profile.get("target_gender", ""),
-            "age_range_description": profile.get("age_range_description", ""),
-            "feed_product_type": profile.get("feed_product_type", ""),
-            "variation_theme": profile.get("variation_theme", "SizeColor"),
-            "product_category": profile.get("product_category", "apparel"),
-            "condition_type": profile.get("condition_type", "New"),
-            "item_type_name": profile.get("item_type_name", ""),
-            "country_of_origin": profile.get("country_of_origin", "United Kingdom"),
-            "material_type": profile.get("material_type", ""),
-            "style_name": profile.get("style_name", ""),
-            "care_instructions": profile.get("care_instructions", ""),
-            "theme": profile.get("theme", ""),
-            "field_aliases": get_field_aliases(profile),
-            "extra_parent_fields": get_extra_parent_fields(profile),
-            "extra_child_fields": get_extra_child_fields(profile),
-            "parent_main_image_url": parent_main_image_url,
-            "product_description": st.session_state.get("product_description", "").strip(),
-            "generic_keywords": st.session_state.get("generic_keywords", "").strip(),
-            "bullet_points": [bullet.strip() for bullet in bullets],
-            "selected_variants": selected_variants,
-            "colors": selected_variants.get("color", []),
-            "sizes": selected_variants.get("size", []),
-            "other_images": other_images,
-            "color_image_map": color_image_map,
-            "design_color_image_url_map": design_color_image_url_map,
-        }
+        payload = dict(generation_payload)
+        payload["parent_sku"] = final_sku
+        payload["parent_main_image_url"] = parent_main_image_url
+        payload["other_images"] = other_images
+        payload["color_image_map"] = color_image_map
+        payload["design_color_image_url_map"] = design_color_image_url_map
 
 
         progress_text.write("Building workbook...")
@@ -2190,7 +2619,7 @@ def main() -> None:
             folder_path=finished_folder_path,
         )
 
-        t3 = time.perf_counter()
+        t5 = time.perf_counter()
 
         progress_text.write("Finalizing output...")
         progress_bar.progress(95)
@@ -2205,10 +2634,12 @@ def main() -> None:
         st.info(f"Generated 1 parent row and {child_count} child variants.")
 
         with st.expander("Performance breakdown", expanded=False):
-            st.write(f"Move staged folder: {t1 - t0:.2f}s")
-            st.write(f"Resolve Dropbox image URLs: {t2 - t1:.2f}s")
-            st.write(f"Build workbook: {t3 - t2:.2f}s")
-            st.write(f"Total: {t3 - t0:.2f}s")
+            st.write(f"Check workbook template: {t1 - t0:.2f}s")
+            st.write(f"Check staged Dropbox assets: {t2 - t1:.2f}s")
+            st.write(f"Move staged folder: {t3 - t2:.2f}s")
+            st.write(f"Resolve Dropbox image URLs: {t4 - t3:.2f}s")
+            st.write(f"Build workbook: {t5 - t4:.2f}s")
+            st.write(f"Total: {t5 - t0:.2f}s")
             st.write("---")
             st.write(f"Load workbook: {workbook_timings['load_workbook']:.2f}s")
             st.write(f"Write parent row: {workbook_timings['write_parent_row']:.2f}s")
