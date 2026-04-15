@@ -1,0 +1,92 @@
+{
+  "label": "R238X Padded Softshell Gilet",
+  "template_key": "R238X",
+  "template_file": "COAT.xlsm",
+  "parent_sku": "R238X",
+  "feed_product_type": "coat",
+  "recommended_browse_nodes": "22426631031",
+  "product_category": "apparel",
+  "brand_name": "Generic",
+  "manufacturer": "Generic",
+  "department_name": "Unisex",
+  "target_gender": "Unisex",
+  "age_range_description": "Adult",
+
+  "material_type": "Polyester",
+  "style_name": "Padded Softshell Gilet",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "Vest",
+  "care_instructions": "Machine Wash",
+  "fit_type": "Regular",
+  "theme": "Custom Embroidered Workwear",
+  "country_of_origin": "China",
+    
+  "colors": [
+    "Black/Black",
+    "Black/Grey",
+    "Black/Lime",
+    "Black/Orange",
+    "Black/Royal",
+    "Black/Red",
+    "Black/Yellow",
+
+    "Navy/Grey",
+    "Navy/Navy",
+    "Navy/Royal",
+    "Navy/Red",
+    "Navy/Yellow"
+  ],
+
+  "sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL",
+    "3XL"
+  ],
+
+  "size_code_map": {
+    "XS": "XS",
+    "S": "S",
+    "M": "M",
+    "L": "L",
+    "XL": "XL",
+    "2XL": "2XL",
+    "3XL": "3XL"
+  },
+    
+  "color_sku_map": {
+    "Black/Black": "BKBK",
+    "Black/Grey": "BKGY",
+    "Black/Lime": "BKLI",
+    "Black/Orange": "BKOR",
+    "Black/Royal": "BKRB",
+    "Black/Red": "BKRD",
+    "Black/Yellow": "BKYE",
+
+    "Navy/Grey": "NYGY",
+    "Navy/Navy": "NYNY",
+    "Navy/Royal": "NYRB",
+    "Navy/Red": "NYRD",
+    "Navy/Yellow": "NYYE"
+    },
+
+  "extra_parent_fields": {
+    "outer_material_type": "Synthetic",
+    "fabric_type": "Polyester Softshell",
+    "weave_type": "Plain",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+
+  "extra_child_fields": {
+    "outer_material_type": "Synthetic",
+    "fabric_type": "Polyester Softshell",
+    "weave_type": "Plain",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  }
+}

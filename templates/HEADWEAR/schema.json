@@ -1,0 +1,35 @@
+{
+  "template_family": "HEADWEAR",
+  "workbook_file": "HAT.xlsm",
+  "required_profile_fields": [
+    "parent_sku",
+    "feed_product_type",
+    "recommended_browse_nodes",
+    "product_category",
+    "brand_name",
+    "manufacturer",
+    "department_name",
+    "target_gender",
+    "age_range_description",
+    "material_type",
+    "style_name",
+    "variation_theme",
+    "condition_type",
+    "item_type_name",
+    "colors",
+    "sizes",
+    "size_code_map",
+    "color_sku_map"
+  ],
+  "allowed_dynamic_fields": [
+    "material_type",
+    "style_name",
+    "care_instructions",
+    "fit_type",
+    "theme",
+    "department_name",
+    "target_gender",
+    "age_range_description",
+    "country_of_origin"
+  ]
+}

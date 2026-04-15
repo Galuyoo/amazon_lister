@@ -1,25 +1,28 @@
 {
   "label": "UC612 Soft Shell Jacket",
   "template_key": "UC612",
-  "template_file": "_shared/_amazon_apparel_master.xlsm",
+  "template_file": "COAT.xlsm",
   "parent_sku": "UC612",
-  "variation_theme": "SizeColor",
-  "condition_type": "New",
+  "feed_product_type": "coat",
+  "recommended_browse_nodes": "1731289031",
   "product_category": "apparel",
-  "fulfillment_channel_code": "DEFAULT",
-  "apparel_size_height_type": "Regular",
-  "item_type_name": "softshell-jacket",
   "brand_name": "Generic",
   "manufacturer": "Generic",
-  "feed_product_type": "coat",
   "department_name": "unisex-adult",
   "target_gender": "unisex",
   "age_range_description": "Adult",
   "material_type": "93% Polyester, 7% Elastane",
   "style_name": "Soft Shell Jacket",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "softshell-jacket",
   "care_instructions": "Machine Wash",
   "theme": "",
-  "recommended_browse_nodes": "1731289031",
+  "country_of_origin": "Great Britain",
+  "fit_type": "",
+  "collar_style": "",
+  "pattern_type": "",
+  "weave_type": "",
 
   "colors": [
     "Black",
@@ -53,26 +56,19 @@
     "3XL": "3X",
     "4XL": "4X"
   },
-    "field_aliases": {
-    "apparel_size_system": [
-      "shirt_size_system",
-      "tops_size_system",
-      "outerwear_size_system"
-    ],
-    "apparel_size_class": [
-      "shirt_size_class",
-      "tops_size_class",
-      "outerwear_size_class"
-    ],
-    "apparel_size": [
-      "shirt_size_value",
-      "tops_size_value",
-      "outerwear_size_value"
-    ],
+
+  "field_aliases": {
     "outer_material_type": [
-      "material_type",
       "material_type1",
       "fabric_type"
     ]
+  },
+
+  "extra_parent_fields": {
+    "dangerous_goods_regulation": "Not Applicable"
+  },
+
+  "extra_child_fields": {
+    "dangerous_goods_regulation": "Not Applicable"
   }
 }

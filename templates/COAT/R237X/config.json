@@ -1,0 +1,92 @@
+{
+  "label": "R237X Padded Softshell Jacket",
+  "template_key": "R237X",
+  "template_file": "COAT.xlsm",
+  "parent_sku": "R237X",
+  "feed_product_type": "coat",
+  "recommended_browse_nodes": "22426631031",
+  "product_category": "apparel",
+  "brand_name": "Generic",
+  "manufacturer": "Generic",
+  "department_name": "Unisex",
+  "target_gender": "Unisex",
+  "age_range_description": "Adult",
+
+  "material_type": "Polyester",
+  "style_name": "Padded Softshell Jacket",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "Jacket",
+  "care_instructions": "Machine Wash",
+  "fit_type": "Regular",
+  "theme": "Custom Embroidered Workwear",
+  "country_of_origin": "China",
+
+  "colors": [
+    "Black/Yellow",
+    "Black/Lime",
+    "Black/Black",
+    "Black/Red",
+    "Black/Royal",
+    "Black/Grey",
+    "Black/Orange",
+
+    "Navy/Yellow",
+    "Navy/Red",
+    "Navy/Royal",
+    "Navy/Navy",
+    "Navy/Grey"
+   ],
+
+  "sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL",
+    "3XL"
+  ],
+
+  "size_code_map": {
+    "XS": "XS",
+    "S": "S",
+    "M": "M",
+    "L": "L",
+    "XL": "XL",
+    "2XL": "2XL",
+    "3XL": "3XL"
+  },
+    
+  "color_sku_map": {
+    "Black/Yellow": "BKYE",
+    "Black/Lime": "BKLI",
+    "Black/Black": "BKBK",
+    "Black/Red": "BKRD",
+    "Black/Royal": "BKRB",
+    "Black/Grey": "BKGY",
+    "Black/Orange": "BKOR",
+
+    "Navy/Yellow": "NYNYE",
+    "Navy/Red": "NYRD",
+    "Navy/Royal": "NYRB",
+    "Navy/Navy": "NYNY",
+    "Navy/Grey": "NYGY"
+ },
+
+  "extra_parent_fields": {
+    "outer_material_type": "Synthetic",
+    "fabric_type": "Polyester Softshell",
+    "weave_type": "Plain",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+
+  "extra_child_fields": {
+    "outer_material_type": "Synthetic",
+    "fabric_type": "Polyester Softshell",
+    "weave_type": "Plain",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  }
+}

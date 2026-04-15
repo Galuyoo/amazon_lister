@@ -1,23 +1,29 @@
 {
   "label": "UX4 Hoodie",
   "template_key": "UX4",
-  "template_file": "_shared/_amazon_apparel_master.xlsm",
+  "template_file": "SWEATSHIRT.xlsm",
   "parent_sku": "UX4",
   "feed_product_type": "sweatshirt",
-  "recommended_browse_nodes": "77028031",
+  "recommended_browse_nodes": "1731011031",
   "product_category": "apparel",
   "brand_name": "Generic",
   "manufacturer": "Generic",
-  "department_name": "Unisex Adult",
-  "target_gender": "unisex",
+  "department_name": "Unisex",
+  "target_gender": "Unisex",
   "age_range_description": "Adult",
   "material_type": "50% Polyester 50% Cotton",
   "style_name": "The UX Hoodie",
   "variation_theme": "SizeColor",
   "condition_type": "New",
-  "item_type_name": "sweatshirt",
+  "item_type_name": "Hooded Sweatshirt",
   "care_instructions": "Machine wash at 60 degrees",
   "theme": "Casual",
+  "neck_style": "Hooded Neck",
+  "fit_type": "Regular",
+  "weave_type": "Plain",
+  "sleeve_type": "Long Sleeve",
+  "country_of_origin": "Great Britain",
+
   "colors": [
     "Bottle Green",
     "Black",
@@ -45,6 +51,7 @@
     "5XL",
     "6XL"
   ],
+
   "size_code_map": {
     "XS": "XS",
     "S": "S",
@@ -57,6 +64,7 @@
     "5XL": "5XL",
     "6XL": "6XL"
   },
+
   "color_sku_map": {
     "Bottle Green": "UX4BG",
     "Black": "UX4BK",
@@ -72,26 +80,22 @@
     "Pink": "UX4PI",
     "Brown": "UX4BR"
   },
-    "field_aliases": {
-    "apparel_size_system": [
-      "shirt_size_system",
-      "tops_size_system",
-      "outerwear_size_system"
-    ],
-    "apparel_size_class": [
-      "shirt_size_class", 
-      "tops_size_class",
-      "outerwear_size_class"
-    ],
-    "apparel_size": [
-      "shirt_size_value",
-      "tops_size_value",
-      "outerwear_size_value"
-    ],
+
+  "field_aliases": {
     "outer_material_type": [
-      "material_type",
-      "material_type1",
       "fabric_type"
     ]
+  },
+
+  "extra_parent_fields": {
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
+  },
+
+  "extra_child_fields": {
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
   }
 }

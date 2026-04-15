@@ -1,7 +1,7 @@
 {
   "label": "Luxury Golf Towel TC013",
   "template_key": "TC013",
-  "template_file": "TC013/TOWEL.xlsm",
+  "template_file": "TOWEL.xlsm",
   "parent_sku": "TC013",
   "feed_product_type": "towel",
   "recommended_browse_nodes": "580172011",
@@ -18,15 +18,8 @@
   "item_type_name": "towel",
   "care_instructions": "Wash at 40 degrees synthetic; Wash dark colours separately; Use colour sensitive detergent; Do not use fabric conditioner",
   "theme": "Golf",
-  "extra_fields": {
-    "Display Length": "50",
-    "Unit of Measure (Per Unit Pricing)": "count",
-    "Unit Count (Per Unit Pricing)": "1",
-    "Item Length Longer Edge": "50",
-    "Item Length Unit": "Centimetres",
-    "Item Width Shorter Edge": "30",
-    "Item Width Unit": "Centimetres"
-  },
+  "country_of_origin": "Great Britain",
+
   "colors": [
     "Black",
     "Fuchsia",
@@ -38,9 +31,11 @@
   "sizes": [
     "One Size"
   ],
+
   "size_code_map": {
     "One Size": "ONE"
   },
+
   "color_sku_map": {
     "Black": "TC013-BLK",
     "Fuchsia": "TC013-FUS",
@@ -48,5 +43,23 @@
     "Forest": "TC013-FOR",
     "Red": "TC013-RED",
     "White": "TC013-WHT"
+  },
+
+  "extra_parent_fields": {
+    "unit_count_type": "count",
+    "unit_count": "1",
+    "length_longer_edge": "50",
+    "length_longer_edge_unit_of_measure": "Centimetres",
+    "width_shorter_edge": "30",
+    "width_shorter_edge_unit_of_measure": "Centimetres"
+  },
+
+  "extra_child_fields": {
+    "unit_count_type": "count",
+    "unit_count": "1",
+    "length_longer_edge": "50",
+    "length_longer_edge_unit_of_measure": "Centimetres",
+    "width_shorter_edge": "30",
+    "width_shorter_edge_unit_of_measure": "Centimetres"
   }
 }

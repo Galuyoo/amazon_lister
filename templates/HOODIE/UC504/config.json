@@ -1,0 +1,108 @@
+{
+  "label": "UC504 Full Zip Hoodie",
+  "template_key": "UC504",
+  "template_file": "SWEATSHIRT.xlsm",
+  "parent_sku": "UC504",
+  "feed_product_type": "sweatshirt",
+  "recommended_browse_nodes": "1731011031",
+  "product_category": "apparel",
+  "brand_name": "Generic",
+  "manufacturer": "Generic",
+  "department_name": "Unisex",
+  "target_gender": "Unisex",
+  "age_range_description": "Adult",
+  "material_type": "50% Polyester 50% Cotton",
+  "style_name": "Adults Classic Full Zip Hooded Sweatshirt",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "Hooded Sweatshirt",
+  "care_instructions": "Machine wash at 60 degrees",
+  "theme": "Personalised Embroidered Workwear",
+  "neck_style": "Hooded Neck",
+  "fit_type": "Regular",
+  "weave_type": "Plain",
+  "sleeve_type": "Long Sleeve",
+
+  "colors": [
+    "Bottle Green",
+    "Black",
+    "Brown",
+    "Charcoal",
+    "Heather Grey",
+    "Navy",
+    "Olive",
+    "Red",
+    "Royal",
+    "Sky",
+    "White",
+    "Yellow"
+  ],
+  "sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL",
+    "3XL",
+    "4XL"
+  ],
+  "color_size_map": {
+    "Bottle Green": ["XS", "S", "M", "L", "XL", "2XL", "3XL"],
+    "Black": ["XS", "S", "M", "L", "XL", "2XL", "3XL"],
+    "Brown": ["XS", "S", "M", "L", "XL", "2XL", "3XL"],
+    "Charcoal": ["XS", "S", "M", "L", "XL", "2XL", "3XL"],
+    "Heather Grey": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL"],
+    "Navy": ["XS", "S", "M", "L", "XL", "2XL", "3XL"],
+    "Olive": ["XS", "S", "M", "L", "XL", "2XL", "3XL"],
+    "Red": ["XS", "S", "M", "L", "XL", "2XL", "3XL"],
+    "Royal": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL"],
+    "Sky": ["XS", "S", "M", "L", "XL", "2XL", "3XL"],
+    "White": ["XS", "S", "M", "L", "XL", "2XL", "3XL"],
+    "Yellow": ["XS", "S", "M", "L", "XL", "2XL", "3XL"]
+  },
+
+  "size_code_map": {
+    "XS": "XS",
+    "S": "S",
+    "M": "M",
+    "L": "L",
+    "XL": "XL",
+    "2XL": "2XL",
+    "3XL": "3XL",
+    "4XL": "4XL"
+  },
+
+  "color_sku_map": {
+    "Bottle Green": "504BG",
+    "Black": "504BK",
+    "Brown": "504BR",
+    "Charcoal": "504CH",
+    "Heather Grey": "504HG",
+    "Navy": "504NY",
+    "Olive": "504OL",
+    "Red": "504RD",
+    "Royal": "504RY",
+    "Sky": "504SK",
+    "White": "504WH",
+    "Yellow": "504YL"
+  },
+
+  "field_aliases": {
+    "outer_material_type": [
+      "fabric_type"
+    ]
+  },
+
+  "extra_parent_fields": {
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
+  },
+
+  "extra_child_fields": {
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
+  }
+}

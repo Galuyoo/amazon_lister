@@ -16,8 +16,23 @@ EMOJI_PATTERN = re.compile(
     flags=re.UNICODE,
 )
 
+def is_variant_combo_allowed(profile: dict[str, Any], variant_values: dict[str, str]) -> bool:
+    color = variant_values.get("color", "")
+    size = variant_values.get("size", "")
 
-def build_variant_combinations(selected_variants: dict[str, list[str]]) -> list[dict[str, str]]:
+    color_size_map = profile.get("color_size_map", {})
+    if color and size and color_size_map:
+        allowed_sizes = color_size_map.get(color)
+        if allowed_sizes is not None and size not in allowed_sizes:
+            return False
+
+    return True
+
+
+def build_variant_combinations(
+    profile: dict[str, Any],
+    selected_variants: dict[str, list[str]],
+) -> list[dict[str, str]]:
     keys = list(selected_variants.keys())
     if not keys:
         return []
@@ -26,10 +41,11 @@ def build_variant_combinations(selected_variants: dict[str, list[str]]) -> list[
     combos: list[dict[str, str]] = []
 
     for values in product(*value_lists):
-        combos.append(dict(zip(keys, values)))
+        combo = dict(zip(keys, values))
+        if is_variant_combo_allowed(profile, combo):
+            combos.append(combo)
 
     return combos
-
 
 def normalize_text(value: str) -> str:
     return " ".join((value or "").strip().lower().split())
@@ -215,9 +231,6 @@ def validate_listing_quality(
         if title_chars > 200:
             warnings.append("Title looks too long and may be harder to read.")
             breakdown["content_quality"] -= 4
-        elif title_chars > 150:
-            warnings.append("Title is long; check readability.")
-            breakdown["content_quality"] -= 2
 
         if contains_emoji(title) or contains_disallowed_symbols(title):
             warnings.append("Title contains emoji or decorative symbols.")
@@ -269,12 +282,12 @@ def validate_listing_quality(
     # Content quality checks - description
     description_chars = character_length(description)
     if description:
-        if description_chars < 300:
-            warnings.append("Description looks very short.")
+        if description_chars < 1000:
+            warnings.append("Description should be expanded to at least 1000 characters.")
             breakdown["content_quality"] -= 4
-        elif description_chars < 1000:
-            warnings.append("Description should be expanded toward 1000+ characters.")
-            breakdown["content_quality"] -= 3
+        elif description_chars > 2000:
+            blockers.append("Description exceeds 2000 characters.")
+            breakdown["content_quality"] -= 10
 
         if contains_emoji(description) or contains_disallowed_symbols(description):
             warnings.append("Description contains emoji or decorative symbols.")
@@ -304,7 +317,7 @@ def validate_listing_quality(
             breakdown["content_quality"] -= 2
 
     # Variant integrity
-    variant_combos = build_variant_combinations(selected_variants)
+    variant_combos = build_variant_combinations(profile, selected_variants)
     if not variant_combos:
         blockers.append("No variant combinations selected.")
         breakdown["variant_integrity"] -= 10

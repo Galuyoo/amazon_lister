@@ -2,6 +2,9 @@ from __future__ import annotations
 from datetime import datetime
 import time
 import json
+import random
+import string
+
 from copy import copy
 from pathlib import Path
 from typing import Any
@@ -49,22 +52,43 @@ def list_template_profiles() -> list[dict[str, Any]]:
     if not TEMPLATES_DIR.exists():
         return profiles
 
-    for folder in sorted(TEMPLATES_DIR.iterdir()):
-        if not folder.is_dir():
+    for family_folder in sorted(TEMPLATES_DIR.iterdir()):
+        if not family_folder.is_dir():
             continue
 
-        config_path = folder / "config.json"
-        if not config_path.exists():
+        schema_path = family_folder / "schema.json"
+        if not schema_path.exists():
             continue
 
         try:
-            with config_path.open("r", encoding="utf-8") as f:
-                config = json.load(f)
-            config["_folder"] = folder
-            config["_slug"] = folder.name
-            profiles.append(config)
+            with schema_path.open("r", encoding="utf-8") as f:
+                schema = json.load(f)
         except Exception:
             continue
+
+        for garment_folder in sorted(family_folder.iterdir()):
+            if not garment_folder.is_dir():
+                continue
+
+            config_path = garment_folder / "config.json"
+            if not config_path.exists():
+                continue
+
+            try:
+                with config_path.open("r", encoding="utf-8") as f:
+                    config = json.load(f)
+
+                config["_folder"] = garment_folder
+                config["_slug"] = garment_folder.name
+                config["_family_folder"] = family_folder
+                config["_family_slug"] = family_folder.name
+                config["_schema"] = schema
+
+                # family owns workbook now
+                config["template_file"] = schema.get("workbook_file", "")
+                profiles.append(config)
+            except Exception:
+                continue
 
     return profiles
 
@@ -155,16 +179,34 @@ def normalize_size(size: str) -> str:
     }
     return size_map.get(size, size)
 
-def build_variant_combinations(selected_variants: dict[str, list[str]]) -> list[dict[str, str]]:
+def is_variant_combo_allowed(profile: dict[str, Any], variant_values: dict[str, str]) -> bool:
+    color = variant_values.get("color", "")
+    size = variant_values.get("size", "")
+
+    color_size_map = profile.get("color_size_map", {})
+    if color and size and color_size_map:
+        allowed_sizes = color_size_map.get(color)
+        if allowed_sizes is not None and size not in allowed_sizes:
+            return False
+
+    return True
+
+
+def build_variant_combinations(
+    profile: dict[str, Any],
+    selected_variants: dict[str, list[str]],
+) -> list[dict[str, str]]:
     keys = list(selected_variants.keys())
     if not keys:
         return []
 
     value_lists = [selected_variants[k] for k in keys]
-    combos = []
+    combos: list[dict[str, str]] = []
 
     for values in product(*value_lists):
-        combos.append(dict(zip(keys, values)))
+        combo = dict(zip(keys, values))
+        if is_variant_combo_allowed(profile, combo):
+            combos.append(combo)
 
     return combos
 
@@ -250,8 +292,9 @@ def sanitize_sku(value: str) -> str:
     return safe.strip('-')
 
 
-def generate_unique_sku(prefix: str = "AMZ") -> str:
-    return f"{prefix}{datetime.now().strftime('%y%m%d%H%M%S')}"
+def generate_unique_sku(length: int = 6) -> str:
+    alphabet = string.ascii_uppercase + string.digits
+    return "".join(random.choices(alphabet, k=length))
 
 
 def build_final_folder_sku(parent_sku: str, unique_sku: str) -> str:
@@ -306,6 +349,7 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
         "bullet_points": payload.get("bullet_points", []),
         "selected_variants": payload.get("selected_variants", {}),
         "size_price_map": payload.get("size_price_map", {}),
+        "use_same_price_for_all_sizes": payload.get("use_same_price_for_all_sizes", False),
         "quantity": payload.get("quantity", 0),
     }
 
@@ -341,6 +385,7 @@ def apply_listing_memory_to_session(listing_memory: dict[str, Any], profile: dic
 
     st.session_state["product_description"] = listing_memory.get("product_description", "")
     st.session_state["generic_keywords"] = listing_memory.get("generic_keywords", "")
+    st.session_state["use_same_price_for_all_sizes"] = listing_memory.get("use_same_price_for_all_sizes", False)
     st.session_state["variant_quantity"] = int(listing_memory.get("quantity", 100))
 
     saved_prices = listing_memory.get("size_price_map", {})
@@ -496,7 +541,7 @@ def render_variant_combinations_preview(
     parent_sku: str,
     selected_variants: dict[str, list[str]],
 ) -> None:
-    combos = build_variant_combinations(selected_variants)
+    combos = build_variant_combinations(profile, selected_variants)
 
     st.markdown("**Selected variant combinations**")
 
@@ -512,6 +557,27 @@ def render_variant_combinations_preview(
         rows.append(row)
 
     st.dataframe(rows, width="stretch", hide_index=True)
+
+def get_available_sizes_for_selected_colors(
+    profile: dict[str, Any],
+    selected_colors: list[str],
+) -> list[str]:
+    all_sizes = profile.get("sizes", [])
+    color_size_map = profile.get("color_size_map", {})
+
+    if not color_size_map or not selected_colors:
+        return all_sizes
+
+    allowed: list[str] = []
+    seen: set[str] = set()
+
+    for color in selected_colors:
+        for size in color_size_map.get(color, []):
+            if size in all_sizes and size not in seen:
+                allowed.append(size)
+                seen.add(size)
+
+    return allowed
 
 def build_dropbox_overview(profile: dict[str, Any], dropbox_cfg: dict[str, Any]) -> dict[str, Any]:
     if not dropbox_cfg:
@@ -586,11 +652,19 @@ def resolve_folder_image_urls(
 
     parent_main_image_url = dropbox_preview_url(main_path) if main_path else ""
 
-    other_images: list[str] = []
-    for path in other_paths + shared_resource_images:
+    shared_resource_urls: list[str] = []
+    for path in shared_resource_images:
         url = dropbox_preview_url(path)
         if url:
-            other_images.append(url)
+            shared_resource_urls.append(url)
+
+    staged_other_urls: list[str] = []
+    for path in other_paths:
+        url = dropbox_preview_url(path)
+        if url:
+            staged_other_urls.append(url)
+
+    other_images = list(dict.fromkeys(shared_resource_urls + staged_other_urls))
 
     color_image_map: dict[str, str] = {}
     for color in selected_colors:
@@ -699,6 +773,9 @@ def trim_search_terms(value: str, max_bytes: int = 249) -> str:
 
     return current.rstrip(" ,;")
 
+
+
+
 def build_size_price_inputs(
     sizes: list[str],
     saved_prices: dict[str, float] | None = None,
@@ -710,9 +787,41 @@ def build_size_price_inputs(
 
     saved_prices = saved_prices or {}
 
+    default_same_price = False
+    if sizes:
+        existing_values = [saved_prices.get(size) for size in sizes if size in saved_prices]
+        unique_existing_values = {v for v in existing_values if v is not None}
+        if len(unique_existing_values) == 1 and len(existing_values) == len(sizes):
+            default_same_price = True
+
+    use_same_price = st.checkbox(
+        "Use one price for all sizes",
+        value=default_same_price,
+        key="use_same_price_for_all_sizes",
+    )
+
+    size_price_map: dict[str, float] = {}
+
+    if use_same_price:
+        fallback_price = 29.99
+        if default_same_price and sizes:
+            fallback_price = float(saved_prices.get(sizes[0], 29.99))
+
+        shared_price = st.number_input(
+            "Price for all sizes",
+            min_value=0.0,
+            value=float(fallback_price),
+            step=0.50,
+            key="shared_price_all_sizes",
+        )
+
+        for size in sizes:
+            size_price_map[size] = shared_price
+
+        return size_price_map
+
     cols_per_row = 4
     cols = st.columns(cols_per_row)
-    size_price_map: dict[str, float] = {}
 
     for idx, size in enumerate(sizes):
         with cols[idx % cols_per_row]:
@@ -726,6 +835,16 @@ def build_size_price_inputs(
 
     return size_price_map
 
+def resolve_template_path(profile: dict[str, Any]) -> Path:
+    family_folder = profile.get("_family_folder")
+    profile_folder = profile.get("_folder")
+    template_file = profile.get("template_file", "")
+
+    if family_folder:
+        return (Path(family_folder) / template_file).resolve()
+    if profile_folder:
+        return (Path(profile_folder) / template_file).resolve()
+    return (BASE_DIR / "templates" / template_file).resolve()
 
 def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> None:
     clear_row_values(ws, PARENT_ROW)
@@ -778,7 +897,7 @@ def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> No
         "apparel_height_type": "Regular" if is_apparel else "",
 
         "item_type_name": data["item_type_name"],
-        "country_of_origin": "United Kingdom",
+        "country_of_origin": data.get("country_of_origin", "United Kingdom"),
         "condition_type": data["condition_type"],
 
         "fulfillment_availability#1.fulfillment_channel_code": "",
@@ -807,6 +926,10 @@ def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> No
     }
 
     field_aliases = data.get("field_aliases", {})
+
+    dynamic_profile_fields = data.get("dynamic_profile_fields", {})
+    values.update(dynamic_profile_fields)
+
     extra_parent_fields = data.get("extra_parent_fields", {})
     values = prepare_row_values(values, field_aliases, extra_parent_fields)
 
@@ -829,7 +952,7 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
     is_apparel = product_category == "apparel"
 
     selected_variants = data.get("selected_variants", {})
-    variant_combos = build_variant_combinations(selected_variants)
+    variant_combos = build_variant_combinations(profile, selected_variants)
 
     for variant_values in variant_combos:
         if row_idx != template_row and st.session_state.get("copy_row_styles", True):
@@ -897,7 +1020,7 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
             "apparel_height_type": "Regular" if is_apparel else "",
 
             "item_type_name": data["item_type_name"],
-            "country_of_origin": "United Kingdom",
+            "country_of_origin": data.get("country_of_origin", "United Kingdom"),
 
             "fulfillment_availability#1.fulfillment_channel_code": "DEFAULT",
             "fulfillment_availability#1.quantity": data["quantity"],
@@ -923,6 +1046,9 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
             "other_image_url_ps05": other_images[12],
             "other_image_url_ps06": other_images[13],
         }
+
+        dynamic_profile_fields = data.get("dynamic_profile_fields", {})
+        values.update(dynamic_profile_fields)
 
         values.update(variant_field_values)
 
@@ -997,18 +1123,40 @@ def prepare_row_values(
     return values
 
 
+def validate_profile_schema(profile: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    required_fields = get_required_profile_fields(profile)
+
+    for field in required_fields:
+        value = profile.get(field)
+        if isinstance(value, str):
+            if not value.strip():
+                errors.append(f"Template config missing required field: {field}")
+        elif value in (None, "", [], {}):
+            errors.append(f"Template config missing required field: {field}")
+
+    return errors
+
+def get_schema(profile: dict[str, Any]) -> dict[str, Any]:
+    return profile.get("_schema", {})
+
+def get_allowed_dynamic_fields(profile: dict[str, Any]) -> list[str]:
+    return get_schema(profile).get("allowed_dynamic_fields", [])
+
+def get_required_profile_fields(profile: dict[str, Any]) -> list[str]:
+    return get_schema(profile).get("required_profile_fields", [])
+
+def get_required_workbook_headers(profile: dict[str, Any]) -> list[str]:
+    return get_schema(profile).get("required_workbook_headers", [])
+
 def validate_template_file(profile: dict[str, Any]) -> list[str]:
     errors: list[str] = []
-
     template_file = profile.get("template_file", "")
-    profile_folder = profile.get("_folder")
-    if profile_folder:
-        template_path = (Path(profile_folder) / template_file).resolve()
-    else:
-        template_path = (BASE_DIR / "templates" / template_file).resolve()
 
     if not template_file:
         return ["Template file is missing in config."]
+
+    template_path = resolve_template_path(profile)
 
     if not template_path.exists():
         return [f"Template file not found: {template_path}"]
@@ -1018,50 +1166,45 @@ def validate_template_file(profile: dict[str, Any]) -> list[str]:
     except Exception as exc:
         return [f"Template workbook could not be opened: {exc}"]
 
-    if SHEET_NAME not in wb.sheetnames:
-        return [f"Sheet '{SHEET_NAME}' not found in template workbook."]
+    try:
+        if SHEET_NAME not in wb.sheetnames:
+            return [f"Sheet '{SHEET_NAME}' not found in template workbook."]
 
-    ws = wb[SHEET_NAME]
-    header_map = build_header_map(ws, HEADER_ROW)
+        ws = wb[SHEET_NAME]
+        header_map = build_header_map(ws, HEADER_ROW)
 
-    required_headers = [
-        "item_sku",
-        "item_name",
-        "brand_name",
-        "manufacturer",
-        "product_description",
-        "bullet_point1",
-        "bullet_point2",
-        "bullet_point3",
-        "bullet_point4",
-        "bullet_point5",
-        "generic_keywords",
-        "recommended_browse_nodes",
-        "parent_child",
-        "relationship_type",
-        "variation_theme",
-        "condition_type",
-        "main_image_url",
-    ]
+        required_headers = get_required_workbook_headers(profile) or [
+            "item_sku",
+            "item_name",
+            "brand_name",
+            "manufacturer",
+            "product_description",
+            "bullet_point1",
+            "bullet_point2",
+            "bullet_point3",
+            "bullet_point4",
+            "bullet_point5",
+            "generic_keywords",
+            "recommended_browse_nodes",
+            "parent_child",
+            "relationship_type",
+            "variation_theme",
+            "condition_type",
+            "main_image_url",
+        ]
 
-    missing_headers = [header for header in required_headers if header not in header_map]
-    if missing_headers:
-        errors.append(
-            "Template is missing required headers: " + ", ".join(missing_headers)
-        )
+        missing_headers = [header for header in required_headers if header not in header_map]
+        if missing_headers:
+            errors.append("Template is missing required headers: " + ", ".join(missing_headers))
+    finally:
+        wb.close()
 
     return errors
 
-
-
+    
 def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Path, dict[str, float]]:
-    template_file = profile.get("template_file", "")
-    profile_folder = profile.get("_folder")
 
-    if profile_folder:
-        template_path = (Path(profile_folder) / template_file).resolve()
-    else:
-        template_path = (BASE_DIR / "templates" / template_file).resolve()
+    template_path = resolve_template_path(profile)
 
     if not template_path.exists():
         raise FileNotFoundError(f"Template not found: {template_path}")
@@ -1072,6 +1215,26 @@ def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Pa
 
     ws = wb[SHEET_NAME]
     header_map = build_header_map(ws, HEADER_ROW)
+
+
+    dynamic_profile_fields = get_dynamic_profile_fields(profile, header_map)
+
+    if st.session_state.get("show_header_debug", False):
+        allowed_fields = set(get_allowed_dynamic_fields(profile))
+        missing_dynamic_headers = [
+            key for key in allowed_fields
+            if profile.get(key) not in (None, "", [], {}) and key not in header_map
+        ]
+        if missing_dynamic_headers:
+            st.write("Allowed dynamic fields missing from workbook headers")
+            st.json(missing_dynamic_headers)
+
+    payload = dict(payload)
+    payload["dynamic_profile_fields"] = dynamic_profile_fields
+
+    if st.session_state.get("show_header_debug", False):
+        st.write("Dynamic profile fields matched to workbook headers")
+        st.json(dynamic_profile_fields)
 
     debug_size_headers(header_map)
 
@@ -1100,6 +1263,7 @@ def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Pa
     output_name = f"{payload['parent_sku']}_{profile['_slug']}_amazon_listing.xlsm"
     output_path = OUTPUT_DIR / output_name
     wb.save(output_path)
+    wb.close()
     t4 = time.perf_counter()
 
     if variants_written == 0:
@@ -1210,6 +1374,8 @@ def build_preflight_report(
     preview_parent_sku = str(get_default(profile, "parent_sku", "")).strip()
     preview_selected_colors = selected_variants.get("color", [])
     preview_selected_sizes = selected_variants.get("size", [])
+    profile_schema_errors = validate_profile_schema(profile)
+
 
     preview_payload = {
         "parent_sku": preview_parent_sku,
@@ -1227,6 +1393,7 @@ def build_preflight_report(
         "product_category": profile.get("product_category", "apparel"),
         "condition_type": profile.get("condition_type", "New"),
         "item_type_name": profile.get("item_type_name", ""),
+        "country_of_origin": profile.get("country_of_origin", "United Kingdom"),
         "material_type": profile.get("material_type", ""),
         "style_name": profile.get("style_name", ""),
         "care_instructions": profile.get("care_instructions", ""),
@@ -1244,6 +1411,7 @@ def build_preflight_report(
         "other_images": [],
         "color_image_map": {},
         "design_color_image_url_map": {},
+        "dynamic_profile_fields": {},
     }
 
     if staged_folder_name and preview_selected_colors:
@@ -1262,6 +1430,24 @@ def build_preflight_report(
         except Exception:
             pass
 
+    try:
+        template_path = resolve_template_path(profile)
+        if template_path.exists():
+            wb = load_workbook(template_path, keep_vba=True, read_only=True)
+            try:
+                if SHEET_NAME in wb.sheetnames:
+                    ws = wb[SHEET_NAME]
+                    header_map = build_header_map(ws, HEADER_ROW)
+                    preview_payload["dynamic_profile_fields"] = get_dynamic_profile_fields(profile, header_map)
+                else:
+                    preview_payload["dynamic_profile_fields"] = {}
+            finally:
+                wb.close()
+        else:
+            preview_payload["dynamic_profile_fields"] = {}
+    except Exception:
+        preview_payload["dynamic_profile_fields"] = {}  
+
     preview_payload_errors = validate_payload(preview_payload)
     preview_variant_errors = validate_variants(
         selected_variants,
@@ -1273,6 +1459,7 @@ def build_preflight_report(
     template_errors = validate_template_file(profile)
 
     all_preview_errors = [
+        *profile_schema_errors,
         *preview_payload_errors,
         *preview_variant_errors,
         *preview_structure_errors,
@@ -1286,6 +1473,26 @@ def build_preflight_report(
         "all_preview_errors": all_preview_errors,
         "quality_report": quality_report,
     }
+
+
+def get_dynamic_profile_fields(
+    profile: dict[str, Any],
+    header_map: dict[str, int],
+) -> dict[str, Any]:
+    allowed_fields = set(get_allowed_dynamic_fields(profile))
+    dynamic: dict[str, Any] = {}
+
+    for key in allowed_fields:
+        if key not in header_map:
+            continue
+
+        value = profile.get(key)
+        if isinstance(value, (list, dict)) or value in (None, ""):
+            continue
+
+        dynamic[key] = value
+
+    return dynamic
 
 def render_preflight_dashboard(
     quality_report: dict[str, Any],
@@ -1432,52 +1639,35 @@ def main() -> None:
         st.stop()
 
     if not profiles:
-        st.error("No template profiles found. Create folders under templates/ with a config.json and base .xlsm file.")
+        st.error("No template profiles found. Create family folders under templates/ with schema.json, a shared workbook, and garment subfolders containing config.json.")
         st.stop()
 
-    labels = [profile.get("label", profile["_slug"]) for profile in profiles]
+    families = sorted({profile.get("_family_slug", "") for profile in profiles if profile.get("_family_slug")})
+
+    selected_family = st.sidebar.selectbox(
+        "Template family",
+        families,
+        key="template_family_select",
+    )
+
+    family_profiles = [
+        profile for profile in profiles
+        if profile.get("_family_slug") == selected_family
+    ]
+
+    family_labels = [profile.get("label", profile["_slug"]) for profile in family_profiles]
+
     selected_label = st.sidebar.selectbox(
-        "Listing template",
-        labels,
+        "Garment template",
+        family_labels,
         key="listing_template_select",
     )
 
-    st.subheader("Recovery tools")
-
-    with st.expander("Re-stage finished folder", expanded=False):
-        if not finished_folder_names:
-            st.caption("No finished folders available.")
-        else:
-            selected_finished_folder = st.selectbox(
-                "Finished folder to move back to stage",
-                finished_folder_names,
-                index=None,
-                placeholder="Select a finished folder",
-                key="restage_finished_folder",
-            )
-
-            if st.button("Move finished folder back to stage", key="restage_button"):
-                if not selected_finished_folder:
-                    st.error("Select a finished folder first.")
-                else:
-                    try:
-                        moved_path = restage_finished_dropbox_folder(
-                            dropbox_cfg=dropbox_cfg,
-                            finished_folder_name=selected_finished_folder,
-                        )
-
-                        st.session_state.pop("finalized_stage_folder", None)
-                        st.session_state.pop("finalized_finished_folder_path", None)
-                        st.session_state.pop("finalized_sku", None)
-
-                        st.success(f"Finished folder moved back to stage: {moved_path}")
-                    except Exception as exc:
-                        st.error(f"Could not re-stage finished folder: {exc}")
-
-    profile = profiles[labels.index(selected_label)]
+    profile = family_profiles[family_labels.index(selected_label)]
 
     st.sidebar.markdown("### Active template")
-    st.sidebar.write(f"Folder: `{profile['_slug']}`")
+    st.sidebar.write(f"Family: `{profile.get('_family_slug', '')}`")
+    st.sidebar.write(f"Template: `{profile['_slug']}`")
     st.sidebar.write(f"Workbook: `{profile.get('template_file', '')}`")
     st.sidebar.write(f"Variation theme: `{profile.get('variation_theme', '')}`")
     st.sidebar.checkbox("Show troubleshooting debug", key="show_header_debug", value=False)
@@ -1512,12 +1702,67 @@ def main() -> None:
             disabled=True,
         )
 
-        staged_folder_name = st.selectbox(
-            "Staged Dropbox folder",
-            staged_folder_names,
-            index=None,
-            placeholder="Select a staged folder",
+        if st.session_state.pop("auto_switch_to_staged", False):
+            st.session_state["folder_source_mode"] = "Use staged folder"        
+
+        folder_source = st.radio(
+            "Choose Folder Source",
+            ["Use staged folder", "Restage finished folder"],
+            horizontal=True,
+            key="folder_source_mode",
         )
+
+        staged_folder_name = None
+        selected_finished_folder = None
+
+        if folder_source == "Use staged folder":
+            staged_folder_name = st.selectbox(
+                "Dropbox folder",
+                staged_folder_names,
+                index=None,
+                placeholder="Select a staged folder",
+                key="staged_folder_select",
+            )
+        else:
+            selected_finished_folder = st.selectbox(
+                "Dropbox folder",
+                finished_folder_names,
+                index=None,
+                placeholder="Select a finished folder to restage",
+                key="finished_folder_select",
+            )
+
+            if st.button(
+                "Move selected folder back to staging",
+                key="restage_finished_folder_button",
+                use_container_width=True,
+            ):
+                if not selected_finished_folder:
+                    st.warning("Select a finished folder first.")
+                    st.stop()
+
+                try:
+                    moved_path = restage_finished_dropbox_folder(
+                        dropbox_cfg=dropbox_cfg,
+                        finished_folder_name=selected_finished_folder,
+                    )
+
+                    st.success(f"Restaged successfully: {moved_path}")
+
+                    st.session_state["last_loaded_listing_memory_folder"] = ""
+                    st.session_state.pop("finalized_stage_folder", None)
+                    st.session_state.pop("finalized_finished_folder_path", None)
+                    st.session_state.pop("finalized_sku", None)
+                    restaged_folder_name = Path(moved_path).name
+                    st.session_state["staged_folder_select"] = restaged_folder_name
+                    st.session_state["auto_switch_to_staged"] = True
+
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not restage folder: {exc}")
+                    st.stop()
+        
+
 
         listing_memory: dict[str, Any] = {}
         if staged_folder_name:
@@ -1544,10 +1789,8 @@ def main() -> None:
         title_chars = len(title.strip())
         if title_chars < 150:
             st.caption(f"Title: {title_chars} chars - target 150 chars")
-        elif title_chars >= 150:
-            st.caption(f"Title: {title_chars} chars - good")
         else:
-            st.caption(f"Title: {title_chars} chars - check readability")
+            st.caption(f"Title: {title_chars} chars - good")
 
     with col2:
         st.text_input("Brand", value=GLOBAL_BRAND_NAME, disabled=True)
@@ -1595,9 +1838,11 @@ def main() -> None:
 
     description_chars = len(product_description.strip())
     if description_chars < 1000:
-        st.caption(f"Description: {description_chars} chars - target 1000+")
+        st.caption(f"Description: {description_chars} chars - target 1000 to 2000")
+    elif description_chars <= 2000:
+        st.caption(f"Description: {description_chars} chars - good")
     else:
-        st.caption(f"Description: {description_chars} chars - good")    
+        st.error(f"Description: {description_chars} chars - must be under 2000")
 
     generic_keywords = st.text_area(
         "Search terms",
@@ -1659,12 +1904,28 @@ def main() -> None:
             default=valid_saved_colors if valid_saved_colors else colors_available,
             key="selected_colours",
         )
+
+        if profile.get("color_size_map"):
+            st.caption("Some colours have restricted size availability. Only valid combinations will be generated.")
+
+        available_sizes_for_selected_colors = get_available_sizes_for_selected_colors(
+            profile,
+            selected_colors,
+        )
+
+        valid_saved_sizes = [
+            size for size in saved_sizes
+            if size in available_sizes_for_selected_colors
+        ]
+
         selected_sizes = st.multiselect(
             "Sizes",
-            sizes_available,
-            default=valid_saved_sizes if valid_saved_sizes else sizes_available,
+            available_sizes_for_selected_colors,
+            default=valid_saved_sizes if valid_saved_sizes else available_sizes_for_selected_colors,
             key="selected_sizes",
         )
+
+
         selected_variants = {
             "color": selected_colors,
             "size": selected_sizes,
@@ -1786,8 +2047,14 @@ def main() -> None:
     if score_clicked and not submitted:
         st.stop()
 
-    product_description = st.session_state.get("product_description", "").strip()
-    generic_keywords = st.session_state.get("generic_keywords", "").strip()
+    description_chars = len(product_description.strip())
+    if description_chars < 1000:
+        st.error("Description must be at least 1000 characters.")
+        st.stop()
+
+    if description_chars > 2000:
+        st.error("Description must be under 2000 characters.")
+        st.stop()
 
     if not title.strip():
         st.error("Title is required.")
@@ -1881,6 +2148,7 @@ def main() -> None:
             "manufacturer": profile.get("manufacturer", ""),
             "recommended_browse_nodes": profile.get("recommended_browse_nodes", ""),
             "size_price_map": size_price_map,
+            "use_same_price_for_all_sizes": st.session_state.get("use_same_price_for_all_sizes", False),
             "quantity": quantity,
             "department_name": profile.get("department_name", ""),
             "target_gender": profile.get("target_gender", ""),
@@ -1890,6 +2158,7 @@ def main() -> None:
             "product_category": profile.get("product_category", "apparel"),
             "condition_type": profile.get("condition_type", "New"),
             "item_type_name": profile.get("item_type_name", ""),
+            "country_of_origin": profile.get("country_of_origin", "United Kingdom"),
             "material_type": profile.get("material_type", ""),
             "style_name": profile.get("style_name", ""),
             "care_instructions": profile.get("care_instructions", ""),
@@ -1926,7 +2195,7 @@ def main() -> None:
         progress_text.write("Finalizing output...")
         progress_bar.progress(95)
 
-        variant_combos = build_variant_combinations(selected_variants)
+        variant_combos = build_variant_combinations(profile, selected_variants)
         child_count = len(variant_combos)
 
         progress_bar.progress(100)

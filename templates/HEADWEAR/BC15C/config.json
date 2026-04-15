@@ -1,0 +1,94 @@
+{
+  "label": "BC15C 5 Panel Cap",
+  "template_key": "BC15C",
+  "template_file": "HAT.xlsm",
+  "parent_sku": "BC15C",
+  "feed_product_type": "hat",
+  "recommended_browse_nodes": "1730956031",
+  "product_category": "accessory",
+  "brand_name": "Generic",
+  "manufacturer": "Generic",
+  "department_name": "Unisex",
+  "target_gender": "Unisex",
+  "age_range_description": "Adult",
+  "material_type": "Cotton",
+  "style_name": "Ultimate 5 Panel Cap",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "Baseball Cap",
+  "care_instructions": "Sponge Clean Only",
+  "fit_type": "Adjustable",
+  "weave_type": "Twill",
+  "theme": "Custom Embroidered Workwear",
+  "country_of_origin": "China",
+
+  "colors": [
+    "Bottle Green/White",
+    "Black/Bright Royal",
+    "Black/Classic Red",
+    "Black/Fuchsia",
+    "Black/Light Grey",
+    "Black/Lime Green",
+    "Black/Orange",
+    "Black/White",
+    "Black/Yellow",
+    "Bright Royal/White",
+    "Classic Red/White",
+    "French Navy/Classic Red",
+    "French Navy/White",
+    "Graphite Grey/Oyster Grey",
+    "Navy/Putty",
+    "Putty/French Navy",
+    "Sky Blue/White",
+    "White/Black",
+    "White/French Navy"
+  ],
+
+  "sizes": [
+    "One Size"
+  ],
+
+  "size_code_map": {
+    "One Size": "ONE"
+  },
+
+  "color_sku_map": {
+    "Bottle Green/White": "BGWH",
+    "Black/Bright Royal": "BKBR",
+    "Black/Classic Red": "BKCR",
+    "Black/Fuchsia": "BKFU",
+    "Black/Light Grey": "BKLG",
+    "Black/Lime Green": "BKLI",
+    "Black/Orange": "BKOR",
+    "Black/White": "BKWH",
+    "Black/Yellow": "BKYE",
+    "Bright Royal/White": "BRWH",
+    "Classic Red/White": "CRWH",
+    "French Navy/Classic Red": "FNCR",
+    "French Navy/White": "FNWH",
+    "Graphite Grey/Oyster Grey": "GPOY",
+    "Navy/Putty": "NYPU",
+    "Putty/French Navy": "PUNY",
+    "Sky Blue/White": "SKWH",
+    "White/Black": "WHBK",
+    "White/French Navy": "WHFN"
+  },
+
+  "extra_parent_fields": {
+    "headwear_size_system": "UK",
+    "headwear_size_class": "Alpha",
+    "headwear_size": "One Size",
+    "fabric_type": "100% Cotton Drill",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+
+  "extra_child_fields": {
+    "headwear_size_system": "UK",
+    "headwear_size_class": "Alpha",
+    "headwear_size": "One Size",
+    "fabric_type": "100% Cotton Drill",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  }
+}
