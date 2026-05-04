@@ -95,6 +95,14 @@ Example: R237XBKYE.jpg → Black/Yellow
 -   Template abstraction
 -   Multi-placement embroidery logic
 
+## Future feature: listing archive / searchable run history
+
+- keep a history of generated listings
+- searchable by folder, template, title, date, status
+- allow re-download of generated workbooks
+- allow reopening/editing previous prepared/generated listings
+- support filtering and review across past runs
+
 ------------------------------------------------------------------------
 
 ## Instructions for AI Assistants
@@ -104,3 +112,4 @@ Example: R237XBKYE.jpg → Black/Yellow
 -   Match config to dropbox_templates.json
 -   Do not invent color codes
 -   Prefer supplier data over assumptions
+
