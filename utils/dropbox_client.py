@@ -14,19 +14,49 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
 
+REQUIRED_DROPBOX_KEYS = (
+    "DROPBOX_APP_KEY",
+    "DROPBOX_APP_SECRET",
+    "DROPBOX_REFRESH_TOKEN",
+)
+
+
+def get_secret_value(key: str) -> str:
+    env_value = os.getenv(key)
+    if env_value:
+        return env_value
+
+    try:
+        import streamlit as st
+    except Exception:
+        return ""
+
+    try:
+        if key in st.secrets:
+            secret_value = st.secrets[key]
+            return str(secret_value) if secret_value else ""
+    except Exception:
+        return ""
+
+    return ""
+
+
 @lru_cache(maxsize=1)
 def get_dropbox_client() -> dropbox.Dropbox:
-    app_key = os.getenv("DROPBOX_APP_KEY")
-    app_secret = os.getenv("DROPBOX_APP_SECRET")
-    refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
+    credentials = {key: get_secret_value(key) for key in REQUIRED_DROPBOX_KEYS}
+    missing_keys = [key for key, value in credentials.items() if not value]
 
-    if not all([app_key, app_secret, refresh_token]):
-        raise ValueError("Missing Dropbox OAuth credentials in .env")
+    if missing_keys:
+        missing_keys_text = ", ".join(missing_keys)
+        raise ValueError(
+            f"Missing Dropbox credentials: {missing_keys_text}. "
+            "Add them to .env locally or Streamlit secrets in deployment."
+        )
 
     dbx = dropbox.Dropbox(
-        oauth2_refresh_token=refresh_token,
-        app_key=app_key,
-        app_secret=app_secret,
+        oauth2_refresh_token=credentials["DROPBOX_REFRESH_TOKEN"],
+        app_key=credentials["DROPBOX_APP_KEY"],
+        app_secret=credentials["DROPBOX_APP_SECRET"],
     )
 
     try:
@@ -152,4 +182,4 @@ def download_text_file(path: str) -> str:
         _, response = dbx.files_download(path)
         return response.content.decode("utf-8")
     except ApiError as exc:
-        raise ValueError(f"Dropbox text download failed for {path}: {exc}") from exc    
+        raise ValueError(f"Dropbox text download failed for {path}: {exc}") from exc
