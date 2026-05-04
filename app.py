@@ -2630,9 +2630,6 @@ def generate_ready_listing(
     }
     quantity = int(listing_memory.get("quantity", 0))
 
-    st.session_state["use_same_price_for_all_sizes"] = bool(
-        listing_memory.get("use_same_price_for_all_sizes", False)
-    )
 
     generation_prep = prepare_generation_payload(
         profile=profile,
