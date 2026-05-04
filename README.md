@@ -1,115 +1,124 @@
 # Amazon Listing Generator System
 
-## Overview
+Streamlit app for preparing and generating Amazon flat-file workbooks from Dropbox-managed listing folders.
 
-Streamlit-based system for generating Amazon flat files (Excel) for
-apparel and accessories. Includes: - Template-based listing generation -
-Dropbox image integration - SKU automation - Variant generation
-(size/color) - Multi-product family support (COAT, HEADWEAR, SHIRT,
-HOODIE, TOWEL)
+## What This App Does
 
-------------------------------------------------------------------------
+The app supports a staff workflow built around three Dropbox queues:
 
-## Core Concepts
+- `_stage`: work in progress listings
+- `ready`: listings approved for workbook generation
+- `finished`: completed listings that already generated outputs
 
-### SKU Structure
+The main workspace is organized into three tabs:
 
-`<UNIQUE>`{=html}-`<PRODUCT_CODE>`{=html}-`<COLOR_CODE>`{=html}-`<SIZE_CODE>`{=html}
+1. `Product setup`
+2. `Listing content`
+3. `Review & output`
 
-Example: A7K92M-BC045-BKBR-ONE
+Saved `listing_inputs.json` data is used as the source of truth whenever a staged or ready folder already has saved listing context.
 
-### Product Categories
+## Runtime Requirements
 
-Only allowed: - apparel - accessory
+- Python 3.11+
+- Dropbox OAuth app credentials
+- Access to the configured Dropbox folders referenced by `config/dropbox_templates.json`
 
-### Variation System
+Install runtime dependencies with:
 
--   SizeColor = standard
--   Some products use compound colors (e.g. Black/Red)
+```bash
+pip install -r requirements.txt
+```
 
-------------------------------------------------------------------------
+## Local Setup
 
-## Template Structure
+1. Create a virtual environment.
+2. Install dependencies:
 
-templates/ COAT/ HEADWEAR/ SHIRT/ HOODIE/ TOWEL/
+```bash
+pip install -r requirements.txt
+```
 
-Each template contains: - config.json - workbook (.xlsm or .xlsx)
+3. Create a local `.env` file from `.env.example`.
+4. Fill in the required Dropbox values:
 
-------------------------------------------------------------------------
+- `DROPBOX_APP_KEY`
+- `DROPBOX_APP_SECRET`
+- `DROPBOX_REFRESH_TOKEN`
 
-## Config Rules
+5. Start the app:
 
--   colors MUST match dropbox_templates.json exactly
--   color_sku_map MUST match supplier codes
--   size_code_map must match Shopify logic
--   product_category must be "apparel" or "accessory"
+```bash
+streamlit run app.py
+```
 
-------------------------------------------------------------------------
+## Streamlit Community Cloud Setup
 
-## Dropbox System
+This repo is prepared for first staff deployment on Streamlit Community Cloud.
 
--   Images mapped via dropbox_templates.json
--   Naming pattern: `<PRODUCT_CODE>`{=html}`<COLOR_CODE>`{=html}.jpg
+### Required secrets
 
-Example: R237XBKYE.jpg → Black/Yellow
+Add these secrets in the Streamlit app settings using the same names shown in `.streamlit/secrets.toml.example`:
 
-------------------------------------------------------------------------
+```toml
+DROPBOX_APP_KEY = "..."
+DROPBOX_APP_SECRET = "..."
+DROPBOX_REFRESH_TOKEN = "..."
+```
 
-## Product Types
+Notes:
 
-### Standard
+- Do not commit real secrets.
+- Use Dropbox OAuth refresh-token credentials for the shared staff app.
+- Keep local `.env` and cloud secrets values aligned.
 
--   Single color
+### Deployment steps
 
-### Dual Color
+1. Push the repo branch you want to deploy.
+2. Create a new app in Streamlit Community Cloud.
+3. Point the app to this repo and `app.py` as the entrypoint.
+4. Add the Dropbox secrets in the app Secrets editor.
+5. Deploy and run the smoke tests listed in `docs/DEPLOYMENT_CHECKLIST.md`.
 
--   Black/Red style
+## Staff Workflow
 
-### Customisation
+### 1. Product setup
 
--   Front only
--   Front & Back
+Use this tab to:
 
-------------------------------------------------------------------------
+- choose the staged folder or restage a finished folder
+- confirm template detection and template selection
+- review staged images
+- check staged-folder readiness
 
-## Pricing
+### 2. Listing content
 
--   Per-size pricing supported
--   One-price-for-all option available
--   Stored in size_price_map
+Use this tab to:
 
-------------------------------------------------------------------------
+- confirm title, bullets, description, and keywords
+- confirm variants, prices, and quantity
+- run `Check listing score`
+- click `Mark as Ready` when the listing is complete
 
-## Constraints
+### 3. Review & output
 
--   Description must be \< 2000 chars
--   Titles SEO optimized
--   Only valid product_category values allowed
+Use this tab to:
 
-------------------------------------------------------------------------
+- review ready listings
+- inspect the review panel
+- generate selected ready folders
+- generate all ready folders when appropriate
 
-## Future Improvements
+## Dropbox Queue Expectations
 
--   Auto title generation
--   Auto bullet generation
--   Template abstraction
--   Multi-placement embroidery logic
+- `_stage` contains listings still being prepared.
+- `ready` contains listings that passed content review and are waiting for workbook generation.
+- `finished` contains completed listings after generation.
 
-## Future feature: listing archive / searchable run history
+Staff should not manually move folders between these queues in Dropbox. Use the app workflow instead.
 
-- keep a history of generated listings
-- searchable by folder, template, title, date, status
-- allow re-download of generated workbooks
-- allow reopening/editing previous prepared/generated listings
-- support filtering and review across past runs
+## Additional Docs
 
-------------------------------------------------------------------------
-
-## Instructions for AI Assistants
-
--   Always respect SKU structure
--   Never change product_category values
--   Match config to dropbox_templates.json
--   Do not invent color codes
--   Prefer supplier data over assumptions
-
+- Staff workflow: `docs/STAFF_RUNBOOK.md`
+- Deployment steps: `docs/DEPLOYMENT_CHECKLIST.md`
+- Current app notes: `docs/CURRENT_STATE.md`
