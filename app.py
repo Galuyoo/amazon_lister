@@ -445,13 +445,56 @@ def apply_listing_memory_to_session(listing_memory: dict[str, Any], profile: dic
     saved_selected_variants = listing_memory.get("selected_variants", {})
     variant_dimensions = profile.get("variant_dimensions", [])
 
+    saved_variants_normalized = {
+        str(key).strip().lower(): value
+        for key, value in dict(saved_selected_variants).items()
+    }
+
+    def get_saved_variant_values(dim_name: str, dim_options: list[str]) -> list[str]:
+        normalized_name = str(dim_name).strip().lower()
+        aliases = [normalized_name]
+
+        if normalized_name in {"colour", "colours", "colors"}:
+            aliases.extend(["color", "colour", "colours", "colors"])
+        elif normalized_name in {"size", "sizes"}:
+            aliases.extend(["size", "sizes"])
+        elif normalized_name in {"design", "style", "styles"}:
+            aliases.extend(["design", "style", "styles"])
+
+        saved_values: list[str] = []
+        for alias in aliases:
+            candidate = saved_variants_normalized.get(alias)
+            if candidate:
+                saved_values = list(candidate)
+                break
+
+        valid_values = [value for value in saved_values if value in dim_options]
+        return valid_values if valid_values else list(dim_options)
+
     if variant_dimensions:
         for dim in variant_dimensions:
-            dim_name = dim.get("name", "")
-            st.session_state[f"variant_{dim_name}"] = saved_selected_variants.get(dim_name, dim.get("options", []))
+            dim_name = str(dim.get("name", "")).strip()
+            dim_options = list(dim.get("options", []))
+            st.session_state[f"variant_{dim_name}"] = get_saved_variant_values(dim_name, dim_options)
     else:
-        st.session_state["selected_colours"] = saved_selected_variants.get("color", profile.get("colors", []))
-        st.session_state["selected_sizes"] = saved_selected_variants.get("size", profile.get("sizes", []))
+        color_options = list(profile.get("colors", []))
+        size_options = list(profile.get("sizes", []))
+
+        saved_colors = (
+            saved_variants_normalized.get("color")
+            or saved_variants_normalized.get("colour")
+            or saved_variants_normalized.get("colors")
+            or saved_variants_normalized.get("colours")
+            or color_options
+        )
+        saved_sizes = (
+            saved_variants_normalized.get("size")
+            or saved_variants_normalized.get("sizes")
+            or size_options
+        )
+
+        st.session_state["selected_colours"] = [color for color in saved_colors if color in color_options] or color_options
+        st.session_state["selected_sizes"] = [size for size in saved_sizes if size in size_options] or size_options
 
 def finalize_staged_dropbox_folder(
     dropbox_cfg: dict[str, Any],
@@ -2292,7 +2335,7 @@ def build_ready_review_data(
         "quantity": int(listing_memory.get("quantity", 0) or 0),
         "price_summary": build_price_summary(dict(listing_memory.get("size_price_map", {}))),
         "parent_main_image_url": "",
-        "support_image_names": [],
+        "support_images": [],
         "child_image_rows": [],
         "quality_report": {"blockers": [], "warnings": []},
         "errors": [],
@@ -2348,24 +2391,33 @@ def build_ready_review_data(
 
     review_data["quality_report"] = validate_listing_quality(profile, payload)
     review_data["parent_main_image_url"] = payload.get("parent_main_image_url", "")
-    review_data["support_image_names"] = [
-        Path(path).name for path in dropbox_overview.get("garment_resource_images", [])
-    ] + [
-        Path(path).name for path in dropbox_overview.get("shared_resource_images", [])
+    review_data["support_images"] = [
+        {
+            "label": f"{idx}. {Path(image_url).name}",
+            "filename": Path(image_url).name,
+            "url": image_url,
+        }
+        for idx, image_url in enumerate(payload.get("other_images", []), start=1)
+        if image_url
     ]
 
     child_image_rows: list[dict[str, str]] = []
-    for color, filename in dropbox_overview.get("main_image_map", {}).items():
+    color_image_map = payload.get("color_image_map", {}) or {}
+    design_color_image_url_map = payload.get("design_color_image_url_map", {}) or {}
+
+    for color, image_url in color_image_map.items():
         child_image_rows.append({
             "variant": color,
-            "image": filename,
+            "filename": Path(image_url).name if image_url else "",
+            "url": image_url,
         })
 
-    for color, design_map in dropbox_overview.get("design_color_image_map", {}).items():
-        for design, filename in design_map.items():
+    for color, design_map in design_color_image_url_map.items():
+        for design, image_url in design_map.items():
             child_image_rows.append({
                 "variant": f"{color} / {design}",
-                "image": filename,
+                "filename": Path(image_url).name if image_url else "",
+                "url": image_url,
             })
 
     review_data["child_image_rows"] = child_image_rows
@@ -2383,7 +2435,6 @@ def render_ready_review_panel(
         dropbox_cfg=dropbox_cfg,
     )
 
-    st.markdown("### Review panel")
     overview_tab, content_tab, images_tab, quality_tab = st.tabs(
         ["Overview", "Content", "Images", "Quality"]
     )
@@ -2415,22 +2466,83 @@ def render_ready_review_panel(
         st.text_area("Keywords preview", value=review_data["generic_keywords"], height=100, disabled=True)
 
     with images_tab:
+        show_image_previews = st.checkbox(
+            "Show image previews",
+            value=False,
+            key="show_ready_review_image_previews",
+        )
+
         st.markdown("**Parent main image**")
-        if review_data["parent_main_image_url"]:
+        support_images = review_data.get("support_images", [])
+        child_image_rows = review_data.get("child_image_rows", [])
+
+        if show_image_previews:
+            if review_data["parent_main_image_url"]:
+                st.image(review_data["parent_main_image_url"], width=240)
+                st.caption(Path(review_data["parent_main_image_url"]).name)
+            else:
+                st.caption("No resolved parent main image.")
+        elif review_data["parent_main_image_url"]:
             st.code(review_data["parent_main_image_url"], language=None)
         else:
             st.caption("No resolved parent main image.")
+
         st.markdown("**Support image order**")
-        if review_data["support_image_names"]:
-            for idx, name in enumerate(review_data["support_image_names"], start=1):
-                st.write(f"{idx}. {name}")
+        if show_image_previews:
+            if support_images:
+                cols = st.columns(min(4, len(support_images)))
+                for idx, image_entry in enumerate(support_images):
+                    with cols[idx % len(cols)]:
+                        st.image(image_entry["url"], width=170)
+                        st.caption(image_entry["label"])
+            else:
+                st.caption("No support images found.")
+        elif support_images:
+            for image_entry in support_images:
+                st.write(image_entry["label"])
         else:
             st.caption("No support images found.")
+
         st.markdown("**Child variant image mapping**")
-        if review_data["child_image_rows"]:
-            st.dataframe(review_data["child_image_rows"], width="stretch", hide_index=True)
+        if show_image_previews:
+            if child_image_rows:
+                cols_per_row = 3
+                cols = st.columns(cols_per_row)
+                for idx, image_entry in enumerate(child_image_rows):
+                    with cols[idx % cols_per_row]:
+                        st.markdown(f"**{image_entry['variant']}**")
+                        if image_entry.get("url"):
+                            st.image(image_entry["url"], width=180)
+                            st.caption(image_entry.get("filename", ""))
+                        else:
+                            st.caption("No resolved image URL.")
+            else:
+                st.caption("No child image mappings found.")
+        elif child_image_rows:
+            st.dataframe(child_image_rows, width="stretch", hide_index=True)
         else:
             st.caption("No child image mappings found.")
+
+        with st.expander("Image URLs and filenames", expanded=False):
+            st.markdown("**Parent main image URL**")
+            if review_data["parent_main_image_url"]:
+                st.code(review_data["parent_main_image_url"], language=None)
+            else:
+                st.caption("No resolved parent main image.")
+
+            st.markdown("**Support image order**")
+            if support_images:
+                for image_entry in support_images:
+                    st.write(image_entry["label"])
+                    st.code(image_entry["url"], language=None)
+            else:
+                st.caption("No support images found.")
+
+            st.markdown("**Child variant image mapping**")
+            if child_image_rows:
+                st.dataframe(child_image_rows, width="stretch", hide_index=True)
+            else:
+                st.caption("No child image mappings found.")
 
     with quality_tab:
         if review_data["errors"]:
@@ -2518,9 +2630,6 @@ def generate_ready_listing(
     }
     quantity = int(listing_memory.get("quantity", 0))
 
-    st.session_state["use_same_price_for_all_sizes"] = bool(
-        listing_memory.get("use_same_price_for_all_sizes", False)
-    )
 
     generation_prep = prepare_generation_payload(
         profile=profile,
@@ -2679,32 +2788,39 @@ def render_ready_queue_view(
     ]
 
     review_folder_options = [item["folder_name"] for item in queue_items if item["listing_memory"]]
-    if review_folder_options:
-        current_review_folder = st.session_state.get("ready_queue_review_folder", review_folder_options[0])
-        if current_review_folder not in review_folder_options:
-            current_review_folder = review_folder_options[0]
-            st.session_state["ready_queue_review_folder"] = current_review_folder
+    st.markdown("### Review ready listing")
+    with st.container(border=True):
+        if review_folder_options:
+            current_review_folder = st.session_state.get("ready_queue_review_folder", review_folder_options[0])
+            if current_review_folder not in review_folder_options:
+                current_review_folder = review_folder_options[0]
+                st.session_state["ready_queue_review_folder"] = current_review_folder
 
-        selected_review_folder = st.selectbox(
-            "Review ready listing",
-            review_folder_options,
-            key="ready_queue_review_folder",
+            selected_review_folder = st.selectbox(
+                "Review ready listing",
+                review_folder_options,
+                key="ready_queue_review_folder",
+            )
+            review_item = ready_lookup.get(selected_review_folder)
+            if review_item:
+                with st.expander("Review panel", expanded=True):
+                    render_ready_review_panel(review_item, dropbox_cfg)
+        else:
+            st.caption("No ready listings available to review yet.")
+
+    st.markdown("### Generate output")
+    with st.container(border=True):
+        selected_ready_folders = st.multiselect(
+            "Select ready folders to generate",
+            selectable_folders,
+            key="ready_queue_selected_folders",
         )
-        review_item = ready_lookup.get(selected_review_folder)
-        if review_item:
-            render_ready_review_panel(review_item, dropbox_cfg)
 
-    selected_ready_folders = st.multiselect(
-        "Select ready folders to generate",
-        selectable_folders,
-        key="ready_queue_selected_folders",
-    )
-
-    col1, col2 = st.columns(2)
-    with col1:
-        generate_selected = st.button("Generate selected", width="stretch")
-    with col2:
-        generate_all = st.button("Generate all ready", width="stretch")
+        col1, col2 = st.columns(2)
+        with col1:
+            generate_selected = st.button("Generate selected", width="stretch")
+        with col2:
+            generate_all = st.button("Generate all ready", width="stretch")
 
     target_folders = selected_ready_folders if generate_selected else list(selectable_folders) if generate_all else []
     if not target_folders:
@@ -2788,14 +2904,11 @@ def main() -> None:
         st.error("No template profiles found. Create family folders under templates/ with schema.json, a shared workbook, and garment subfolders containing config.json.")
         st.stop()
 
-    page_mode = st.sidebar.radio(
-        "View",
-        ["Page 1: Product setup", "Page 2: Listing content", "Page 3: Review & generate"],
-        key="page_mode",
-    )
-    show_page_1 = page_mode == "Page 1: Product setup"
-    show_page_2 = page_mode == "Page 2: Listing content"
-    show_page_3 = page_mode == "Page 3: Review & generate"
+    tab_setup, tab_content, tab_review = st.tabs([
+        "Product setup",
+        "Listing content",
+        "Review & output",
+    ])
 
     families = sorted({profile.get("_family_slug", "") for profile in profiles if profile.get("_family_slug")})
     detection_message = ""
@@ -2920,8 +3033,10 @@ def main() -> None:
 
     staged_folder_name = None
     selected_finished_folder = None
+    content_debug_container = None
+    content_preflight_container = None
 
-    if show_page_1:
+    with tab_setup:
         top_left_col, top_right_col = st.columns(2)
         with top_left_col:
             st.subheader("Folder workflow")
@@ -3047,18 +3162,38 @@ def main() -> None:
                 WORKFLOW_ASSIGNEES,
                 key="assets_prepared_by",
             )
-    elif folder_source == "Use staged folder":
-        staged_folder_name = active_staged_folder_name
+    folder_source = st.session_state.get("folder_source_mode", folder_source)
+    if folder_source == "Use staged folder":
+        staged_folder_name = st.session_state.get("staged_folder_select") or active_staged_folder_name
     else:
         selected_finished_folder = st.session_state.get("finished_folder_select")
 
     listing_memory = dict(active_listing_memory)
     if staged_folder_name and listing_memory:
-        restore_signature = f"{staged_folder_name}|{active_profile_slug}"
-        last_loaded_signature = st.session_state.get("last_loaded_listing_memory_signature")
-        if last_loaded_signature != restore_signature:
+        memory_fingerprint = json.dumps(
+            {
+                "folder": staged_folder_name,
+                "profile": active_profile.get("template_key", active_profile_slug),
+                "template_key": listing_memory.get("template_key", ""),
+                "template_slug": listing_memory.get("template_slug", ""),
+                "title": listing_memory.get("title", ""),
+                "bullet_points": listing_memory.get("bullet_points", []),
+                "product_description": listing_memory.get("product_description", ""),
+                "generic_keywords": listing_memory.get("generic_keywords", ""),
+                "selected_variants": listing_memory.get("selected_variants", {}),
+                "size_price_map": listing_memory.get("size_price_map", {}),
+                "quantity": listing_memory.get("quantity", 100),
+            },
+            sort_keys=True,
+        )
+
+        applied_memory_key = st.session_state.get("applied_listing_memory_key_v2", "")        
+        should_apply_memory = applied_memory_key != memory_fingerprint
+
+        if should_apply_memory:
             apply_listing_memory_to_session(listing_memory, active_profile)
-            st.session_state["last_loaded_listing_memory_signature"] = restore_signature
+            st.session_state["applied_listing_memory_key_v2"] = memory_fingerprint
+            st.session_state["last_loaded_listing_memory_signature"] = f"{staged_folder_name}|{active_profile_slug}"
 
     if listing_memory:
         st.sidebar.info("Loaded saved listing inputs from staged folder.")
@@ -3189,7 +3324,7 @@ def main() -> None:
         except Exception:
             preview_other_images = []
 
-    if show_page_1 or show_page_2:
+    with tab_setup:
         render_active_product_context(
             active_staged_folder_name=active_staged_folder_name,
             active_template_label=active_template_label,
@@ -3199,12 +3334,12 @@ def main() -> None:
             preview_design_color_image_url_map=preview_design_color_image_url_map,
             preview_other_images=preview_other_images,
         )
-        if st.button("Reload images", key=f"reload_images_{page_mode}", width="content"):
+        if st.button("Reload images", key="reload_images_setup"):
             st.session_state.pop("dropbox_overview_cache", None)
             st.session_state.pop("preview_image_cache", None)
 
-    if show_page_1:
         st.subheader("Image review")
+
         with st.expander("Dropbox image overview", expanded=True):
             if not dropbox_overview:
                 st.warning("No shared Dropbox config loaded yet.")
@@ -3289,7 +3424,17 @@ def main() -> None:
                 disabled=True,
             )
 
-    if show_page_2:
+    with tab_content:
+        render_active_product_context(
+            active_staged_folder_name=active_staged_folder_name,
+            active_template_label=active_template_label,
+            selected_parent_main_label=selected_parent_main_label,
+            preview_parent_main_image_url=preview_parent_main_image_url,
+            preview_color_image_map=preview_color_image_map,
+            preview_design_color_image_url_map=preview_design_color_image_url_map,
+            preview_other_images=preview_other_images,
+        )
+
         title = st.text_input(
             "Product title",
             value=title,
@@ -3429,36 +3574,27 @@ def main() -> None:
 
     score_clicked = False
     ready_clicked = False
-    submitted = False
 
-    if show_page_2:
+    with tab_content:
         st.caption("Check listing score to review quality before marking the folder as ready.")
         btn_col1, btn_col2 = st.columns(2)
         with btn_col1:
             score_clicked = st.button("Check listing score", width="stretch")
         with btn_col2:
             ready_clicked = st.button("Mark as Ready", width="stretch")
+        content_debug_container = st.container()
+        content_preflight_container = st.container()
+        content_action_result_container = st.container()
 
-        if not score_clicked and not ready_clicked:
-            return
-
-    elif show_page_3:
-        st.selectbox(
-            "Reviewed by",
-            WORKFLOW_ASSIGNEES,
-            key="reviewed_by",
-        )
-        st.caption("Generate the current listing or use the ready queue below.")
-        submitted = st.button("Generate workbook", width="stretch")
+    with tab_review:
+        st.caption("Review prepared listings and generate selected or all ready folders.")
         render_ready_queue_view(
             ready_folder_names=ready_folder_names,
             profiles=profiles,
             dropbox_cfg=dropbox_cfg,
         )
-        if not submitted:
-            return
 
-    else:
+    if not score_clicked and not ready_clicked:
         return
 
     preflight = build_preflight_report(
@@ -3483,36 +3619,38 @@ def main() -> None:
     all_preview_errors = preflight["all_preview_errors"]
     quality_report = preflight["quality_report"]
 
-    if show_page_2 and st.session_state.get("show_header_debug", False):
-        with st.expander("Page 2 image debug", expanded=False):
-            st.write("selected_variants", selected_variants)
-            st.write("parent_main_image_options", parent_main_image_options)
-            st.write("selected_parent_main_image_url", selected_parent_main_image_url)
-            st.write("preview_parent_main_image_url", preview_parent_main_image_url)
-            st.write("preview_color_image_map", preview_color_image_map)
-            st.write("preview_design_color_image_url_map", preview_design_color_image_url_map)
-            st.write("preview_other_images", preview_other_images)
-            st.write(
-                "preview_payload_image_fields",
-                {
-                    "parent_main_image_url": preview_payload.get("parent_main_image_url", ""),
-                    "other_images": preview_payload.get("other_images", []),
-                    "color_image_map": preview_payload.get("color_image_map", {}),
-                    "design_color_image_url_map": preview_payload.get("design_color_image_url_map", {}),
-                },
+    if (score_clicked or ready_clicked) and content_debug_container is not None and st.session_state.get("show_header_debug", False):
+        with content_debug_container:
+            with st.expander("Listing content image debug", expanded=False):
+                st.write("selected_variants", selected_variants)
+                st.write("parent_main_image_options", parent_main_image_options)
+                st.write("selected_parent_main_image_url", selected_parent_main_image_url)
+                st.write("preview_parent_main_image_url", preview_parent_main_image_url)
+                st.write("preview_color_image_map", preview_color_image_map)
+                st.write("preview_design_color_image_url_map", preview_design_color_image_url_map)
+                st.write("preview_other_images", preview_other_images)
+                st.write(
+                    "preview_payload_image_fields",
+                    {
+                        "parent_main_image_url": preview_payload.get("parent_main_image_url", ""),
+                        "other_images": preview_payload.get("other_images", []),
+                        "color_image_map": preview_payload.get("color_image_map", {}),
+                        "design_color_image_url_map": preview_payload.get("design_color_image_url_map", {}),
+                    },
+                )
+
+    if (score_clicked or ready_clicked) and content_preflight_container is not None:
+        with content_preflight_container:
+            render_preflight_dashboard(
+                quality_report=quality_report,
+                all_preview_errors=all_preview_errors,
+            )
+            render_listing_score_result(
+                quality_report=quality_report,
+                all_preview_errors=all_preview_errors,
             )
 
-    render_preflight_dashboard(
-        quality_report=quality_report,
-        all_preview_errors=all_preview_errors,
-    )
-
-    render_listing_score_result(
-        quality_report=quality_report,
-        all_preview_errors=all_preview_errors,
-    )
-
-    if score_clicked and not ready_clicked and not submitted:
+    if score_clicked and not ready_clicked:
         st.stop()
 
     generation_prep = prepare_generation_payload(
@@ -3537,7 +3675,7 @@ def main() -> None:
     generation_payload["prepared_at"] = st.session_state.get("prepared_at", "")
     generation_payload["reviewed_at"] = format_workflow_timestamp()
     generation_errors = generation_prep["errors"]
-    action_label = "mark this listing ready" if ready_clicked and not submitted else "generate"
+    action_label = "mark this listing ready" if ready_clicked else "generate"
 
     if generation_errors:
         st.error(f"Fix the validation errors before trying to {action_label}.")
@@ -3547,7 +3685,7 @@ def main() -> None:
         st.error(f"Fix the listing quality blockers before trying to {action_label}.")
         st.stop()
 
-    if ready_clicked and not submitted:
+    if ready_clicked:
         try:
             staged_folder_name = staged_folder_name or ""
             ready_folder_name = staged_folder_name
@@ -3567,11 +3705,18 @@ def main() -> None:
             )
 
             st.session_state["last_ready_folder_path"] = ready_folder_path
-            st.success(f"Marked as ready: {Path(ready_folder_path).name}")
-            st.info(f"Saved listing inputs to {listing_memory_path} and moved the folder to ready.")
+
+            target_container = content_action_result_container or st.container()
+            with target_container:
+                st.success(f"Marked as ready: {Path(ready_folder_path).name}")
+                st.info(f"Saved listing inputs to {listing_memory_path} and moved the folder to ready.")
+
             st.stop()
         except Exception as exc:
-            st.error(f"Could not mark the listing as ready: {exc}")
+            target_container = content_action_result_container or st.container()
+            with target_container:
+                st.error(f"Could not mark the listing as ready: {exc}")
+
             st.stop()
 
     try:
