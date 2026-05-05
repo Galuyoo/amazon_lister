@@ -6,7 +6,7 @@ Streamlit app for preparing and generating Amazon flat-file workbooks from Dropb
 
 The app supports a staff workflow built around three Dropbox queues:
 
-- `_stage`: work in progress listings
+- `_stage`: work-in-progress listings
 - `ready`: listings approved for workbook generation
 - `finished`: completed listings that already generated outputs
 
@@ -70,7 +70,7 @@ Notes:
 
 - Do not commit real secrets.
 - Use Dropbox OAuth refresh-token credentials for the shared staff app.
-- Keep local `.env` and cloud secrets values aligned.
+- Keep local `.env` and cloud secret values aligned.
 
 ### Deployment steps
 
@@ -79,6 +79,35 @@ Notes:
 3. Point the app to this repo and `app.py` as the entrypoint.
 4. Add the Dropbox secrets in the app Secrets editor.
 5. Deploy and run the smoke tests listed in `docs/DEPLOYMENT_CHECKLIST.md`.
+
+## Repository Structure
+
+```text
+amazon_lister/
+├── app.py                       # Main Streamlit app entrypoint
+├── requirements.txt             # Runtime dependencies
+├── config/                      # Dropbox/template mapping config
+├── templates/                   # Amazon flat-file template families and garment configs
+├── services/                    # Listing quality and workflow support logic
+├── utils/                       # Dropbox and image helper utilities
+├── docs/                        # Staff docs, deployment notes, and archived notes
+├── .streamlit/                  # Streamlit deployment example config
+└── tools/legacy/                # Older helper scripts not used by the main runtime
+```
+
+The production app starts from:
+
+```bash
+streamlit run app.py
+```
+
+## Generated Outputs
+
+Generated workbook files are written locally to `outputs/` during runtime.
+
+`outputs/` is intentionally ignored by Git and should be treated as temporary working storage. Staff should download generated workbooks immediately after generation or archive them externally, such as in Dropbox or another approved storage location.
+
+A hosted Streamlit app can create files during runtime, but those files are not committed back to GitHub and may not survive app restarts or redeployments.
 
 ## Staff Workflow
 
@@ -116,6 +145,22 @@ Use this tab to:
 - `finished` contains completed listings after generation.
 
 Staff should not manually move folders between these queues in Dropbox. Use the app workflow instead.
+
+## Legacy and Archive Files
+
+Historical project notes are stored in:
+
+```text
+docs/archive/
+```
+
+Older helper scripts and early development workbooks are stored in:
+
+```text
+tools/legacy/
+```
+
+These files are kept for reference only and are not part of the main Streamlit runtime.
 
 ## Additional Docs
 
