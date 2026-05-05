@@ -420,6 +420,22 @@ def load_listing_memory_from_dropbox(folder_path: str) -> dict[str, Any]:
     content = download_text_file(json_path)
     return json.loads(content)  
 
+def initialize_listing_context_defaults(profile: dict[str, Any]) -> None:
+    variant_dimensions = profile.get("variant_dimensions", [])
+
+    if variant_dimensions:
+        for dim in variant_dimensions:
+            dim_name = str(dim.get("name", "")).strip()
+            dim_options = list(dim.get("options", []))
+            st.session_state[f"variant_{dim_name}"] = list(dim_options)
+    else:
+        default_colors = get_profile_color_options(profile)
+        st.session_state["selected_colours"] = list(default_colors)
+        st.session_state["selected_sizes"] = get_available_sizes_for_selected_colors(profile, default_colors)
+
+    st.session_state["parent_main_image_choice"] = "Automatic (recommended)"
+
+
 def apply_listing_memory_to_session(listing_memory: dict[str, Any], profile: dict[str, Any]) -> None:
     st.session_state["title_input"] = listing_memory.get("title", "")
     for field_name in ["assets_prepared_by", "content_prepared_by", "reviewed_by"]:
@@ -477,7 +493,7 @@ def apply_listing_memory_to_session(listing_memory: dict[str, Any], profile: dic
             dim_options = list(dim.get("options", []))
             st.session_state[f"variant_{dim_name}"] = get_saved_variant_values(dim_name, dim_options)
     else:
-        color_options = list(profile.get("colors", []))
+        color_options = get_profile_color_options(profile)
         size_options = list(profile.get("sizes", []))
 
         saved_colors = (
@@ -720,6 +736,22 @@ def render_variant_combinations_preview(
         rows.append(row)
 
     st.dataframe(rows, width="stretch", hide_index=True)
+
+def get_profile_color_options(profile: dict[str, Any]) -> list[str]:
+    colors = list(profile.get("colors", []))
+    if colors:
+        return colors
+
+    color_size_map = profile.get("color_size_map", {})
+    if color_size_map:
+        return list(color_size_map.keys())
+
+    color_sku_map = profile.get("color_sku_map", {})
+    if color_sku_map:
+        return list(color_sku_map.keys())
+
+    return []
+
 
 def get_available_sizes_for_selected_colors(
     profile: dict[str, Any],
@@ -1237,9 +1269,11 @@ def build_size_price_inputs(
         if len(unique_existing_values) == 1 and len(existing_values) == len(sizes):
             default_same_price = True
 
+    if "use_same_price_for_all_sizes" not in st.session_state:
+        st.session_state["use_same_price_for_all_sizes"] = default_same_price
+
     use_same_price = st.checkbox(
         "Use one price for all sizes",
-        value=default_same_price,
         key="use_same_price_for_all_sizes",
     )
 
@@ -1250,10 +1284,12 @@ def build_size_price_inputs(
         if default_same_price and sizes:
             fallback_price = float(saved_prices.get(sizes[0], 29.99))
 
+        if "shared_price_all_sizes" not in st.session_state:
+            st.session_state["shared_price_all_sizes"] = float(fallback_price)
+
         shared_price = st.number_input(
             "Price for all sizes",
             min_value=0.0,
-            value=float(fallback_price),
             step=0.50,
             key="shared_price_all_sizes",
         )
@@ -1268,10 +1304,12 @@ def build_size_price_inputs(
 
     for idx, size in enumerate(sizes):
         with cols[idx % cols_per_row]:
+            if f"price_{size}" not in st.session_state:
+                st.session_state[f"price_{size}"] = float(saved_prices.get(size, 29.99))
+
             size_price_map[size] = st.number_input(
                 f"{size} price",
                 min_value=0.0,
-                value=float(saved_prices.get(size, 29.99)),
                 step=0.50,
                 key=f"price_{size}",
             )
@@ -3012,7 +3050,7 @@ def main() -> None:
     st.sidebar.checkbox("Show troubleshooting debug", key="show_header_debug", value=False)
     st.sidebar.checkbox("Copy row styles", key="copy_row_styles", value=True)
 
-    colors_available = active_profile.get("colors", [])
+    colors_available = get_profile_color_options(active_profile)
     sizes_available = active_profile.get("sizes", [])
     dropbox_overview = get_cached_dropbox_overview(active_profile, dropbox_cfg)
 
@@ -3169,6 +3207,10 @@ def main() -> None:
         selected_finished_folder = st.session_state.get("finished_folder_select")
 
     listing_memory = dict(active_listing_memory)
+    listing_context_key = ""
+    if staged_folder_name:
+        listing_context_key = f"{staged_folder_name}|{active_profile.get('template_key', active_profile_slug)}"
+
     if staged_folder_name and listing_memory:
         memory_fingerprint = json.dumps(
             {
@@ -3187,13 +3229,19 @@ def main() -> None:
             sort_keys=True,
         )
 
-        applied_memory_key = st.session_state.get("applied_listing_memory_key_v2", "")        
+        applied_memory_key = st.session_state.get("applied_listing_memory_key_v2", "")
         should_apply_memory = applied_memory_key != memory_fingerprint
 
         if should_apply_memory:
             apply_listing_memory_to_session(listing_memory, active_profile)
             st.session_state["applied_listing_memory_key_v2"] = memory_fingerprint
+            st.session_state["initialized_listing_context_key"] = listing_context_key
             st.session_state["last_loaded_listing_memory_signature"] = f"{staged_folder_name}|{active_profile_slug}"
+    elif listing_context_key:
+        initialized_context_key = st.session_state.get("initialized_listing_context_key", "")
+        if initialized_context_key != listing_context_key:
+            initialize_listing_context_defaults(active_profile)
+            st.session_state["initialized_listing_context_key"] = listing_context_key
 
     if listing_memory:
         st.sidebar.info("Loaded saved listing inputs from staged folder.")
@@ -3219,6 +3267,13 @@ def main() -> None:
 
     product_description = st.session_state.get("product_description", listing_memory.get("product_description", ""))
     generic_keywords = st.session_state.get("generic_keywords", listing_memory.get("generic_keywords", ""))
+
+    st.session_state.setdefault("title_input", title)
+    for idx, bullet_value in enumerate(bullets, start=1):
+        st.session_state.setdefault(f"bullet_{idx}", bullet_value)
+    st.session_state.setdefault("product_description", product_description)
+    st.session_state.setdefault("generic_keywords", generic_keywords)
+    st.session_state.setdefault("variant_quantity", int(listing_memory.get("quantity", 100)))
 
     profile = active_profile
     variant_dimensions = active_profile.get("variant_dimensions", [])
@@ -3437,7 +3492,6 @@ def main() -> None:
 
         title = st.text_input(
             "Product title",
-            value=title,
             key="title_input",
         )
 
@@ -3449,11 +3503,11 @@ def main() -> None:
 
         st.subheader("Bullets")
         bullets = [
-            st.text_input("Bullet 1", value=bullets[0], key="bullet_1"),
-            st.text_input("Bullet 2", value=bullets[1], key="bullet_2"),
-            st.text_input("Bullet 3", value=bullets[2], key="bullet_3"),
-            st.text_input("Bullet 4", value=bullets[3], key="bullet_4"),
-            st.text_input("Bullet 5", value=bullets[4], key="bullet_5"),
+            st.text_input("Bullet 1", key="bullet_1"),
+            st.text_input("Bullet 2", key="bullet_2"),
+            st.text_input("Bullet 3", key="bullet_3"),
+            st.text_input("Bullet 4", key="bullet_4"),
+            st.text_input("Bullet 5", key="bullet_5"),
         ]
 
         for idx, bullet in enumerate(bullets, start=1):
@@ -3468,7 +3522,6 @@ def main() -> None:
             "Product description",
             height=120,
             key="product_description",
-            value=product_description,
         )
 
         description_chars = len(product_description.strip())
@@ -3483,7 +3536,6 @@ def main() -> None:
             "Search terms",
             height=100,
             key="generic_keywords",
-            value=generic_keywords,
         )
 
         byte_count = len(generic_keywords.encode("utf-8"))
@@ -3511,17 +3563,20 @@ def main() -> None:
                 dim_options = dim.get("options", [])
                 default_options = saved_selected_variants.get(dim_name, dim_options)
                 valid_default_options = [option for option in default_options if option in dim_options]
+                widget_key = f"variant_{dim_name}"
+                if widget_key not in st.session_state:
+                    st.session_state[widget_key] = valid_default_options if valid_default_options else dim_options
                 selected_variants[dim_name] = st.multiselect(
                     dim_label,
                     dim_options,
-                    default=valid_default_options if valid_default_options else dim_options,
-                    key=f"variant_{dim_name}",
+                    key=widget_key,
                 )
         else:
+            if "selected_colours" not in st.session_state:
+                st.session_state["selected_colours"] = selected_variants.get("color", colors_available)
             selected_colors = st.multiselect(
                 "Colours",
                 colors_available,
-                default=selected_variants.get("color", colors_available),
                 key="selected_colours",
             )
 
@@ -3533,10 +3588,11 @@ def main() -> None:
                 selected_colors,
             )
 
+            if "selected_sizes" not in st.session_state:
+                st.session_state["selected_sizes"] = [size for size in selected_variants.get("size", available_sizes_for_selected_colors) if size in available_sizes_for_selected_colors]
             selected_sizes = st.multiselect(
                 "Sizes",
                 available_sizes_for_selected_colors,
-                default=[size for size in selected_variants.get("size", available_sizes_for_selected_colors) if size in available_sizes_for_selected_colors],
                 key="selected_sizes",
             )
 
@@ -3562,7 +3618,6 @@ def main() -> None:
         quantity = st.number_input(
             "Quantity for all child variants",
             min_value=0,
-            value=int(listing_memory.get("quantity", 100)),
             step=1,
             key="variant_quantity",
         )
