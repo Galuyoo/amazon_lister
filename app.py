@@ -8,7 +8,7 @@ import string
 
 from copy import copy
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from utils.image_resolver import resolve_one
 import streamlit as st
 from openpyxl import load_workbook
@@ -332,6 +332,11 @@ def build_ready_folder_path(dropbox_cfg: dict[str, Any], ready_folder_name: str)
     return f"{ready_root}/{ready_folder_name}"
 
 
+def build_approved_folder_path(dropbox_cfg: dict[str, Any], approved_folder_name: str) -> str:
+    approved_root = dropbox_cfg.get("approved_root", "").rstrip("/")
+    return f"{approved_root}/{approved_folder_name}"
+
+
 def restage_finished_dropbox_folder(
     dropbox_cfg: dict[str, Any],
     finished_folder_name: str,
@@ -580,6 +585,36 @@ def move_staged_dropbox_folder_to_ready(
         return moved_path
 
 
+def move_ready_dropbox_folder_to_approved(
+    dropbox_cfg: dict[str, Any],
+    ready_folder_name: str,
+    approved_folder_name: str,
+) -> str:
+    approved_folder_name = sanitize_sku(approved_folder_name)
+    if not approved_folder_name:
+        raise ValueError("Approved folder name is required.")
+
+    approved_root = dropbox_cfg.get("approved_root", "").rstrip("/")
+    ready_path = build_ready_folder_path(dropbox_cfg, ready_folder_name)
+
+    create_folder_if_missing(approved_root)
+
+    final_approved_folder_name = approved_folder_name
+    counter = 1
+
+    while True:
+        approved_folder_path = build_approved_folder_path(dropbox_cfg, final_approved_folder_name)
+        if path_exists(approved_folder_path):
+            final_approved_folder_name = f"{approved_folder_name}-{counter}"
+            counter += 1
+            continue
+
+        moved_path = move_dropbox_folder(ready_path, approved_folder_path)
+        if not moved_path:
+            raise RuntimeError("Dropbox returned an empty path after moving the folder to approved.")
+        return moved_path
+
+
 def finalize_ready_dropbox_folder(
     dropbox_cfg: dict[str, Any],
     ready_folder_name: str,
@@ -614,6 +649,42 @@ def finalize_ready_dropbox_folder(
             return final_sku, moved_path
 
     raise ValueError("Could not generate a unique finished folder SKU after multiple attempts.")
+
+def finalize_approved_dropbox_folder(
+    dropbox_cfg: dict[str, Any],
+    approved_folder_name: str,
+    parent_sku: str,
+    reuse_finished_folder_name: str = "",
+) -> tuple[str, str]:
+    parent_sku = sanitize_sku(parent_sku)
+    if not parent_sku:
+        raise ValueError("Template parent_sku is missing.")
+
+    finished_root = dropbox_cfg.get("finished_root", "").rstrip("/")
+    approved_path = build_approved_folder_path(dropbox_cfg, approved_folder_name)
+
+    create_folder_if_missing(finished_root)
+
+    max_attempts = 20
+
+    reuse_finished_folder_name = sanitize_sku(reuse_finished_folder_name)
+    if reuse_finished_folder_name:
+        final_sku = reuse_finished_folder_name
+        final_folder_path = build_finished_folder_path(dropbox_cfg, final_sku)
+        moved_path = move_dropbox_folder(approved_path, final_folder_path)
+        return final_sku, moved_path
+
+    for _ in range(max_attempts):
+        unique_sku = generate_unique_sku()
+        final_sku = build_final_folder_sku(parent_sku, unique_sku)
+        final_folder_path = build_finished_folder_path(dropbox_cfg, final_sku)
+
+        if not path_exists(final_folder_path):
+            moved_path = move_dropbox_folder(approved_path, final_folder_path)
+            return final_sku, moved_path
+
+    raise ValueError("Could not generate a unique finished folder SKU after multiple attempts.")
+
 
 def split_folder_images(folder_path: str) -> tuple[str, list[str]]:
     files = [p for p in list_folder_files(folder_path) if is_image_file(p)]
@@ -2428,6 +2499,7 @@ def build_ready_review_data(
     listing_memory: dict[str, Any],
     ready_folder_name: str,
     dropbox_cfg: dict[str, Any],
+    source_folder_path: str | None = None,
 ) -> dict[str, Any]:
     review_data = {
         "folder_name": ready_folder_name,
@@ -2480,7 +2552,7 @@ def build_ready_review_data(
     payload = dict(generation_prep["payload"])
 
     dropbox_overview = get_cached_dropbox_overview(profile, dropbox_cfg)
-    ready_folder_path = build_ready_folder_path(dropbox_cfg, ready_folder_name)
+    ready_folder_path = source_folder_path or build_ready_folder_path(dropbox_cfg, ready_folder_name)
     selected_colors = payload.get("colors", [])
 
     try:
@@ -2537,12 +2609,18 @@ def build_ready_review_data(
 def render_ready_review_panel(
     item: dict[str, Any],
     dropbox_cfg: dict[str, Any],
+    key_prefix: str = "ready_review",
+    source_folder_path: str | None = None,
 ) -> None:
+    folder_key = str(item.get("folder_name", "listing")).replace("/", "_").replace("\\", "_").replace(" ", "_")
+    review_key_prefix = f"{key_prefix}_{folder_key}"
+
     review_data = build_ready_review_data(
         profile=item.get("profile"),
         listing_memory=item.get("listing_memory", {}),
         ready_folder_name=item.get("folder_name", ""),
         dropbox_cfg=dropbox_cfg,
+        source_folder_path=source_folder_path,
     )
 
     overview_tab, content_tab, images_tab, quality_tab = st.tabs(
@@ -2579,7 +2657,7 @@ def render_ready_review_panel(
         show_image_previews = st.checkbox(
             "Show image previews",
             value=False,
-            key="show_ready_review_image_previews",
+            key=f"{review_key_prefix}_show_image_previews",
         )
 
         st.markdown("**Parent main image**")
@@ -2680,20 +2758,22 @@ def render_ready_review_panel(
             st.write("None")
 
 
-def build_ready_queue_items(
-    ready_folder_names: list[str],
+def build_queue_items(
+    folder_names: list[str],
     profiles: list[dict[str, Any]],
     dropbox_cfg: dict[str, Any],
+    folder_path_builder: Callable[[dict[str, Any], str], str],
+    ready_label: str,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
 
-    for folder_name in ready_folder_names:
-        ready_folder_path = build_ready_folder_path(dropbox_cfg, folder_name)
+    for folder_name in folder_names:
+        folder_path = folder_path_builder(dropbox_cfg, folder_name)
         load_error = ""
         listing_memory: dict[str, Any] = {}
 
         try:
-            listing_memory = load_listing_memory_from_dropbox(ready_folder_path)
+            listing_memory = load_listing_memory_from_dropbox(folder_path)
         except Exception as exc:
             load_error = str(exc)
 
@@ -2710,7 +2790,7 @@ def build_ready_queue_items(
             "template": template_label,
             "title": listing_memory.get("title", "") if listing_memory else "",
             "variants_summary": build_variants_summary(selected_variants),
-            "load_status": "Ready" if listing_memory and not load_error else "Missing or invalid inputs",
+            "load_status": ready_label if listing_memory and not load_error else "Missing or invalid inputs",
             "profile": profile,
             "listing_memory": listing_memory,
             "load_error": load_error,
@@ -2719,14 +2799,42 @@ def build_ready_queue_items(
     return items
 
 
-def generate_ready_listing(
+def build_ready_queue_items(
+    ready_folder_names: list[str],
+    profiles: list[dict[str, Any]],
+    dropbox_cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
+    return build_queue_items(
+        ready_folder_names,
+        profiles,
+        dropbox_cfg,
+        build_ready_folder_path,
+        "Ready for approval",
+    )
+
+
+def build_approved_queue_items(
+    approved_folder_names: list[str],
+    profiles: list[dict[str, Any]],
+    dropbox_cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
+    return build_queue_items(
+        approved_folder_names,
+        profiles,
+        dropbox_cfg,
+        build_approved_folder_path,
+        "Approved",
+    )
+
+
+def generate_approved_listing(
     profile: dict[str, Any],
     listing_memory: dict[str, Any],
-    ready_folder_name: str,
+    approved_folder_name: str,
     dropbox_cfg: dict[str, Any],
 ) -> dict[str, Any]:
     if not profile:
-        raise ValueError("Could not find a template profile for this ready listing.")
+        raise ValueError("Could not find a template profile for this approved listing.")
 
     title = str(listing_memory.get("title", ""))
     bullets = list(listing_memory.get("bullet_points", []))
@@ -2740,7 +2848,6 @@ def generate_ready_listing(
     }
     quantity = int(listing_memory.get("quantity", 0))
 
-
     generation_prep = prepare_generation_payload(
         profile=profile,
         title=title,
@@ -2750,23 +2857,23 @@ def generate_ready_listing(
         selected_variants=selected_variants,
         size_price_map=size_price_map,
         quantity=quantity,
-        staged_folder_name=ready_folder_name,
+        staged_folder_name=approved_folder_name,
     )
     generation_payload = generation_prep["payload"]
     original_finished_folder_name = str(listing_memory.get("original_finished_folder_name", "")).strip()
     if original_finished_folder_name:
         generation_payload["original_finished_folder_name"] = original_finished_folder_name
-    generation_payload["assets_prepared_by"] = st.session_state.get("assets_prepared_by", "")
-    generation_payload["content_prepared_by"] = st.session_state.get("content_prepared_by", "")
-    generation_payload["reviewed_by"] = st.session_state.get("reviewed_by", "")
+    generation_payload["assets_prepared_by"] = listing_memory.get("assets_prepared_by", "")
+    generation_payload["content_prepared_by"] = listing_memory.get("content_prepared_by", "")
+    generation_payload["reviewed_by"] = listing_memory.get("reviewed_by", "")
     generation_payload["prepared_at"] = listing_memory.get("prepared_at", "")
-    generation_payload["reviewed_at"] = format_workflow_timestamp()
+    generation_payload["reviewed_at"] = listing_memory.get("reviewed_at", "") or format_workflow_timestamp()
     generation_errors = generation_prep["errors"]
     if generation_errors:
         raise ValueError("; ".join(generation_errors))
 
     dropbox_overview = get_cached_dropbox_overview(profile, dropbox_cfg)
-    ready_folder_path = build_ready_folder_path(dropbox_cfg, ready_folder_name)
+    approved_folder_path = build_approved_folder_path(dropbox_cfg, approved_folder_name)
     selected_colors = generation_payload["colors"]
 
     template_path = resolve_template_path(profile)
@@ -2778,15 +2885,15 @@ def generate_ready_listing(
         selected_variants,
         selected_colors,
         dropbox_overview,
-        ready_folder_path,
+        approved_folder_path,
     )
 
     finished_folder_path = ""
 
     try:
-        final_sku, finished_folder_path = finalize_ready_dropbox_folder(
+        final_sku, finished_folder_path = finalize_approved_dropbox_folder(
             dropbox_cfg=dropbox_cfg,
-            ready_folder_name=ready_folder_name,
+            approved_folder_name=approved_folder_name,
             parent_sku=generation_payload["parent_sku"],
             reuse_finished_folder_name=original_finished_folder_name,
         )
@@ -2810,65 +2917,66 @@ def generate_ready_listing(
         save_listing_inputs_json_to_dropbox(profile=profile, payload=payload, folder_path=finished_folder_path)
 
         return {
-            "folder_name": ready_folder_name,
+            "folder_name": approved_folder_name,
             "status": "Success",
             "message": f"Generated {output_path.name}",
             "output_path": str(output_path),
             "output_name": output_path.name,
             "finished_folder_path": finished_folder_path,
         }
-    except Exception as exc:
+    except Exception:
         if finished_folder_path and path_exists(finished_folder_path):
             try:
-                move_dropbox_folder(finished_folder_path, ready_folder_path)
+                move_dropbox_folder(finished_folder_path, approved_folder_path)
             except Exception:
                 pass
         raise
 
 
-def render_ready_queue_view(
+def render_generation_results(results: list[dict[str, Any]], download_key_prefix: str) -> None:
+    if not results:
+        return
+
+    summary_rows = [
+        {
+            "folder_name": result.get("folder_name", ""),
+            "status": result.get("status", ""),
+            "message": result.get("message", ""),
+        }
+        for result in results
+    ]
+    st.dataframe(summary_rows, width="stretch", hide_index=True)
+
+    success_results = [
+        result for result in results
+        if result.get("status") == "Success" and result.get("output_path")
+    ]
+    if not success_results:
+        return
+
+    st.markdown("**Downloads**")
+    for result in success_results:
+        output_path = Path(result["output_path"])
+        if not output_path.exists():
+            st.warning(f"Workbook not found for {result.get('folder_name', '')}: {output_path.name}")
+            continue
+
+        with output_path.open("rb") as f:
+            st.download_button(
+                label=f"Download {result.get('output_name', output_path.name)}",
+                data=f.read(),
+                file_name=result.get("output_name", output_path.name),
+                mime="application/vnd.ms-excel.sheet.macroEnabled.12",
+                key=f"{download_key_prefix}_{result.get('folder_name', '')}_{result.get('output_name', output_path.name)}",
+            )
+
+
+def render_review_queue_view(
     ready_folder_names: list[str],
     profiles: list[dict[str, Any]],
     dropbox_cfg: dict[str, Any],
 ) -> None:
-    st.subheader("Ready queue")
-
-    def render_ready_queue_results(results: list[dict[str, Any]]) -> None:
-        if not results:
-            return
-
-        summary_rows = [
-            {
-                "folder_name": result.get("folder_name", ""),
-                "status": result.get("status", ""),
-                "message": result.get("message", ""),
-            }
-            for result in results
-        ]
-        st.dataframe(summary_rows, width="stretch", hide_index=True)
-
-        success_results = [
-            result for result in results
-            if result.get("status") == "Success" and result.get("output_path")
-        ]
-        if not success_results:
-            return
-
-        st.markdown("**Downloads**")
-        for result in success_results:
-            output_path = Path(result["output_path"])
-            if not output_path.exists():
-                st.warning(f"Workbook not found for {result.get('folder_name', '')}: {output_path.name}")
-                continue
-
-            with output_path.open("rb") as f:
-                st.download_button(
-                    label=f"Download {result.get('output_name', output_path.name)}",
-                    data=f.read(),
-                    file_name=result.get("output_name", output_path.name),
-                    mime="application/vnd.ms-excel.sheet.macroEnabled.12",
-                    key=f"ready_download_{result.get('folder_name', '')}_{result.get('output_name', output_path.name)}",
-                )
+    st.subheader("Review queue")
 
     queue_items = build_ready_queue_items(ready_folder_names, profiles, dropbox_cfg)
     summary_rows = [
@@ -2882,77 +2990,176 @@ def render_ready_queue_view(
         for item in queue_items
     ]
 
-    stored_results = st.session_state.get("ready_queue_generation_results", [])
     if summary_rows:
         st.dataframe(summary_rows, width="stretch", hide_index=True)
     else:
-        st.info("No ready folders found.")
-        render_ready_queue_results(stored_results)
+        st.info("No listings are currently waiting for review.")
         return
 
     ready_lookup = {item["folder_name"]: item for item in queue_items}
-    selectable_folders = [
-        item["folder_name"]
-        for item in queue_items
-        if item["profile"] and item["listing_memory"] and not item["load_error"]
-    ]
-
     review_folder_options = [item["folder_name"] for item in queue_items if item["listing_memory"]]
+
     st.markdown("### Review ready listing")
     with st.container(border=True):
+        if not review_folder_options:
+            st.caption("No reviewable ready listings found.")
+            return
+
+        current_review_folder = st.session_state.get("ready_queue_review_folder", review_folder_options[0])
+        if current_review_folder not in review_folder_options:
+            current_review_folder = review_folder_options[0]
+            st.session_state["ready_queue_review_folder"] = current_review_folder
+
+        selected_review_folder = st.selectbox(
+            "Review ready listing",
+            review_folder_options,
+            key="ready_queue_review_folder",
+        )
+        review_item = ready_lookup.get(selected_review_folder)
+        if review_item:
+            with st.expander("Review panel", expanded=True):
+                render_ready_review_panel(
+                    review_item,
+                    dropbox_cfg,
+                    key_prefix="review_queue",
+                    source_folder_path=build_ready_folder_path(dropbox_cfg, review_item["folder_name"]),
+                )
+
+            default_reviewer = review_item.get("listing_memory", {}).get("reviewed_by", "")
+            review_reviewer_key = st.session_state.get("review_queue_review_folder_reviewer_key", "")
+            reviewer_context_key = f"{selected_review_folder}|{default_reviewer}"
+            if review_reviewer_key != reviewer_context_key:
+                st.session_state["review_queue_reviewed_by"] = default_reviewer if default_reviewer in WORKFLOW_ASSIGNEES else ""
+                st.session_state["review_queue_review_folder_reviewer_key"] = reviewer_context_key
+            st.selectbox(
+                "Reviewed by",
+                WORKFLOW_ASSIGNEES,
+                key="review_queue_reviewed_by",
+            )
+            if st.button("Approve for generation", key="approve_ready_listing_btn", width="stretch"):
+                reviewed_by = st.session_state.get("review_queue_reviewed_by", "")
+                if not reviewed_by:
+                    st.warning("Select who reviewed this listing before approving it.")
+                    return
+                if not review_item.get("profile") or not review_item.get("listing_memory"):
+                    st.error("This ready listing could not be loaded for approval.")
+                    return
+
+                ready_folder_path = build_ready_folder_path(dropbox_cfg, selected_review_folder)
+                payload = dict(review_item["listing_memory"])
+                payload["reviewed_by"] = reviewed_by
+                payload["reviewed_at"] = format_workflow_timestamp()
+
+                try:
+                    save_listing_inputs_json_to_dropbox(
+                        profile=review_item["profile"],
+                        payload=payload,
+                        folder_path=ready_folder_path,
+                    )
+                    approved_folder_path = move_ready_dropbox_folder_to_approved(
+                        dropbox_cfg=dropbox_cfg,
+                        ready_folder_name=selected_review_folder,
+                        approved_folder_name=selected_review_folder,
+                    )
+                    st.session_state["last_approved_folder_path"] = approved_folder_path
+                    st.success(f"Approved successfully: {Path(approved_folder_path).name}")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not approve the listing: {exc}")
+
+
+def render_approved_queue_view(
+    approved_folder_names: list[str],
+    profiles: list[dict[str, Any]],
+    dropbox_cfg: dict[str, Any],
+) -> None:
+    st.subheader("Approved queue")
+
+    queue_items = build_approved_queue_items(approved_folder_names, profiles, dropbox_cfg)
+    summary_rows = [
+        {
+            "folder_name": item["folder_name"],
+            "template": item["template"],
+            "title": item["title"],
+            "variants_summary": item["variants_summary"],
+            "load_status": item["load_status"],
+        }
+        for item in queue_items
+    ]
+
+    stored_results = st.session_state.get("approved_queue_generation_results", [])
+    if summary_rows:
+        st.dataframe(summary_rows, width="stretch", hide_index=True)
+    else:
+        st.info("No approved folders found.")
+        render_generation_results(stored_results, "approved_download")
+        return
+
+    approved_lookup = {item["folder_name"]: item for item in queue_items}
+    review_folder_options = [item["folder_name"] for item in queue_items if item["listing_memory"]]
+
+    st.markdown("### Review approved listing")
+    with st.container(border=True):
         if review_folder_options:
-            current_review_folder = st.session_state.get("ready_queue_review_folder", review_folder_options[0])
+            current_review_folder = st.session_state.get("approved_queue_review_folder", review_folder_options[0])
             if current_review_folder not in review_folder_options:
                 current_review_folder = review_folder_options[0]
-                st.session_state["ready_queue_review_folder"] = current_review_folder
+                st.session_state["approved_queue_review_folder"] = current_review_folder
 
             selected_review_folder = st.selectbox(
-                "Review ready listing",
+                "Review approved listing",
                 review_folder_options,
-                key="ready_queue_review_folder",
+                key="approved_queue_review_folder",
             )
-            review_item = ready_lookup.get(selected_review_folder)
+            review_item = approved_lookup.get(selected_review_folder)
             if review_item:
                 with st.expander("Review panel", expanded=True):
-                    render_ready_review_panel(review_item, dropbox_cfg)
+                    render_ready_review_panel(
+                        review_item,
+                        dropbox_cfg,
+                        key_prefix="approved_output",
+                        source_folder_path=build_approved_folder_path(dropbox_cfg, review_item["folder_name"]),
+                    )
         else:
-            st.caption("No ready listings available to review yet.")
+            st.caption("No approved listings available to review yet.")
 
     st.markdown("### Generate output")
     with st.container(border=True):
-        selected_ready_folders = st.multiselect(
-            "Select ready folders to generate",
-            selectable_folders,
-            key="ready_queue_selected_folders",
+        selected_approved_folders = st.multiselect(
+            "Select approved folders to generate",
+            [item["folder_name"] for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"]],
+            key="approved_queue_selected_folders",
         )
 
         col1, col2 = st.columns(2)
         with col1:
             generate_selected = st.button("Generate selected", width="stretch")
         with col2:
-            generate_all = st.button("Generate all ready", width="stretch")
+            generate_all = st.button("Generate all approved", width="stretch")
 
-    target_folders = selected_ready_folders if generate_selected else list(selectable_folders) if generate_all else []
+    target_folders = selected_approved_folders if generate_selected else [
+        item["folder_name"] for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"]
+    ] if generate_all else []
     if not target_folders:
-        render_ready_queue_results(stored_results)
+        render_generation_results(stored_results, "approved_download")
         return
 
     results: list[dict[str, Any]] = []
     for folder_name in target_folders:
-        item = ready_lookup.get(folder_name)
+        item = approved_lookup.get(folder_name)
         if not item:
             results.append({
                 "folder_name": folder_name,
                 "status": "Failed",
-                "message": "Ready folder could not be loaded.",
+                "message": "Approved folder could not be loaded.",
             })
             continue
 
         try:
-            result = generate_ready_listing(
+            result = generate_approved_listing(
                 profile=item["profile"],
                 listing_memory=item["listing_memory"],
-                ready_folder_name=folder_name,
+                approved_folder_name=folder_name,
                 dropbox_cfg=dropbox_cfg,
             )
             results.append(result)
@@ -2963,10 +3170,9 @@ def render_ready_queue_view(
                 "message": str(exc),
             })
 
-    st.session_state["ready_queue_generation_results"] = results
-    st.session_state.pop("ready_queue_selected_folders", None)
+    st.session_state["approved_queue_generation_results"] = results
+    st.session_state.pop("approved_queue_selected_folders", None)
     st.rerun()
-
 
 def debug_size_headers(header_map: dict[str, int]) -> None:
     if not st.session_state.get("show_header_debug", False):
@@ -2996,15 +3202,17 @@ def main() -> None:
 
     stage_root = dropbox_cfg.get("stage_root", "")
     ready_root = dropbox_cfg.get("ready_root", "")
+    approved_root = dropbox_cfg.get("approved_root", "")
     finished_root = dropbox_cfg.get("finished_root", "")
 
-    if not stage_root or not ready_root or not finished_root:
-        st.error("stage_root, ready_root, and finished_root must be set in config/dropbox_templates.json")
+    if not stage_root or not ready_root or not approved_root or not finished_root:
+        st.error("stage_root, ready_root, approved_root, and finished_root must be set in config/dropbox_templates.json")
         st.stop()
 
     try:
         staged_folder_names = list_folder_names(stage_root)
         ready_folder_names = list_folder_names(ready_root)
+        approved_folder_names = list_folder_names(approved_root)
         finished_folder_names = list_folder_names(finished_root)
     except Exception as exc:
         st.error(f"Could not read Dropbox folders: {exc}")
@@ -3014,10 +3222,11 @@ def main() -> None:
         st.error("No template profiles found. Create family folders under templates/ with schema.json, a shared workbook, and garment subfolders containing config.json.")
         st.stop()
 
-    tab_setup, tab_content, tab_review = st.tabs([
+    tab_setup, tab_content, tab_review_queue, tab_approved_output = st.tabs([
         "Product setup",
         "Listing content",
-        "Review & output",
+        "Review queue",
+        "Approved output",
     ])
 
     families = sorted({profile.get("_family_slug", "") for profile in profiles if profile.get("_family_slug")})
@@ -3750,20 +3959,28 @@ def main() -> None:
     ready_clicked = False
 
     with tab_content:
-        st.caption("Check listing score to review quality before marking the folder as ready.")
+        st.caption("Check listing score to review quality before submitting the folder for review.")
         btn_col1, btn_col2 = st.columns(2)
         with btn_col1:
             score_clicked = st.button("Check listing score", width="stretch")
         with btn_col2:
-            ready_clicked = st.button("Mark as Ready", width="stretch")
+            ready_clicked = st.button("Submit for Review", width="stretch")
         content_debug_container = st.container()
         content_preflight_container = st.container()
         content_action_result_container = st.container()
 
-    with tab_review:
-        st.caption("Review prepared listings and generate selected or all ready folders.")
-        render_ready_queue_view(
+    with tab_review_queue:
+        st.caption("Review ready listings and approve them for generation.")
+        render_review_queue_view(
             ready_folder_names=ready_folder_names,
+            profiles=profiles,
+            dropbox_cfg=dropbox_cfg,
+        )
+
+    with tab_approved_output:
+        st.caption("Generate selected or all approved folders and download completed workbooks.")
+        render_approved_queue_view(
+            approved_folder_names=approved_folder_names,
             profiles=profiles,
             dropbox_cfg=dropbox_cfg,
         )
@@ -3866,7 +4083,7 @@ def main() -> None:
     generation_payload["prepared_at"] = st.session_state.get("prepared_at", "")
     generation_payload["reviewed_at"] = format_workflow_timestamp()
     generation_errors = generation_prep["errors"]
-    action_label = "mark this listing ready" if ready_clicked else "generate"
+    action_label = "submit this listing for review" if ready_clicked else "generate"
 
     if generation_errors:
         st.error(f"Fix the validation errors before trying to {action_label}.")
@@ -3899,14 +4116,14 @@ def main() -> None:
 
             target_container = content_action_result_container or st.container()
             with target_container:
-                st.success(f"Marked as ready: {Path(ready_folder_path).name}")
-                st.info(f"Saved listing inputs to {listing_memory_path} and moved the folder to ready.")
+                st.success(f"Submitted for review: {Path(ready_folder_path).name}")
+                st.info(f"Saved listing inputs to {listing_memory_path} and moved the folder to ready for admin review.")
 
             st.stop()
         except Exception as exc:
             target_container = content_action_result_container or st.container()
             with target_container:
-                st.error(f"Could not mark the listing as ready: {exc}")
+                st.error(f"Could not submit the listing for review: {exc}")
 
             st.stop()
 
