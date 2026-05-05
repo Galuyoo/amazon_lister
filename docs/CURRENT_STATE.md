@@ -1,130 +1,178 @@
-﻿# Amazon Lister - Current State
+﻿# Current Project State - Amazon Lister
 
-## Current milestone
+## Current Status
 
-The Amazon lister now supports a staged production workflow:
+Amazon Lister is now the main listing workflow hub for preparing, reviewing, approving, and generating Amazon flat-file workbooks.
 
-- `_stage` for incoming product folders
-- `ready` for prepared listings with saved `listing_inputs.json`
-- `finished` for generated/completed listings
+The repo is public and deployable through Streamlit Cloud. The app uses Dropbox as the operational state store and template/config files as the product generation system.
 
-The app currently supports:
+Current workflow:
 
-- staged image mapping as the source of truth for variant images
-- reusable garment support images from resource folders
-- global support images
-- template auto-detection from staged folder names and saved listing inputs
-- saved listing inputs via `listing_inputs.json`
-- restage/correction workflow
-- preserving original finished folder/SKU identity after restage
-- marking listings as ready
-- ready queue generation
-- generate selected ready listings
-- generate all ready listings
-- workbook downloads after generation
-- worker/admin metadata:
-  - assets_prepared_by
-  - content_prepared_by
-  - reviewed_by
-  - prepared_at
-  - reviewed_at
+    _stage -> ready -> approved -> finished
 
-## Current UI state
+## Workflow Meaning
 
-The app currently has a 3-page Streamlit layout:
+- `_stage`: worker prepares listing assets and listing content.
+- `ready`: worker submitted the listing for admin review.
+- `approved`: admin approved the listing for generation/listing.
+- `finished`: workbook has been generated and the listing is completed.
 
-1. Product setup
-2. Listing content
-3. Review & generate
+## Current App Tabs
 
-However, the 3-page structure caused active listing context drift between pages.
+### Product setup
 
-Observed issues included:
+Used for:
 
-- active template/profile sometimes drifting after reruns
-- Page 2 losing image/preflight context
-- template/sidebar context disagreeing with staged folder contents
-- image and variant state becoming difficult to keep aligned across separate pages
+- selecting staged/restaged folders
+- template auto-detection
+- reviewing folder/image setup
+- checking staged-folder readiness
+- restaging finished items for correction
 
-## Important workflow rule
+### Listing content
 
-The active staged folder and its `listing_inputs.json` should be treated as the source of truth for the active listing context whenever saved inputs exist.
+Used for:
 
-The app should avoid recomputing the active listing context from multiple competing sources.
+- title, bullets, description, and search terms
+- variants, prices, and quantity
+- listing score checks
+- submitting a listing for admin review
 
-Important context fields:
+### Review queue
 
-- active staged folder
-- active listing memory
-- active profile/template
-- selected variants
-- price map
-- parent main image choice
-- resolved image state
+Used for admin review of folders in `ready`.
 
-## Next planned refactor
+Admins can:
 
-Replace the current 3-page radio/page model with one main workspace containing 3 tabs:
+- inspect listing content
+- inspect images and quality
+- approve for generation
+- deny back to `_stage` with `_denied` suffix
 
-1. Product setup
-   - folder workflow
-   - template selection
-   - readiness scanner
-   - image review
-   - product template details
+### Approved output
 
-2. Listing content
-   - title
-   - bullets
-   - description
-   - keywords
-   - variants
-   - pricing
-   - quantity
-   - check listing score
-   - mark as ready
+Used for approved listings in `approved`.
 
-3. Review & output
-   - current listing review/generate
-   - ready queue
-   - review panel
-   - generate selected/all
-   - downloads
+Admins/output users can:
 
-## Refactor goal
+- review approved listings
+- generate selected approved folders
+- generate all approved folders
+- download generated workbooks
 
-The tab refactor should be layout/orchestration only.
+## Source of Truth Rules
 
-Do not redesign business logic during the first tab refactor.
+- `listing_inputs.json` is the saved listing state.
+- If `listing_inputs.json` exists, it wins over folder auto-detection and stale Streamlit session state.
+- Restaged/corrected finished items must preserve original finished folder/SKU identity.
+- Dropbox queues represent workflow state.
+- Generated workbook files are temporary unless downloaded or archived externally.
+- Template configs define allowed variants, sizes, prices, and workbook mapping behavior.
 
-Preserve:
+## Recently Completed Milestones
 
-- existing widget keys
-- existing staged -> ready -> finished workflow
-- existing ready queue behavior
-- existing generation logic
-- existing restage identity preservation
+- Added runtime `requirements.txt`.
+- Refactored old page-style workflow into a tabbed Streamlit workspace.
+- Fixed saved `listing_inputs.json` hydration.
+- Fixed fresh-folder variant defaults.
+- Fixed stale variant/session-state issues.
+- Added Review queue and Approved output workflow.
+- Added `_stage -> ready -> approved -> finished`.
+- Added deny flow back to `_stage`.
+- Fixed approved review image/quality resolution.
+- Added queue refresh after folder moves.
+- Added Streamlit secrets support.
+- Cleaned public repo structure.
+- Added staff docs and deployment checklist.
+- Added approval workflow release notes.
+- Added caching improvements for Dropbox/image reruns.
 
-## Reason for tab refactor
+## Current Active Workstream
 
-Setup and Listing content are tightly coupled and operate on one active listing session.
+Current branch/workstream:
 
-Tabs should keep the sections visually separate while reducing cross-page context drift.
+    perf/lazy-image-loading
 
-The goal is:
+Goal:
 
-- one active listing workspace
-- one active product context
-- three visual task tabs
-- less reliance on page-to-page session reconstruction
+- Keep normal editing fast.
+- Avoid resolving/loading Dropbox image mappings during simple text, price, assignee, or quantity edits.
+- Load image mappings only when requested or when required for Submit/Approve/Generate.
+- Keep image previews optional and off by default.
+- Make review queue and approved output fast for large colour-count products.
 
-## Future ideas
+## Known Pain Points
 
-Later improvements can include:
+- Image-heavy products can still feel slow, especially high-colour-count items like beanies.
+- Some image mapping work may still happen during normal reruns.
+- There is not yet real worker/admin authentication.
+- Admin-only tabs are not permission-gated yet.
+- Generated workbooks are mostly download-based and should eventually be archived to Dropbox.
+- Full audit/history is not yet formalized.
+- Template onboarding is still developer/admin manual.
+- Streamlit is good enough for the current V1, but role permissions, audit logs, locking, and background jobs may eventually require a stronger backend.
 
-- searchable generated listing archive
-- re-download historical workbooks
-- filter by template, worker, reviewer, date, status
-- better admin approval workflow
-- AI-assisted listing content and SEO optimization
-- template creation/admin tooling for new product types
+## Immediate Next Priorities
+
+1. Finish lazy image loading/performance branch.
+2. Add simple worker/admin role gate.
+3. Archive generated workbooks into each listing folder in Dropbox.
+4. Add `review_history.json` or equivalent audit trail.
+5. Improve review UI/UX.
+6. Add admin safeguards around approval and generation.
+7. Later: template admin tools.
+8. Later: AI-assisted listing content suggestions.
+9. Later: database/backend migration only if Streamlit/Dropbox becomes limiting.
+
+## Hard Rules for Future Changes
+
+- Do not break `_stage -> ready -> approved -> finished`.
+- Do not change workbook generation logic during UI/performance refactors.
+- Do not change `listing_inputs.json` schema without a migration plan.
+- Do not lose restaged finished identity reuse.
+- Do not allow incomplete image mappings to silently generate bad workbooks.
+- Do not commit secrets.
+- Do not manually move Dropbox folders unless recovering from an issue.
+- Keep changes narrow, testable, and branch-based.
+- Keep `listing_inputs.json` as the source of truth when present.
+
+## Manual Smoke Test Checklist
+
+Before merging workflow changes:
+
+1. Select a fresh staged folder.
+2. Confirm template detection.
+3. Confirm variants are selected.
+4. Confirm listing content can be edited.
+5. Submit for Review:
+   - `_stage -> ready`
+6. Review queue:
+   - item appears
+   - content loads
+   - images/quality load when requested
+7. Approve:
+   - `ready -> approved`
+8. Approved output:
+   - item appears
+   - generation works
+   - download appears
+   - `approved -> finished`
+9. Restage finished item:
+   - `finished -> _stage`
+   - saved inputs hydrate
+   - original finished identity is preserved
+10. Deny ready item:
+   - `ready -> _stage`
+   - folder renamed with `_denied`
+11. Hosted Streamlit smoke test:
+   - app opens
+   - Dropbox folders load
+   - staged folder can be selected
+   - listing score works
+   - no secrets are exposed
+
+## Fresh Chat Handoff Prompt
+
+Use this when starting a new ChatGPT/Codex session:
+
+    We are working on the public Galuyoo/amazon_lister repo. It is a Streamlit Amazon listing workflow hub using Dropbox folders and Amazon template configs. The current workflow is _stage -> ready -> approved -> finished. listing_inputs.json is the source of truth for saved listing state. The app has four tabs: Product setup, Listing content, Review queue, Approved output. The current priority is lazy image loading/performance because image-heavy products are slow and content edits can still trigger expensive Dropbox/image work. Do not break workbook generation, Dropbox move semantics, restage identity reuse, or the listing_inputs.json schema.

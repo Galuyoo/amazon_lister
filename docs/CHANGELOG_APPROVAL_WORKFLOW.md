@@ -2,13 +2,11 @@
 
 ## Summary
 
-The Amazon Listing Generator has moved from a simple `_stage -> ready -> finished` workflow into a fuller staff/admin operations flow:
+The Amazon Listing Generator moved from a simple `_stage -> ready -> finished` workflow into a fuller staff/admin operations flow:
 
     _stage -> ready -> approved -> finished
 
 This release separates worker preparation, admin review, admin approval, and final workbook generation.
-
----
 
 ## Workflow Changes
 
@@ -16,10 +14,9 @@ This release separates worker preparation, admin review, admin approval, and fin
 - Worker action changed from `Mark as Ready` to `Submit for Review`.
 - `ready` now means “submitted for admin review,” not “ready to generate.”
 - Admin can approve a ready listing, moving it from `ready` to `approved`.
+- Admin can deny a ready listing, moving it back to `_stage` with a `_denied` suffix.
 - Workbook generation now runs from `approved`, not from `ready`.
 - Finished-folder correction/reuse behavior was preserved, including original finished identity reuse.
-
----
 
 ## Review Queue
 
@@ -28,13 +25,11 @@ This release separates worker preparation, admin review, admin approval, and fin
 - Review approval records:
   - `reviewed_by`
   - `reviewed_at`
-- Added deny handling:
-  - Reviewer can deny a ready listing.
-  - Denied listing is moved back to `_stage`.
-  - Folder is renamed to `<same_name>_denied`.
-  - App reopens staged mode with that denied folder selected.
-
----
+- Deny handling:
+  - reviewer can deny a ready listing
+  - denied listing moves back to `_stage`
+  - folder is renamed to `<same_name>_denied`
+  - app reopens staged mode with the denied folder selected
 
 ## Approved Output Queue
 
@@ -44,8 +39,6 @@ This release separates worker preparation, admin review, admin approval, and fin
   - generating selected approved folders
   - generating all approved folders
 - Approved generation moves folders from `approved` to `finished`.
-
----
 
 ## Top-Level UI
 
@@ -57,8 +50,6 @@ The old mixed `Review & output` area was split into separate top-level tabs:
     Approved output
 
 This makes worker preparation, admin review, and final output generation visibly distinct.
-
----
 
 ## Review Panel
 
@@ -84,8 +75,6 @@ The review panel keeps the internal tabs:
     Images
     Quality
 
----
-
 ## Image Review
 
 - Upgraded review images from mostly text to optional visual review.
@@ -94,8 +83,6 @@ The review panel keeps the internal tabs:
 - Child variant images can render visually.
 - Added `Show image previews`, off by default, to avoid slow review loads.
 - Kept raw URL/details in an expander for debugging.
-
----
 
 ## Metadata Tracking
 
@@ -112,12 +99,10 @@ Added timestamps:
 
 These are persisted in `listing_inputs.json`, loaded back on reopen/restage/review, and used across the workflow.
 
----
-
 ## State and Context Reliability
 
-- Added a normalized active-context layer in `main()`.
-- Saved `listing_inputs.json` is now the authoritative source of template/profile context when present.
+- Added normalized active-context handling.
+- Saved `listing_inputs.json` is the authoritative source of template/profile context when present.
 - Fixed template/profile drift across reruns.
 - Improved hydration for restaged/saved listings.
 - Fixed stale session-state problems for:
@@ -125,9 +110,7 @@ These are persisted in `listing_inputs.json`, loaded back on reopen/restage/revi
   - pricing
   - image context
   - preflight context
-- Fresh staged folders now recover valid variant defaults instead of keeping stale empty session state.
-
----
+- Fresh staged folders recover valid variant defaults instead of keeping stale empty session state.
 
 ## Variant and Image State Fixes
 
@@ -135,9 +118,7 @@ These are persisted in `listing_inputs.json`, loaded back on reopen/restage/revi
 - Legacy color/size templates recover properly when session state contains empty or invalid colors.
 - Fresh folders default to valid colours and sizes.
 - Parent main image choice resets properly on new fresh contexts.
-- Preflight uses resolved preview-side image state instead of recomputing conflicting image state.
-
----
+- Approved output image/quality review resolves against the approved folder path.
 
 ## Performance and Rerun Behavior
 
@@ -145,16 +126,9 @@ These are persisted in `listing_inputs.json`, loaded back on reopen/restage/revi
   - Dropbox overview
   - preview image data
   - resolved image bundle
-- Normal content edits no longer force unnecessary image recomputation, including:
-  - title
-  - bullets
-  - assignees
-  - prices
-  - quantity
+- Normal content edits should avoid unnecessary image recomputation where possible.
 - `Reload images` remains the manual cache reset.
 - Added lightweight debug timing under the troubleshooting toggle.
-
----
 
 ## Queue Refresh and Reruns
 
@@ -167,8 +141,6 @@ These are persisted in `listing_inputs.json`, loaded back on reopen/restage/revi
 - Added workflow flash messaging so success messages survive reruns.
 - Fixed widget-state issues around folder selection by deferring selection resets to the next rerun when needed.
 
----
-
 ## Deployment and Operations Prep
 
 - Added staff/public deployment documentation.
@@ -177,8 +149,6 @@ These are persisted in `listing_inputs.json`, loaded back on reopen/restage/revi
   - local `.env`
   - Streamlit Cloud `st.secrets`
 
----
-
 ## Known Remaining Gaps
 
 - There is not yet true worker/admin authentication.
@@ -186,3 +156,4 @@ These are persisted in `listing_inputs.json`, loaded back on reopen/restage/revi
 - Review image loading can still be heavy for large colour-count products.
 - Generated workbooks are still primarily download-based; long-term archive storage should be added.
 - Full audit/history tracking should be formalized later.
+- Template onboarding is still manual.

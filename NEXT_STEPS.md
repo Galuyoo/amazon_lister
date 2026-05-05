@@ -1,53 +1,157 @@
 ﻿# Next Steps
 
-## Immediate next step
+## Current Active Workstream
 
-Refactor the current 3-page Streamlit layout into one main workspace with 3 tabs:
+Performance and lazy image loading.
 
-- Product setup
-- Listing content
-- Review & output
+Branch:
 
-## Implementation rules
+    perf/lazy-image-loading
 
-- Keep this first refactor layout-only
-- Do not change generation logic
-- Do not change ready queue behavior
-- Do not rename widget keys
-- Do not redesign business logic
-- Preserve existing session-state behavior as much as possible
+Goal:
 
-## Key architecture rule
+- Keep normal editing fast.
+- Avoid resolving/loading Dropbox image mappings during simple text, price, assignee, or quantity edits.
+- Load image mappings only when requested or when required for Submit/Approve/Generate.
+- Keep image previews optional and off by default.
+- Make review queue and approved output usable for high-colour-count products.
 
-The active staged folder and `listing_inputs.json` should define the active listing context when saved inputs exist.
+## Current Workflow
 
-The app should avoid allowing these sources to compete:
+The app now uses:
 
-- folder name auto-detection
-- manual template selector state
-- saved listing_inputs.json
-- current Streamlit session state
+    _stage -> ready -> approved -> finished
 
-Saved listing context should win when available.
+Meaning:
 
-## After tab refactor
+- `_stage`: worker prepares listing.
+- `ready`: submitted for admin review.
+- `approved`: admin approved for generation.
+- `finished`: workbook generated/completed.
 
-Test:
+## Immediate Priorities
 
-1. Select staged folder
-2. Confirm template auto-detection
-3. Switch between all tabs
-4. Check listing score
-5. Mark as Ready
-6. Generate from ready queue
-7. Restage a finished item
-8. Confirm original finished SKU/folder identity is reused
+### 1. Finish lazy image loading
 
-## Later roadmap
+Target behavior:
 
-- Improve Review & output tab into a serious approval hub
-- Add searchable listing archive/history
-- Add downloadable historical generated files
-- Add worker/admin filtering
-- Add AI listing generation and SEO scoring helpers
-- Add future template creation workflow
+- Selecting a folder should be fast.
+- Editing text fields should be fast.
+- Changing assignees should be fast.
+- Changing prices/quantity should be fast.
+- Images should not resolve unless needed.
+- Image previews should be optional and off by default.
+- Submit/Approve/Generate may force image validation if needed for safety.
+
+### 2. Add simple role gate
+
+Minimum version:
+
+- Worker mode:
+  - Product setup
+  - Listing content
+  - Submit for Review
+
+- Admin mode:
+  - Review queue
+  - Approve/Deny
+  - Approved output
+  - Generate approved
+
+This can start as a simple Streamlit secrets/password or role selector. Full auth can come later.
+
+### 3. Archive generated workbooks to Dropbox
+
+Current generated workbook files are temporary unless downloaded.
+
+Future behavior:
+
+- Save generated workbooks into the listing folder.
+- Example:
+
+    finished/<listing-folder>/generated/<timestamp>_amazon_listing.xlsm
+
+Benefits:
+
+- re-download later
+- audit trail
+- safer staff operation
+
+### 4. Add workflow history/audit
+
+Add a history file per listing, such as:
+
+    review_history.json
+
+Track:
+
+- submitted for review
+- approved
+- denied
+- generated
+- restaged
+- timestamps
+- staff member
+
+### 5. Improve Review UI/UX
+
+Ideas:
+
+- faster lightweight review cards
+- load image review only when requested
+- run full quality check only when requested
+- clearer blockers/warnings
+- better approved output download history
+
+### 6. Template admin tools
+
+Future admin workflow:
+
+- add new template family
+- upload workbook/config
+- validate config
+- validate Dropbox image mapping
+- generate sample workbook
+- approve template
+
+Not a priority until staff workflow is stable.
+
+### 7. AI-assisted listing content
+
+Future AI features:
+
+- title suggestions
+- bullet suggestions
+- description suggestions
+- keyword suggestions
+- listing quality improvements
+- SEO warnings
+
+Not a priority until workflow/audit/permissions are stable.
+
+### 8. Database/backend migration
+
+Do not migrate prematurely.
+
+A database becomes useful when we need:
+
+- real user accounts
+- permissions
+- audit history
+- search/filtering
+- concurrent editing/locking
+- background jobs
+- queue dashboards
+- stronger output archive
+
+For V1, Streamlit + Dropbox remains acceptable.
+
+## Hard Rules
+
+- Do not break `_stage -> ready -> approved -> finished`.
+- Do not change workbook generation logic during UI/performance refactors.
+- Do not change `listing_inputs.json` schema without a migration plan.
+- Preserve restage identity reuse.
+- Keep Dropbox destructive operations guarded and clear.
+- Do not commit secrets.
+- Keep changes narrow and testable.
