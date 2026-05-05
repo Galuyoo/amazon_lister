@@ -426,18 +426,7 @@ def load_listing_memory_from_dropbox(folder_path: str) -> dict[str, Any]:
     return json.loads(content)  
 
 def initialize_listing_context_defaults(profile: dict[str, Any]) -> None:
-    variant_dimensions = profile.get("variant_dimensions", [])
-
-    if variant_dimensions:
-        for dim in variant_dimensions:
-            dim_name = str(dim.get("name", "")).strip()
-            dim_options = list(dim.get("options", []))
-            st.session_state[f"variant_{dim_name}"] = list(dim_options)
-    else:
-        default_colors = get_profile_color_options(profile)
-        st.session_state["selected_colours"] = list(default_colors)
-        st.session_state["selected_sizes"] = get_available_sizes_for_selected_colors(profile, default_colors)
-
+    normalize_selected_variants_session_state(profile, {}, force_defaults=True)
     st.session_state["parent_main_image_choice"] = "Automatic (recommended)"
 
 
@@ -463,59 +452,7 @@ def apply_listing_memory_to_session(listing_memory: dict[str, Any], profile: dic
     for size, price in saved_prices.items():
         st.session_state[f"price_{size}"] = float(price)
 
-    saved_selected_variants = listing_memory.get("selected_variants", {})
-    variant_dimensions = profile.get("variant_dimensions", [])
-
-    saved_variants_normalized = {
-        str(key).strip().lower(): value
-        for key, value in dict(saved_selected_variants).items()
-    }
-
-    def get_saved_variant_values(dim_name: str, dim_options: list[str]) -> list[str]:
-        normalized_name = str(dim_name).strip().lower()
-        aliases = [normalized_name]
-
-        if normalized_name in {"colour", "colours", "colors"}:
-            aliases.extend(["color", "colour", "colours", "colors"])
-        elif normalized_name in {"size", "sizes"}:
-            aliases.extend(["size", "sizes"])
-        elif normalized_name in {"design", "style", "styles"}:
-            aliases.extend(["design", "style", "styles"])
-
-        saved_values: list[str] = []
-        for alias in aliases:
-            candidate = saved_variants_normalized.get(alias)
-            if candidate:
-                saved_values = list(candidate)
-                break
-
-        valid_values = [value for value in saved_values if value in dim_options]
-        return valid_values if valid_values else list(dim_options)
-
-    if variant_dimensions:
-        for dim in variant_dimensions:
-            dim_name = str(dim.get("name", "")).strip()
-            dim_options = list(dim.get("options", []))
-            st.session_state[f"variant_{dim_name}"] = get_saved_variant_values(dim_name, dim_options)
-    else:
-        color_options = get_profile_color_options(profile)
-        size_options = list(profile.get("sizes", []))
-
-        saved_colors = (
-            saved_variants_normalized.get("color")
-            or saved_variants_normalized.get("colour")
-            or saved_variants_normalized.get("colors")
-            or saved_variants_normalized.get("colours")
-            or color_options
-        )
-        saved_sizes = (
-            saved_variants_normalized.get("size")
-            or saved_variants_normalized.get("sizes")
-            or size_options
-        )
-
-        st.session_state["selected_colours"] = [color for color in saved_colors if color in color_options] or color_options
-        st.session_state["selected_sizes"] = [size for size in saved_sizes if size in size_options] or size_options
+    normalize_selected_variants_session_state(profile, listing_memory, force_saved_values=True)
 
 def finalize_staged_dropbox_folder(
     dropbox_cfg: dict[str, Any],
@@ -612,6 +549,35 @@ def move_ready_dropbox_folder_to_approved(
         moved_path = move_dropbox_folder(ready_path, approved_folder_path)
         if not moved_path:
             raise RuntimeError("Dropbox returned an empty path after moving the folder to approved.")
+        return moved_path
+
+
+def move_ready_dropbox_folder_to_denied_stage(
+    dropbox_cfg: dict[str, Any],
+    ready_folder_name: str,
+) -> str:
+    denied_folder_name = sanitize_sku(f"{ready_folder_name}_denied")
+    if not denied_folder_name:
+        raise ValueError("Denied folder name is required.")
+
+    stage_root = dropbox_cfg.get("stage_root", "").rstrip("/")
+    ready_path = build_ready_folder_path(dropbox_cfg, ready_folder_name)
+
+    create_folder_if_missing(stage_root)
+
+    final_denied_folder_name = denied_folder_name
+    counter = 1
+
+    while True:
+        denied_stage_folder_path = build_stage_folder_path(dropbox_cfg, final_denied_folder_name)
+        if path_exists(denied_stage_folder_path):
+            final_denied_folder_name = f"{denied_folder_name}-{counter}"
+            counter += 1
+            continue
+
+        moved_path = move_dropbox_folder(ready_path, denied_stage_folder_path)
+        if not moved_path:
+            raise RuntimeError("Dropbox returned an empty path after moving the folder back to staging.")
         return moved_path
 
 
@@ -714,7 +680,10 @@ def build_stage_preview_paths(dropbox_cfg: dict[str, Any], staged_folder_name: s
     stage_root = dropbox_cfg.get("stage_root", "").rstrip("/")
     stage_folder_path = f"{stage_root}/{staged_folder_name}"
 
-    files = [p for p in list_folder_files(stage_folder_path) if is_image_file(p)]
+    try:
+        files = [p for p in list_folder_files(stage_folder_path) if is_image_file(p)]
+    except Exception:
+        return []
     return sorted(files, key=lambda p: Path(p).name.lower())
 
 def padded_list(values: list[str], target_len: int = 8) -> list[str]:
@@ -822,6 +791,140 @@ def get_profile_color_options(profile: dict[str, Any]) -> list[str]:
         return list(color_sku_map.keys())
 
     return []
+
+
+def normalize_saved_selected_variants(saved_selected_variants: dict[str, Any]) -> dict[str, list[str]]:
+    normalized: dict[str, list[str]] = {}
+    for key, value in dict(saved_selected_variants or {}).items():
+        normalized_key = str(key).strip().lower()
+        if isinstance(value, list):
+            normalized[normalized_key] = list(value)
+        elif value is None:
+            normalized[normalized_key] = []
+        else:
+            normalized[normalized_key] = [value]
+    return normalized
+
+
+def get_saved_variant_values(
+    saved_variants_normalized: dict[str, list[str]],
+    dim_name: str,
+) -> list[str]:
+    normalized_name = str(dim_name).strip().lower()
+    aliases = [normalized_name]
+
+    if normalized_name in {"color", "colour", "colors", "colours"}:
+        aliases.extend(["color", "colour", "colors", "colours"])
+    elif normalized_name in {"size", "sizes"}:
+        aliases.extend(["size", "sizes"])
+    elif normalized_name in {"design", "style", "styles"}:
+        aliases.extend(["design", "style", "styles"])
+
+    for alias in aliases:
+        candidate = saved_variants_normalized.get(alias)
+        if candidate is not None:
+            return list(candidate)
+
+    return []
+
+
+def normalize_multiselect_values(
+    current_values: list[str] | None,
+    valid_options: list[str],
+    fallback_values: list[str] | None,
+) -> tuple[list[str], bool]:
+    valid_options = list(valid_options)
+    current_list = list(current_values or [])
+    fallback_list = list(fallback_values or [])
+
+    valid_current = [value for value in current_list if value in valid_options]
+    valid_fallback = [value for value in fallback_list if value in valid_options]
+
+    if not valid_fallback:
+        valid_fallback = list(valid_options)
+
+    should_reset = (
+        not current_list
+        or not valid_current
+        or len(valid_current) != len(current_list)
+    )
+
+    if should_reset:
+        return valid_fallback, True
+
+    return valid_current, False
+
+
+def normalize_selected_variants_session_state(
+    profile: dict[str, Any],
+    listing_memory: dict[str, Any],
+    force_saved_values: bool = False,
+    force_defaults: bool = False,
+) -> dict[str, list[str]]:
+    saved_variants_normalized = normalize_saved_selected_variants(
+        listing_memory.get("selected_variants", {})
+    )
+    variant_dimensions = profile.get("variant_dimensions", [])
+
+    if variant_dimensions:
+        normalized_variants: dict[str, list[str]] = {}
+        for dim in variant_dimensions:
+            dim_name = str(dim.get("name", "")).strip()
+            dim_options = list(dim.get("options", []))
+            widget_key = f"variant_{dim_name}"
+            saved_values = [
+                value for value in get_saved_variant_values(saved_variants_normalized, dim_name)
+                if value in dim_options
+            ]
+            fallback_values = list(dim_options) if force_defaults else (saved_values or list(dim_options))
+            current_values = [] if force_saved_values or force_defaults else st.session_state.get(widget_key, [])
+            normalized_values, should_set = normalize_multiselect_values(
+                current_values,
+                dim_options,
+                fallback_values,
+            )
+            if should_set or widget_key not in st.session_state:
+                st.session_state[widget_key] = list(normalized_values)
+            normalized_variants[dim_name] = list(st.session_state.get(widget_key, normalized_values))
+
+        return normalized_variants
+
+    color_options = get_profile_color_options(profile)
+    saved_colors = [
+        color for color in get_saved_variant_values(saved_variants_normalized, "color")
+        if color in color_options
+    ]
+    color_fallback = list(color_options) if force_defaults else (saved_colors or list(color_options))
+    current_colors = [] if force_saved_values or force_defaults else st.session_state.get("selected_colours", [])
+    normalized_colors, should_set_colors = normalize_multiselect_values(
+        current_colors,
+        color_options,
+        color_fallback,
+    )
+    if should_set_colors or "selected_colours" not in st.session_state:
+        st.session_state["selected_colours"] = list(normalized_colors)
+    selected_colors = list(st.session_state.get("selected_colours", normalized_colors))
+
+    available_sizes = get_available_sizes_for_selected_colors(profile, selected_colors)
+    saved_sizes = [
+        size for size in get_saved_variant_values(saved_variants_normalized, "size")
+        if size in available_sizes
+    ]
+    size_fallback = list(available_sizes) if force_defaults else (saved_sizes or list(available_sizes))
+    current_sizes = [] if force_saved_values or force_defaults else st.session_state.get("selected_sizes", [])
+    normalized_sizes, should_set_sizes = normalize_multiselect_values(
+        current_sizes,
+        available_sizes,
+        size_fallback,
+    )
+    if should_set_sizes or "selected_sizes" not in st.session_state:
+        st.session_state["selected_sizes"] = list(normalized_sizes)
+    selected_sizes = list(st.session_state.get("selected_sizes", normalized_sizes))
+
+    return {
+        "color": selected_colors,
+        "size": selected_sizes,
+    }
 
 
 def get_available_sizes_for_selected_colors(
@@ -977,11 +1080,62 @@ def get_cached_dropbox_overview(
     return data
 
 
+def clear_runtime_caches() -> None:
+    for key in [
+        "dropbox_folder_list_cache",
+        "dropbox_overview_cache",
+        "preview_image_cache",
+        "resolved_image_bundle_cache",
+        "ready_queue_items_cache",
+        "approved_queue_items_cache",
+        "load_image_mappings_now",
+        "current_run_image_resolution_debug",
+    ]:
+        st.session_state.pop(key, None)
+
+    for key in list(st.session_state.keys()):
+        if key.endswith("_load_image_review") or key.endswith("_run_full_quality"):
+            st.session_state.pop(key, None)
+
+
+def set_workflow_flash(level: str, message: str, detail: str = "") -> None:
+    st.session_state["workflow_flash"] = {
+        "level": level,
+        "message": message,
+        "detail": detail,
+    }
+
+
+def render_workflow_flash() -> None:
+    flash = st.session_state.pop("workflow_flash", None)
+    if not flash:
+        return
+
+    level = flash.get("level", "info")
+    message = flash.get("message", "")
+    detail = flash.get("detail", "")
+
+    if message:
+        if level == "success":
+            st.success(message)
+        elif level == "warning":
+            st.warning(message)
+        elif level == "error":
+            st.error(message)
+        else:
+            st.info(message)
+
+    if detail:
+        st.info(detail)
+
+
 def build_preview_image_cache_key(
     profile: dict[str, Any],
     dropbox_cfg: dict[str, Any],
     staged_folder_name: str,
     selected_variants: dict[str, list[str]],
+    include_mappings: bool = False,
+    resolve_preview_urls: bool = False,
 ) -> str:
     template_key = profile.get("template_key", "")
     cache_parts = {
@@ -991,6 +1145,8 @@ def build_preview_image_cache_key(
         "selected_designs": selected_variants.get("design", []),
         "template_cfg": dropbox_cfg.get("templates", {}).get(template_key, {}),
         "general_resource_images": dropbox_cfg.get("general_resource_images", []),
+        "include_mappings": include_mappings,
+        "resolve_preview_urls": resolve_preview_urls,
     }
     return json.dumps(cache_parts, sort_keys=True)
 
@@ -1001,12 +1157,16 @@ def get_cached_preview_image_data(
     staged_folder_name: str,
     selected_variants: dict[str, list[str]],
     dropbox_overview: dict[str, Any],
+    include_mappings: bool = False,
+    resolve_preview_urls: bool = False,
 ) -> dict[str, Any]:
     cache_key = build_preview_image_cache_key(
         profile,
         dropbox_cfg,
         staged_folder_name,
         selected_variants,
+        include_mappings,
+        resolve_preview_urls,
     )
     cache = st.session_state.get("preview_image_cache", {})
 
@@ -1029,14 +1189,11 @@ def get_cached_preview_image_data(
         entries: list[dict[str, Any]] = []
         for label, path in items:
             if not path:
-                entries.append({
-                    "label": label,
-                    "path": path,
-                    "exists": False,
-                    "direct_url": "",
-                })
+                entries.append({"label": label, "path": path, "exists": False, "direct_url": ""})
                 continue
-
+            if not resolve_preview_urls:
+                entries.append({"label": label, "path": path, "exists": True, "direct_url": ""})
+                continue
             try:
                 result = resolve_one(path, label)
                 entries.append({
@@ -1046,15 +1203,10 @@ def get_cached_preview_image_data(
                     "direct_url": result.get("direct_url", ""),
                 })
             except Exception:
-                entries.append({
-                    "label": label,
-                    "path": path,
-                    "exists": False,
-                    "direct_url": "",
-                })
+                entries.append({"label": label, "path": path, "exists": False, "direct_url": ""})
         return entries
 
-    if staged_folder_name:
+    if staged_folder_name and include_mappings:
         try:
             preview_stage_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
             _, _, preview_color_image_map, preview_design_color_image_url_map = resolve_folder_image_urls(
@@ -1075,20 +1227,12 @@ def get_cached_preview_image_data(
             preview_design_color_image_url_map = {}
             parent_main_image_options = []
 
-    staged_preview_entries = resolve_display_entries([
-        (Path(path).name, path) for path in staged_preview_paths
-    ])
-    garment_resource_entries = resolve_display_entries([
-        (Path(path).name, path) for path in dropbox_overview.get("garment_resource_images", [])
-    ])
-    global_resource_entries = resolve_display_entries([
-        (Path(path).name, path) for path in dropbox_overview.get("shared_resource_images", [])
-    ])
+    staged_preview_entries = resolve_display_entries([(Path(path).name, path) for path in staged_preview_paths])
+    garment_resource_entries = resolve_display_entries([(Path(path).name, path) for path in dropbox_overview.get("garment_resource_images", [])])
+    global_resource_entries = resolve_display_entries([(Path(path).name, path) for path in dropbox_overview.get("shared_resource_images", [])])
 
-    stage_folder_path_for_preview = (
-        build_stage_folder_path(dropbox_cfg, staged_folder_name)
-        if staged_folder_name else ""
-    )
+    stage_folder_path_for_preview = build_stage_folder_path(dropbox_cfg, staged_folder_name) if staged_folder_name else ""
+    color_preview_source = get_selected_colors_for_image_resolution(profile, selected_variants) or get_profile_color_options(profile)
     staged_variant_entries = resolve_display_entries([
         (
             color,
@@ -1096,7 +1240,7 @@ def get_cached_preview_image_data(
             if stage_folder_path_for_preview and dropbox_overview.get("main_image_map", {}).get(color, "")
             else "",
         )
-        for color in profile.get("colors", [])
+        for color in color_preview_source
     ])
     design_color_preview_entries = resolve_display_entries([
         (f"{row['color']} / {row['design']}", row.get("path", ""))
@@ -1115,10 +1259,7 @@ def get_cached_preview_image_data(
         "global_resource_entries": global_resource_entries,
         "staged_variant_entries": staged_variant_entries,
     }
-    st.session_state["preview_image_cache"] = {
-        "key": cache_key,
-        "data": data,
-    }
+    st.session_state["preview_image_cache"] = {"key": cache_key, "data": data}
     return data
 
 def build_resolved_image_bundle_cache_key(
@@ -1351,6 +1492,8 @@ def render_active_product_context(
     preview_color_image_map: dict[str, str],
     preview_design_color_image_url_map: dict[str, dict[str, str]],
     preview_other_images: list[str],
+    image_mapping_status: str = "not_loaded",
+    image_mapping_detail: str = "",
 ) -> None:
     st.subheader("Active product context")
     col1, col2 = st.columns(2)
@@ -1359,14 +1502,22 @@ def render_active_product_context(
         st.write(f"Template: `{active_template_label or '-'}`")
         st.write(f"Parent main image choice: `{selected_parent_main_label or 'Automatic (recommended)'}`")
     with col2:
-        parent_status = "Resolved" if preview_parent_main_image_url else "Not resolved"
-        support_count = len(preview_other_images)
-        child_count = len(preview_color_image_map) + sum(
-            len(design_map) for design_map in preview_design_color_image_url_map.values()
-        )
-        st.write(f"Parent main image: `{parent_status}`")
-        st.write(f"Child image mappings: `{child_count}`")
-        st.write(f"Support images: `{support_count}`")
+        if image_mapping_status == "loaded":
+            parent_status = "Resolved" if preview_parent_main_image_url else "Loaded but unresolved"
+            support_count = len(preview_other_images)
+            child_count = len(preview_color_image_map) + sum(
+                len(design_map) for design_map in preview_design_color_image_url_map.values()
+            )
+            st.write("Image mappings: `Loaded`")
+            st.write(f"Parent main image: `{parent_status}`")
+            st.write(f"Child image mappings: `{child_count}`")
+            st.write(f"Support images: `{support_count}`")
+        elif image_mapping_status == "error":
+            st.write("Image mappings: `Missing/errors`")
+            st.caption(image_mapping_detail or "Image mappings could not be resolved.")
+        else:
+            st.write("Image mappings: `Not loaded yet`")
+            st.caption(image_mapping_detail or "Load image mappings to resolve parent, child, and support image URLs.")
 
 
 def trim_search_terms(value: str, max_bytes: int = 249) -> str:
@@ -1998,6 +2149,7 @@ def build_preflight_report(
     resolved_other_images: list[str] | None = None,
     resolved_color_image_map: dict[str, str] | None = None,
     resolved_design_color_image_url_map: dict[str, dict[str, str]] | None = None,
+    allow_image_resolution_fallback: bool = True,
 ) -> dict[str, Any]:
     preview_parent_sku = str(get_default(profile, "parent_sku", "")).strip()
     preview_selected_colors = get_selected_colors_for_image_resolution(profile, selected_variants)
@@ -2045,7 +2197,8 @@ def build_preflight_report(
         preview_payload["parent_main_image_url"] = resolved_parent_main_image_url
 
     if (
-        not resolved_parent_main_image_url
+        allow_image_resolution_fallback
+        and not resolved_parent_main_image_url
         and not resolved_other_images
         and not resolved_color_image_map
         and not resolved_design_color_image_url_map
@@ -2500,6 +2653,8 @@ def build_ready_review_data(
     ready_folder_name: str,
     dropbox_cfg: dict[str, Any],
     source_folder_path: str | None = None,
+    include_images: bool = False,
+    include_quality: bool = False,
 ) -> dict[str, Any]:
     review_data = {
         "folder_name": ready_folder_name,
@@ -2519,8 +2674,10 @@ def build_ready_review_data(
         "parent_main_image_url": "",
         "support_images": [],
         "child_image_rows": [],
-        "quality_report": {"blockers": [], "warnings": []},
+        "quality_report": {"blockers": [], "warnings": [], "score": 0, "breakdown": {}},
         "errors": [],
+        "image_review_loaded": include_images or include_quality,
+        "quality_check_loaded": include_quality,
     }
 
     if not profile:
@@ -2551,6 +2708,9 @@ def build_ready_review_data(
     review_data["errors"].extend(generation_prep["errors"])
     payload = dict(generation_prep["payload"])
 
+    if not (include_images or include_quality):
+        return review_data
+
     dropbox_overview = get_cached_dropbox_overview(profile, dropbox_cfg)
     ready_folder_path = source_folder_path or build_ready_folder_path(dropbox_cfg, ready_folder_name)
     selected_colors = payload.get("colors", [])
@@ -2571,7 +2731,6 @@ def build_ready_review_data(
     except Exception as exc:
         review_data["errors"].append(str(exc))
 
-    review_data["quality_report"] = validate_listing_quality(profile, payload)
     review_data["parent_main_image_url"] = payload.get("parent_main_image_url", "")
     review_data["support_images"] = [
         {
@@ -2603,6 +2762,10 @@ def build_ready_review_data(
             })
 
     review_data["child_image_rows"] = child_image_rows
+
+    if include_quality:
+        review_data["quality_report"] = validate_listing_quality(profile, payload)
+
     return review_data
 
 
@@ -2614,6 +2777,8 @@ def render_ready_review_panel(
 ) -> None:
     folder_key = str(item.get("folder_name", "listing")).replace("/", "_").replace("\\", "_").replace(" ", "_")
     review_key_prefix = f"{key_prefix}_{folder_key}"
+    image_review_loaded = bool(st.session_state.get(f"{review_key_prefix}_load_image_review", False))
+    quality_check_loaded = bool(st.session_state.get(f"{review_key_prefix}_run_full_quality", False))
 
     review_data = build_ready_review_data(
         profile=item.get("profile"),
@@ -2621,6 +2786,8 @@ def render_ready_review_panel(
         ready_folder_name=item.get("folder_name", ""),
         dropbox_cfg=dropbox_cfg,
         source_folder_path=source_folder_path,
+        include_images=image_review_loaded or quality_check_loaded,
+        include_quality=quality_check_loaded,
     )
 
     overview_tab, content_tab, images_tab, quality_tab = st.tabs(
@@ -2659,103 +2826,114 @@ def render_ready_review_panel(
             value=False,
             key=f"{review_key_prefix}_show_image_previews",
         )
-
-        st.markdown("**Parent main image**")
-        support_images = review_data.get("support_images", [])
-        child_image_rows = review_data.get("child_image_rows", [])
-
-        if show_image_previews:
-            if review_data["parent_main_image_url"]:
-                st.image(review_data["parent_main_image_url"], width=240)
-                st.caption(Path(review_data["parent_main_image_url"]).name)
-            else:
-                st.caption("No resolved parent main image.")
-        elif review_data["parent_main_image_url"]:
-            st.code(review_data["parent_main_image_url"], language=None)
+        if not review_data["image_review_loaded"]:
+            st.info("Image mappings are not loaded for this review yet.")
+            if st.button("Load image review", key=f"{review_key_prefix}_load_image_review_btn", width="content"):
+                st.session_state[f"{review_key_prefix}_load_image_review"] = True
+                st.rerun()
         else:
-            st.caption("No resolved parent main image.")
+            st.markdown("**Parent main image**")
+            support_images = review_data.get("support_images", [])
+            child_image_rows = review_data.get("child_image_rows", [])
 
-        st.markdown("**Support image order**")
-        if show_image_previews:
-            if support_images:
-                cols = st.columns(min(4, len(support_images)))
-                for idx, image_entry in enumerate(support_images):
-                    with cols[idx % len(cols)]:
-                        st.image(image_entry["url"], width=170)
-                        st.caption(image_entry["label"])
-            else:
-                st.caption("No support images found.")
-        elif support_images:
-            for image_entry in support_images:
-                st.write(image_entry["label"])
-        else:
-            st.caption("No support images found.")
-
-        st.markdown("**Child variant image mapping**")
-        if show_image_previews:
-            if child_image_rows:
-                cols_per_row = 3
-                cols = st.columns(cols_per_row)
-                for idx, image_entry in enumerate(child_image_rows):
-                    with cols[idx % cols_per_row]:
-                        st.markdown(f"**{image_entry['variant']}**")
-                        if image_entry.get("url"):
-                            st.image(image_entry["url"], width=180)
-                            st.caption(image_entry.get("filename", ""))
-                        else:
-                            st.caption("No resolved image URL.")
-            else:
-                st.caption("No child image mappings found.")
-        elif child_image_rows:
-            st.dataframe(child_image_rows, width="stretch", hide_index=True)
-        else:
-            st.caption("No child image mappings found.")
-
-        with st.expander("Image URLs and filenames", expanded=False):
-            st.markdown("**Parent main image URL**")
-            if review_data["parent_main_image_url"]:
+            if show_image_previews:
+                if review_data["parent_main_image_url"]:
+                    st.image(review_data["parent_main_image_url"], width=240)
+                    st.caption(Path(review_data["parent_main_image_url"]).name)
+                else:
+                    st.caption("No resolved parent main image.")
+            elif review_data["parent_main_image_url"]:
                 st.code(review_data["parent_main_image_url"], language=None)
             else:
                 st.caption("No resolved parent main image.")
 
             st.markdown("**Support image order**")
-            if support_images:
+            if show_image_previews:
+                if support_images:
+                    cols = st.columns(min(4, len(support_images)))
+                    for idx, image_entry in enumerate(support_images):
+                        with cols[idx % len(cols)]:
+                            st.image(image_entry["url"], width=170)
+                            st.caption(image_entry["label"])
+                else:
+                    st.caption("No support images found.")
+            elif support_images:
                 for image_entry in support_images:
                     st.write(image_entry["label"])
-                    st.code(image_entry["url"], language=None)
             else:
                 st.caption("No support images found.")
 
             st.markdown("**Child variant image mapping**")
-            if child_image_rows:
+            if show_image_previews:
+                if child_image_rows:
+                    cols_per_row = 3
+                    cols = st.columns(cols_per_row)
+                    for idx, image_entry in enumerate(child_image_rows):
+                        with cols[idx % cols_per_row]:
+                            st.markdown(f"**{image_entry['variant']}**")
+                            if image_entry.get("url"):
+                                st.image(image_entry["url"], width=180)
+                                st.caption(image_entry.get("filename", ""))
+                            else:
+                                st.caption("No resolved image URL.")
+                else:
+                    st.caption("No child image mappings found.")
+            elif child_image_rows:
                 st.dataframe(child_image_rows, width="stretch", hide_index=True)
             else:
                 st.caption("No child image mappings found.")
 
+            with st.expander("Image URLs and filenames", expanded=False):
+                st.markdown("**Parent main image URL**")
+                if review_data["parent_main_image_url"]:
+                    st.code(review_data["parent_main_image_url"], language=None)
+                else:
+                    st.caption("No resolved parent main image.")
+
+                st.markdown("**Support image order**")
+                if support_images:
+                    for image_entry in support_images:
+                        st.write(image_entry["label"])
+                        st.code(image_entry["url"], language=None)
+                else:
+                    st.caption("No support images found.")
+
+                st.markdown("**Child variant image mapping**")
+                if child_image_rows:
+                    st.dataframe(child_image_rows, width="stretch", hide_index=True)
+                else:
+                    st.caption("No child image mappings found.")
+
     with quality_tab:
-        if review_data["errors"]:
-            st.error("Preflight issues found")
-            for error in review_data["errors"]:
-                st.write(f"- {error}")
+        if not review_data["quality_check_loaded"]:
+            st.info("Full image quality check has not been run yet.")
+            if st.button("Run full image quality check", key=f"{review_key_prefix}_run_full_quality_btn", width="content"):
+                st.session_state[f"{review_key_prefix}_run_full_quality"] = True
+                st.rerun()
         else:
-            st.success("No preflight issues found.")
+            if review_data["errors"]:
+                st.error("Preflight issues found")
+                for error in review_data["errors"]:
+                    st.write(f"- {error}")
+            else:
+                st.success("No preflight issues found.")
 
-        blockers = review_data["quality_report"].get("blockers", [])
-        warnings = review_data["quality_report"].get("warnings", [])
+            blockers = review_data["quality_report"].get("blockers", [])
+            warnings = review_data["quality_report"].get("warnings", [])
 
-        st.markdown("**Quality blockers**")
-        if blockers:
-            for blocker in blockers:
-                st.write(f"- {blocker}")
-        else:
-            st.write("None")
+            st.markdown("**Quality blockers**")
+            if blockers:
+                for blocker in blockers:
+                    st.write(f"- {blocker}")
+            else:
+                st.write("None")
 
-        st.markdown("**Quality warnings**")
-        if warnings:
-            for warning in warnings:
-                st.write(f"- {warning}")
-        else:
-            st.write("None")
+            st.markdown("**Quality warnings**")
+            if warnings:
+                for warning in warnings:
+                    st.write(f"- {warning}")
+            else:
+                st.write("None")
 
 
 def build_queue_items(
@@ -3036,13 +3214,19 @@ def render_review_queue_view(
                 WORKFLOW_ASSIGNEES,
                 key="review_queue_reviewed_by",
             )
-            if st.button("Approve for generation", key="approve_ready_listing_btn", width="stretch"):
+            action_col1, action_col2 = st.columns(2)
+            with action_col1:
+                approve_clicked = st.button("Approve for generation", key="approve_ready_listing_btn", width="stretch")
+            with action_col2:
+                deny_clicked = st.button("Deny and return to staging", key="deny_ready_listing_btn", width="stretch")
+
+            if approve_clicked or deny_clicked:
                 reviewed_by = st.session_state.get("review_queue_reviewed_by", "")
                 if not reviewed_by:
-                    st.warning("Select who reviewed this listing before approving it.")
+                    st.warning("Select who reviewed this listing before approving or denying it.")
                     return
                 if not review_item.get("profile") or not review_item.get("listing_memory"):
-                    st.error("This ready listing could not be loaded for approval.")
+                    st.error("This ready listing could not be loaded for review.")
                     return
 
                 ready_folder_path = build_ready_folder_path(dropbox_cfg, selected_review_folder)
@@ -3056,16 +3240,36 @@ def render_review_queue_view(
                         payload=payload,
                         folder_path=ready_folder_path,
                     )
-                    approved_folder_path = move_ready_dropbox_folder_to_approved(
-                        dropbox_cfg=dropbox_cfg,
-                        ready_folder_name=selected_review_folder,
-                        approved_folder_name=selected_review_folder,
-                    )
-                    st.session_state["last_approved_folder_path"] = approved_folder_path
-                    st.success(f"Approved successfully: {Path(approved_folder_path).name}")
+                    if approve_clicked:
+                        approved_folder_path = move_ready_dropbox_folder_to_approved(
+                            dropbox_cfg=dropbox_cfg,
+                            ready_folder_name=selected_review_folder,
+                            approved_folder_name=selected_review_folder,
+                        )
+                        st.session_state["last_approved_folder_path"] = approved_folder_path
+                        clear_runtime_caches()
+                        set_workflow_flash(
+                            "success",
+                            f"Approved successfully: {Path(approved_folder_path).name}",
+                        )
+                    else:
+                        denied_stage_folder_path = move_ready_dropbox_folder_to_denied_stage(
+                            dropbox_cfg=dropbox_cfg,
+                            ready_folder_name=selected_review_folder,
+                        )
+                        st.session_state["pending_staged_folder_selection_on_rerun"] = Path(denied_stage_folder_path).name
+                        st.session_state["auto_switch_to_staged"] = True
+                        clear_runtime_caches()
+                        set_workflow_flash(
+                            "warning",
+                            f"Denied and returned to staging: {Path(denied_stage_folder_path).name}",
+                        )
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"Could not approve the listing: {exc}")
+                    if approve_clicked:
+                        st.error(f"Could not approve the listing: {exc}")
+                    else:
+                        st.error(f"Could not deny the listing: {exc}")
 
 
 def render_approved_queue_view(
@@ -3172,6 +3376,7 @@ def render_approved_queue_view(
 
     st.session_state["approved_queue_generation_results"] = results
     st.session_state.pop("approved_queue_selected_folders", None)
+    clear_runtime_caches()
     st.rerun()
 
 def debug_size_headers(header_map: dict[str, int]) -> None:
@@ -3196,6 +3401,7 @@ def main() -> None:
     st.set_page_config(page_title="Amazon Listing Generator", layout="wide")
     st.title("Amazon Listing Generator")
     st.caption("Template-based Amazon flat file generator.")
+    render_workflow_flash()
 
     profiles = list_template_profiles()
     dropbox_cfg = load_dropbox_templates_config()
@@ -3235,6 +3441,21 @@ def main() -> None:
 
     if st.session_state.pop("auto_switch_to_staged", False):
         st.session_state["folder_source_mode"] = "Use staged folder"
+
+    pending_staged_folder_selection = st.session_state.pop("pending_staged_folder_selection_on_rerun", None)
+    if pending_staged_folder_selection:
+        st.session_state["staged_folder_select"] = pending_staged_folder_selection
+        st.session_state.pop("last_detected_template_folder", None)
+        st.session_state.pop("applied_listing_memory_key_v2", None)
+        st.session_state.pop("initialized_listing_context_key", None)
+        st.session_state.pop("last_loaded_listing_memory_signature", None)
+
+    if st.session_state.pop("clear_staged_folder_selection_on_rerun", False):
+        st.session_state["staged_folder_select"] = None
+        st.session_state.pop("last_detected_template_folder", None)
+        st.session_state.pop("applied_listing_memory_key_v2", None)
+        st.session_state.pop("initialized_listing_context_key", None)
+        st.session_state.pop("last_loaded_listing_memory_signature", None)
 
     folder_source = st.session_state.get("folder_source_mode", "Use staged folder")
     initial_staged_folder_name = st.session_state.get("staged_folder_select", "") if folder_source == "Use staged folder" else ""
@@ -3330,6 +3551,7 @@ def main() -> None:
     st.sidebar.write(f"Variation theme: `{active_profile.get('variation_theme', '')}`")
     st.sidebar.checkbox("Show troubleshooting debug", key="show_header_debug", value=False)
     st.sidebar.checkbox("Copy row styles", key="copy_row_styles", value=True)
+    st.sidebar.checkbox("Auto-load image mappings", key="auto_load_image_mappings", value=False)
 
     colors_available = get_profile_color_options(active_profile)
     sizes_available = active_profile.get("sizes", [])
@@ -3416,7 +3638,11 @@ def main() -> None:
                             folder_path=moved_path,
                         )
 
-                        st.success(f"Restaged successfully: {Path(moved_path).name}")
+                        clear_runtime_caches()
+                        set_workflow_flash(
+                            "success",
+                            f"Restaged successfully: {Path(moved_path).name}",
+                        )
 
                         st.session_state["last_loaded_listing_memory_folder"] = ""
                         st.session_state.pop("finalized_stage_folder", None)
@@ -3564,50 +3790,15 @@ def main() -> None:
 
     profile = active_profile
     variant_dimensions = active_profile.get("variant_dimensions", [])
-    selected_variants: dict[str, list[str]] = {}
     saved_selected_variants = listing_memory.get("selected_variants", {})
+    selected_variants = normalize_selected_variants_session_state(active_profile, listing_memory)
 
-    if variant_dimensions:
-        for dim in variant_dimensions:
-            dim_name = dim.get("name", "")
-            dim_options = dim.get("options", [])
-            default_options = saved_selected_variants.get(dim_name, dim_options)
-            valid_default_options = [option for option in default_options if option in dim_options]
-            current_values = st.session_state.get(
-                f"variant_{dim_name}",
-                valid_default_options if valid_default_options else dim_options,
-            )
-            selected_variants[dim_name] = [option for option in current_values if option in dim_options]
-    else:
-        saved_colors = saved_selected_variants.get("color", colors_available)
-        saved_sizes = saved_selected_variants.get("size", sizes_available)
-
-        valid_saved_colors = [color for color in saved_colors if color in colors_available]
-        current_colors = st.session_state.get(
-            "selected_colours",
-            valid_saved_colors if valid_saved_colors else colors_available,
-        )
-        selected_colors = [color for color in current_colors if color in colors_available]
-
-        available_sizes_for_selected_colors = get_available_sizes_for_selected_colors(
-            profile,
-            selected_colors,
-        )
-
-        valid_saved_sizes = [
-            size for size in saved_sizes
-            if size in available_sizes_for_selected_colors
-        ]
-        current_sizes = st.session_state.get(
-            "selected_sizes",
-            valid_saved_sizes if valid_saved_sizes else available_sizes_for_selected_colors,
-        )
-        selected_sizes = [size for size in current_sizes if size in available_sizes_for_selected_colors]
-
-        selected_variants = {
-            "color": selected_colors,
-            "size": selected_sizes,
-        }
+    auto_load_image_mappings = bool(st.session_state.get("auto_load_image_mappings", False))
+    load_image_mappings_now = bool(st.session_state.pop("load_image_mappings_now", False))
+    should_load_image_mappings = bool(staged_folder_name) and (auto_load_image_mappings or load_image_mappings_now)
+    image_resolution_reason = "auto_load" if auto_load_image_mappings and staged_folder_name else "manual_load" if load_image_mappings_now and staged_folder_name else ""
+    image_mappings_loaded_this_run = False
+    resolved_image_error = ""
 
     preview_image_cache_hit = (
         st.session_state.get("preview_image_cache", {}).get("key")
@@ -3616,6 +3807,8 @@ def main() -> None:
             dropbox_cfg,
             staged_folder_name or "",
             selected_variants,
+            should_load_image_mappings,
+            should_load_image_mappings,
         )
     )
     t_preview_image_start = time.perf_counter()
@@ -3625,8 +3818,11 @@ def main() -> None:
         staged_folder_name=staged_folder_name or "",
         selected_variants=selected_variants,
         dropbox_overview=dropbox_overview,
+        include_mappings=should_load_image_mappings,
+        resolve_preview_urls=should_load_image_mappings,
     )
     t_preview_image_end = time.perf_counter()
+    staged_preview_paths = preview_image_data.get("staged_preview_paths", [])
     staged_preview_entries = preview_image_data.get("staged_preview_entries", [])
     design_color_preview_entries = preview_image_data.get("design_color_preview_entries", [])
     parent_main_image_options = preview_image_data.get("parent_main_image_options", [])
@@ -3669,19 +3865,21 @@ def main() -> None:
         "color_image_map": preview_color_image_map,
         "design_color_image_url_map": preview_design_color_image_url_map,
     }
-    resolved_image_bundle_cache_hit = False
-    t_resolved_image_start = time.perf_counter()
+    current_resolved_image_cache_key = ""
     if staged_folder_name:
-        resolved_image_bundle_cache_hit = (
-            st.session_state.get("resolved_image_bundle_cache", {}).get("key")
-            == build_resolved_image_bundle_cache_key(
-                profile,
-                dropbox_cfg,
-                staged_folder_name,
-                selected_variants,
-                selected_parent_main_image_url,
-            )
+        current_resolved_image_cache_key = build_resolved_image_bundle_cache_key(
+            profile,
+            dropbox_cfg,
+            staged_folder_name,
+            selected_variants,
+            selected_parent_main_image_url,
         )
+    resolved_image_bundle_cache_hit = bool(
+        current_resolved_image_cache_key
+        and st.session_state.get("resolved_image_bundle_cache", {}).get("key") == current_resolved_image_cache_key
+    )
+    t_resolved_image_start = time.perf_counter()
+    if staged_folder_name and (should_load_image_mappings or resolved_image_bundle_cache_hit):
         try:
             resolved_image_bundle = get_cached_resolved_image_bundle(
                 profile=profile,
@@ -3691,7 +3889,9 @@ def main() -> None:
                 dropbox_overview=dropbox_overview,
                 selected_parent_main_image_url=selected_parent_main_image_url,
             )
-        except Exception:
+            image_mappings_loaded_this_run = should_load_image_mappings and not resolved_image_bundle_cache_hit
+        except Exception as exc:
+            resolved_image_error = str(exc)
             resolved_image_bundle = {
                 "parent_main_image_url": preview_parent_main_image_url if preview_parent_main_image_url else "",
                 "other_images": [],
@@ -3705,6 +3905,22 @@ def main() -> None:
     preview_design_color_image_url_map = dict(
         resolved_image_bundle.get("design_color_image_url_map", preview_design_color_image_url_map)
     )
+    image_mappings_loaded = bool(
+        current_resolved_image_cache_key
+        and st.session_state.get("resolved_image_bundle_cache", {}).get("key") == current_resolved_image_cache_key
+    )
+    if not staged_folder_name:
+        image_mapping_status = "not_loaded"
+        image_mapping_detail = "Select a staged folder to load image mappings."
+    elif resolved_image_error:
+        image_mapping_status = "error"
+        image_mapping_detail = resolved_image_error
+    elif image_mappings_loaded:
+        image_mapping_status = "loaded"
+        image_mapping_detail = "Image mappings loaded."
+    else:
+        image_mapping_status = "not_loaded"
+        image_mapping_detail = "Image mappings not loaded yet. Use Load image mappings when you need image review or full checks."
 
     with tab_setup:
         render_active_product_context(
@@ -3715,11 +3931,18 @@ def main() -> None:
             preview_color_image_map=preview_color_image_map,
             preview_design_color_image_url_map=preview_design_color_image_url_map,
             preview_other_images=preview_other_images,
+            image_mapping_status=image_mapping_status,
+            image_mapping_detail=image_mapping_detail,
         )
-        if st.button("Reload images", key="reload_images_setup"):
-            st.session_state.pop("dropbox_overview_cache", None)
-            st.session_state.pop("preview_image_cache", None)
-            st.session_state.pop("resolved_image_bundle_cache", None)
+        load_col, reload_col = st.columns(2)
+        with load_col:
+            if st.button("Load image mappings", key="load_image_mappings_setup", width="stretch"):
+                st.session_state["load_image_mappings_now"] = True
+                st.rerun()
+        with reload_col:
+            if st.button("Reload images", key="reload_images_setup", width="stretch"):
+                clear_runtime_caches()
+                st.rerun()
 
         st.subheader("Image review")
 
@@ -3732,61 +3955,66 @@ def main() -> None:
                 if dropbox_overview.get("garment_resource_warning"):
                     st.warning(dropbox_overview["garment_resource_warning"])
 
-                tab_names = ["Staged variant images", "Shared resources", "Variant combinations"]
-                colours_tab, resources_tab, combos_tab = st.tabs(tab_names)
+                st.write(f"Staged image files found: `{len(staged_preview_paths)}`")
+                st.write(f"Selected variants: `{build_variants_summary(selected_variants)}`")
+                st.write(f"Garment support files configured: `{len(dropbox_overview.get('garment_resource_images', []))}`")
+                st.write(f"Shared support files configured: `{len(dropbox_overview.get('shared_resource_images', []))}`")
 
                 with st.expander("Raw staged folder contents", expanded=False):
                     if not staged_folder_name:
                         st.caption("Select a staged Dropbox folder to preview its images.")
+                    elif staged_preview_paths:
+                        for preview_path in staged_preview_paths:
+                            st.code(preview_path, language=None)
                     else:
-                        st.write(f"Stage folder: `{staged_folder_name}`")
+                        st.caption("No staged image files found.")
+
+                if image_mapping_status != "loaded":
+                    st.info("Image mappings are not loaded yet. Use Load image mappings when you need parent/child/support image resolution.")
+                else:
+                    tab_names = ["Staged variant images", "Shared resources", "Variant combinations"]
+                    colours_tab, resources_tab, combos_tab = st.tabs(tab_names)
+
+                    with resources_tab:
                         render_path_grid(
-                            "Selected staged images",
-                            staged_preview_entries,
+                            "Garment support images",
+                            garment_resource_entries,
+                            cols_per_row=5,
+                            image_width=150,
+                        )
+                        render_path_grid(
+                            "Global resource images",
+                            global_resource_entries,
                             cols_per_row=5,
                             image_width=150,
                         )
 
-                with resources_tab:
-                    render_path_grid(
-                        "Garment support images",
-                        garment_resource_entries,
-                        cols_per_row=5,
-                        image_width=150,
-                    )
-                    render_path_grid(
-                        "Global resource images",
-                        global_resource_entries,
-                        cols_per_row=5,
-                        image_width=150,
-                    )
+                    with colours_tab:
+                        st.caption("These are the staged mapped variant images expected from the selected staged folder.")
+                        parent_main_option_labels = ["Automatic (recommended)"] + [
+                            label for label, _ in parent_main_image_options
+                        ]
+                        current_parent_main_label = st.session_state.get("parent_main_image_choice", "Automatic (recommended)")
+                        if current_parent_main_label not in parent_main_option_labels:
+                            current_parent_main_label = "Automatic (recommended)"
+                        st.selectbox(
+                            "Parent main image",
+                            parent_main_option_labels,
+                            index=parent_main_option_labels.index(current_parent_main_label),
+                            key="parent_main_image_choice",
+                        )
+                        render_color_grid(
+                            staged_variant_entries,
+                            cols_per_row=5,
+                            image_width=150,
+                        )
 
-                with colours_tab:
-                    st.caption("These are the staged mapped variant images expected from the selected staged folder.")
-                    parent_main_option_labels = ["Automatic (recommended)"] + [
-                        label for label, _ in parent_main_image_options
-                    ]
-                    current_parent_main_label = st.session_state.get("parent_main_image_choice", "Automatic (recommended)")
-                    if current_parent_main_label not in parent_main_option_labels:
-                        current_parent_main_label = "Automatic (recommended)"
-                    st.selectbox(
-                        "Parent main image",
-                        parent_main_option_labels,
-                        index=parent_main_option_labels.index(current_parent_main_label),
-                        key="parent_main_image_choice",
-                    )
-                    render_color_grid(
-                        staged_variant_entries,
-                        cols_per_row=5,
-                        image_width=150,
-                    )
-
-                with combos_tab:
-                    render_design_color_grid(
-                        design_color_preview_entries,
-                        cols_per_row=5,
-                        image_width=150,
-                    )
+                    with combos_tab:
+                        render_design_color_grid(
+                            design_color_preview_entries,
+                            cols_per_row=5,
+                            image_width=150,
+                        )
 
         st.subheader("Product template details")
         col1, col2 = st.columns(2)
@@ -3816,6 +4044,8 @@ def main() -> None:
             preview_color_image_map=preview_color_image_map,
             preview_design_color_image_url_map=preview_design_color_image_url_map,
             preview_other_images=preview_other_images,
+            image_mapping_status=image_mapping_status,
+            image_mapping_detail=image_mapping_detail,
         )
 
         title = st.text_input(
@@ -3889,19 +4119,13 @@ def main() -> None:
                 dim_name = dim.get("name", "")
                 dim_label = dim.get("label", dim_name.title())
                 dim_options = dim.get("options", [])
-                default_options = saved_selected_variants.get(dim_name, dim_options)
-                valid_default_options = [option for option in default_options if option in dim_options]
                 widget_key = f"variant_{dim_name}"
-                if widget_key not in st.session_state:
-                    st.session_state[widget_key] = valid_default_options if valid_default_options else dim_options
                 selected_variants[dim_name] = st.multiselect(
                     dim_label,
                     dim_options,
                     key=widget_key,
                 )
         else:
-            if "selected_colours" not in st.session_state:
-                st.session_state["selected_colours"] = selected_variants.get("color", colors_available)
             selected_colors = st.multiselect(
                 "Colours",
                 colors_available,
@@ -3915,9 +4139,13 @@ def main() -> None:
                 profile,
                 selected_colors,
             )
-
-            if "selected_sizes" not in st.session_state:
-                st.session_state["selected_sizes"] = [size for size in selected_variants.get("size", available_sizes_for_selected_colors) if size in available_sizes_for_selected_colors]
+            normalized_sizes, should_set_sizes = normalize_multiselect_values(
+                st.session_state.get("selected_sizes", []),
+                available_sizes_for_selected_colors,
+                selected_variants.get("size", available_sizes_for_selected_colors),
+            )
+            if should_set_sizes or "selected_sizes" not in st.session_state:
+                st.session_state["selected_sizes"] = list(normalized_sizes)
             selected_sizes = st.multiselect(
                 "Sizes",
                 available_sizes_for_selected_colors,
@@ -3988,6 +4216,35 @@ def main() -> None:
     if not score_clicked and not ready_clicked:
         return
 
+    if staged_folder_name and not image_mappings_loaded:
+        image_resolution_reason = "submit_review" if ready_clicked else "score_check"
+        with st.spinner("Loading image mappings for quality checks..."):
+            try:
+                resolved_image_bundle = get_cached_resolved_image_bundle(
+                    profile=profile,
+                    dropbox_cfg=dropbox_cfg,
+                    staged_folder_name=staged_folder_name,
+                    selected_variants=selected_variants,
+                    dropbox_overview=dropbox_overview,
+                    selected_parent_main_image_url=selected_parent_main_image_url,
+                )
+                image_mappings_loaded_this_run = True
+                resolved_image_bundle_cache_hit = False
+                resolved_image_error = ""
+                preview_parent_main_image_url = resolved_image_bundle.get("parent_main_image_url", preview_parent_main_image_url)
+                preview_other_images = list(resolved_image_bundle.get("other_images", []))
+                preview_color_image_map = dict(resolved_image_bundle.get("color_image_map", preview_color_image_map))
+                preview_design_color_image_url_map = dict(
+                    resolved_image_bundle.get("design_color_image_url_map", preview_design_color_image_url_map)
+                )
+                image_mappings_loaded = True
+                image_mapping_status = "loaded"
+                image_mapping_detail = "Image mappings loaded."
+            except Exception as exc:
+                resolved_image_error = str(exc)
+                image_mapping_status = "error"
+                image_mapping_detail = resolved_image_error
+
     preflight = build_preflight_report(
         profile=profile,
         dropbox_cfg=dropbox_cfg,
@@ -4004,6 +4261,7 @@ def main() -> None:
         resolved_other_images=preview_other_images,
         resolved_color_image_map=preview_color_image_map,
         resolved_design_color_image_url_map=preview_design_color_image_url_map,
+        allow_image_resolution_fallback=False,
     )
 
     preview_payload = preflight["preview_payload"]
@@ -4027,6 +4285,9 @@ def main() -> None:
                         "resolved_image_bundle": {
                             "cache_hit": resolved_image_bundle_cache_hit,
                             "seconds": round(t_resolved_image_end - t_resolved_image_start, 4),
+                            "loaded_this_run": image_mappings_loaded_this_run,
+                            "reason": image_resolution_reason,
+                            "status": image_mapping_status,
                         },
                     },
                 )
@@ -4113,13 +4374,14 @@ def main() -> None:
             )
 
             st.session_state["last_ready_folder_path"] = ready_folder_path
-
-            target_container = content_action_result_container or st.container()
-            with target_container:
-                st.success(f"Submitted for review: {Path(ready_folder_path).name}")
-                st.info(f"Saved listing inputs to {listing_memory_path} and moved the folder to ready for admin review.")
-
-            st.stop()
+            st.session_state["clear_staged_folder_selection_on_rerun"] = True
+            clear_runtime_caches()
+            set_workflow_flash(
+                "success",
+                f"Submitted for review: {Path(ready_folder_path).name}",
+                f"Saved listing inputs to {listing_memory_path} and moved the folder to ready for admin review.",
+            )
+            st.rerun()
         except Exception as exc:
             target_container = content_action_result_container or st.container()
             with target_container:
