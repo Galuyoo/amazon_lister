@@ -1050,6 +1050,78 @@ def get_cached_preview_image_data(
     }
     return data
 
+def build_resolved_image_bundle_cache_key(
+    profile: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+    selected_variants: dict[str, list[str]],
+    selected_parent_main_image_url: str = "",
+) -> str:
+    template_key = profile.get("template_key", "")
+    cache_parts = {
+        "template_key": template_key,
+        "staged_folder_name": staged_folder_name,
+        "selected_colors": get_selected_colors_for_image_resolution(profile, selected_variants),
+        "selected_designs": selected_variants.get("design", []),
+        "selected_parent_main_image_url": selected_parent_main_image_url,
+        "template_cfg": dropbox_cfg.get("templates", {}).get(template_key, {}),
+        "general_resource_images": dropbox_cfg.get("general_resource_images", []),
+        "resource_root": dropbox_cfg.get("resource_root", ""),
+    }
+    return json.dumps(cache_parts, sort_keys=True)
+
+
+def get_cached_resolved_image_bundle(
+    profile: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+    selected_variants: dict[str, list[str]],
+    dropbox_overview: dict[str, Any],
+    selected_parent_main_image_url: str = "",
+) -> dict[str, Any]:
+    if not staged_folder_name:
+        return {
+            "parent_main_image_url": "",
+            "other_images": [],
+            "color_image_map": {},
+            "design_color_image_url_map": {},
+        }
+
+    cache_key = build_resolved_image_bundle_cache_key(
+        profile,
+        dropbox_cfg,
+        staged_folder_name,
+        selected_variants,
+        selected_parent_main_image_url,
+    )
+    cache = st.session_state.get("resolved_image_bundle_cache", {})
+
+    if cache.get("key") == cache_key:
+        return cache.get("data", {})
+
+    stage_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+    parent_main_image_url, other_images, color_image_map, design_color_image_url_map = resolve_folder_image_urls(
+        profile,
+        selected_variants,
+        get_selected_colors_for_image_resolution(profile, selected_variants),
+        dropbox_overview,
+        stage_folder_path,
+        selected_parent_main_image_url=selected_parent_main_image_url,
+    )
+
+    data = {
+        "parent_main_image_url": parent_main_image_url,
+        "other_images": other_images,
+        "color_image_map": color_image_map,
+        "design_color_image_url_map": design_color_image_url_map,
+    }
+    st.session_state["resolved_image_bundle_cache"] = {
+        "key": cache_key,
+        "data": data,
+    }
+    return data
+
+
 def resolve_folder_image_urls(
     profile: dict[str, Any],
     selected_variants: dict[str, list[str]],
@@ -3052,7 +3124,13 @@ def main() -> None:
 
     colors_available = get_profile_color_options(active_profile)
     sizes_available = active_profile.get("sizes", [])
+    dropbox_overview_cache_hit = (
+        st.session_state.get("dropbox_overview_cache", {}).get("key")
+        == build_dropbox_overview_cache_key(active_profile, dropbox_cfg)
+    )
+    t_dropbox_overview_start = time.perf_counter()
     dropbox_overview = get_cached_dropbox_overview(active_profile, dropbox_cfg)
+    t_dropbox_overview_end = time.perf_counter()
 
     with st.sidebar.expander("Dropbox debug"):
         try:
@@ -3322,6 +3400,16 @@ def main() -> None:
             "size": selected_sizes,
         }
 
+    preview_image_cache_hit = (
+        st.session_state.get("preview_image_cache", {}).get("key")
+        == build_preview_image_cache_key(
+            profile,
+            dropbox_cfg,
+            staged_folder_name or "",
+            selected_variants,
+        )
+    )
+    t_preview_image_start = time.perf_counter()
     preview_image_data = get_cached_preview_image_data(
         profile=profile,
         dropbox_cfg=dropbox_cfg,
@@ -3329,6 +3417,7 @@ def main() -> None:
         selected_variants=selected_variants,
         dropbox_overview=dropbox_overview,
     )
+    t_preview_image_end = time.perf_counter()
     staged_preview_entries = preview_image_data.get("staged_preview_entries", [])
     design_color_preview_entries = preview_image_data.get("design_color_preview_entries", [])
     parent_main_image_options = preview_image_data.get("parent_main_image_options", [])
@@ -3365,19 +3454,48 @@ def main() -> None:
         selected_parent_main_image_url
         or (parent_main_image_options[0][1] if parent_main_image_options else "")
     )
-    preview_other_images = []
+    resolved_image_bundle = {
+        "parent_main_image_url": preview_parent_main_image_url if preview_parent_main_image_url else "",
+        "other_images": [],
+        "color_image_map": preview_color_image_map,
+        "design_color_image_url_map": preview_design_color_image_url_map,
+    }
+    resolved_image_bundle_cache_hit = False
+    t_resolved_image_start = time.perf_counter()
     if staged_folder_name:
-        try:
-            _, preview_other_images, _, _ = resolve_folder_image_urls(
+        resolved_image_bundle_cache_hit = (
+            st.session_state.get("resolved_image_bundle_cache", {}).get("key")
+            == build_resolved_image_bundle_cache_key(
                 profile,
+                dropbox_cfg,
+                staged_folder_name,
                 selected_variants,
-                get_selected_colors_for_image_resolution(profile, selected_variants),
-                dropbox_overview,
-                build_stage_folder_path(dropbox_cfg, staged_folder_name),
+                selected_parent_main_image_url,
+            )
+        )
+        try:
+            resolved_image_bundle = get_cached_resolved_image_bundle(
+                profile=profile,
+                dropbox_cfg=dropbox_cfg,
+                staged_folder_name=staged_folder_name,
+                selected_variants=selected_variants,
+                dropbox_overview=dropbox_overview,
                 selected_parent_main_image_url=selected_parent_main_image_url,
             )
         except Exception:
-            preview_other_images = []
+            resolved_image_bundle = {
+                "parent_main_image_url": preview_parent_main_image_url if preview_parent_main_image_url else "",
+                "other_images": [],
+                "color_image_map": preview_color_image_map,
+                "design_color_image_url_map": preview_design_color_image_url_map,
+            }
+    t_resolved_image_end = time.perf_counter()
+    preview_parent_main_image_url = resolved_image_bundle.get("parent_main_image_url", preview_parent_main_image_url)
+    preview_other_images = list(resolved_image_bundle.get("other_images", []))
+    preview_color_image_map = dict(resolved_image_bundle.get("color_image_map", preview_color_image_map))
+    preview_design_color_image_url_map = dict(
+        resolved_image_bundle.get("design_color_image_url_map", preview_design_color_image_url_map)
+    )
 
     with tab_setup:
         render_active_product_context(
@@ -3392,6 +3510,7 @@ def main() -> None:
         if st.button("Reload images", key="reload_images_setup"):
             st.session_state.pop("dropbox_overview_cache", None)
             st.session_state.pop("preview_image_cache", None)
+            st.session_state.pop("resolved_image_bundle_cache", None)
 
         st.subheader("Image review")
 
@@ -3674,9 +3793,26 @@ def main() -> None:
     all_preview_errors = preflight["all_preview_errors"]
     quality_report = preflight["quality_report"]
 
-    if (score_clicked or ready_clicked) and content_debug_container is not None and st.session_state.get("show_header_debug", False):
+    if content_debug_container is not None and st.session_state.get("show_header_debug", False):
         with content_debug_container:
             with st.expander("Listing content image debug", expanded=False):
+                st.write(
+                    "cache_timings",
+                    {
+                        "dropbox_overview": {
+                            "cache_hit": dropbox_overview_cache_hit,
+                            "seconds": round(t_dropbox_overview_end - t_dropbox_overview_start, 4),
+                        },
+                        "preview_image_data": {
+                            "cache_hit": preview_image_cache_hit,
+                            "seconds": round(t_preview_image_end - t_preview_image_start, 4),
+                        },
+                        "resolved_image_bundle": {
+                            "cache_hit": resolved_image_bundle_cache_hit,
+                            "seconds": round(t_resolved_image_end - t_resolved_image_start, 4),
+                        },
+                    },
+                )
                 st.write("selected_variants", selected_variants)
                 st.write("parent_main_image_options", parent_main_image_options)
                 st.write("selected_parent_main_image_url", selected_parent_main_image_url)
