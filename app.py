@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 from datetime import datetime
 import time
 import json
@@ -34,6 +34,289 @@ BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 CONFIG_DIR = BASE_DIR / "config"
 OUTPUT_DIR = BASE_DIR / "outputs"
+
+LOAD_EVENT_LIMIT = 160
+
+
+def reset_load_events() -> None:
+    st.session_state["current_load_events"] = []
+    st.session_state["current_rerun_started_at"] = time.perf_counter()
+
+
+def record_load_event(label: str, started_at: float, detail: str = "") -> None:
+    try:
+        elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
+        events = st.session_state.setdefault("current_load_events", [])
+        events.append({
+            "step": label,
+            "ms": elapsed_ms,
+            "detail": detail,
+        })
+        if len(events) > LOAD_EVENT_LIMIT:
+            st.session_state["current_load_events"] = events[-LOAD_EVENT_LIMIT:]
+    except Exception:
+        # Loading debug must never break the app.
+        pass
+
+
+def format_folder_detail(folder_path: str) -> str:
+    folder_path = str(folder_path or "").rstrip("/")
+    return folder_path.split("/")[-1] if folder_path else ""
+
+
+DEBUG_STATE_SKIP_KEYS = {
+    "current_load_events",
+    "current_rerun_started_at",
+    "last_debug_state_snapshot",
+    "current_rerun_changed_keys",
+    "perf_history",
+    "last_perf_saved_signature",
+}
+
+DEBUG_STATE_SKIP_PREFIXES = (
+    "_",
+)
+
+
+def normalize_debug_state_value(value: Any) -> str:
+    try:
+        if isinstance(value, (str, int, float, bool, type(None))):
+            return repr(value)
+        if isinstance(value, (list, tuple, set)):
+            return f"{type(value).__name__}(len={len(value)})::{repr(list(value)[:8])}"
+        if isinstance(value, dict):
+            keys = list(value.keys())[:8]
+            return f"dict(len={len(value)}, keys={keys})"
+        return f"{type(value).__name__}::{repr(value)[:180]}"
+    except Exception:
+        return f"{type(value).__name__}::<unreadable>"
+
+
+def build_debug_state_snapshot() -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+
+    for key, value in st.session_state.items():
+        key_text = str(key)
+
+        if key_text in DEBUG_STATE_SKIP_KEYS:
+            continue
+
+        if key_text.startswith(DEBUG_STATE_SKIP_PREFIXES):
+            continue
+
+        snapshot[key_text] = normalize_debug_state_value(value)
+
+    return snapshot
+
+
+def capture_rerun_cause() -> None:
+    try:
+        previous = dict(st.session_state.get("last_debug_state_snapshot", {}))
+        current = build_debug_state_snapshot()
+
+        changed_keys: list[dict[str, str]] = []
+
+        all_keys = sorted(set(previous.keys()) | set(current.keys()))
+
+        for key in all_keys:
+            before = previous.get(key, "<missing>")
+            after = current.get(key, "<missing>")
+
+            if before != after:
+                changed_keys.append({
+                    "key": key,
+                    "before": before[:220],
+                    "after": after[:220],
+                })
+
+        st.session_state["current_rerun_changed_keys"] = changed_keys[:80]
+    except Exception as exc:
+        st.session_state["current_rerun_changed_keys"] = [{
+            "key": "debug_error",
+            "before": "",
+            "after": str(exc),
+        }]
+
+
+def save_debug_state_snapshot() -> None:
+    try:
+        st.session_state["last_debug_state_snapshot"] = build_debug_state_snapshot()
+    except Exception:
+        pass
+
+
+def render_rerun_cause_debug() -> None:
+    if not st.session_state.get("show_loading_debug_inline", False):
+        return
+
+    changed_keys = list(st.session_state.get("current_rerun_changed_keys", []))
+
+    st.markdown("### Rerun cause tracker")
+    st.caption(
+        "These are Streamlit session-state keys that changed since the previous completed rerun. "
+        "This helps identify which widget/action triggered the loading spinner."
+    )
+
+    if not changed_keys:
+        st.success("No session-state changes detected from the previous completed rerun.")
+        return
+
+    summary = ", ".join(row.get("key", "") for row in changed_keys[:12])
+    st.info(f"Likely trigger key(s): {summary}")
+
+    with st.expander("Changed session-state keys", expanded=False):
+        st.dataframe(changed_keys, hide_index=True, width="stretch")
+
+
+def render_inline_loading_debug() -> None:
+    st.divider()
+
+    show_debug = st.checkbox(
+        "Show loading debug",
+        key="show_loading_debug_inline",
+        value=False,
+    )
+
+    if not show_debug:
+        return
+
+    events = list(st.session_state.get("current_load_events", []))
+    rerun_started_at = st.session_state.get("current_rerun_started_at")
+
+    full_rerun_ms = None
+    if rerun_started_at:
+        full_rerun_ms = round((time.perf_counter() - float(rerun_started_at)) * 1000, 1)
+
+    recorded_load_ms = round(
+        sum(float(event.get("ms", 0) or 0) for event in events),
+        1,
+    )
+
+    estimated_ui_ms = None
+    if full_rerun_ms is not None:
+        estimated_ui_ms = round(max(full_rerun_ms - recorded_load_ms, 0), 1)
+
+    slowest_event = ""
+    slowest_ms = 0.0
+    if events:
+        slowest = max(events, key=lambda event: float(event.get("ms", 0) or 0))
+        slowest_event = str(slowest.get("step", ""))
+        slowest_ms = float(slowest.get("ms", 0) or 0)
+
+    run_signature = {
+        "events": events,
+        "full_rerun_ms": full_rerun_ms,
+        "recorded_load_ms": recorded_load_ms,
+        "estimated_ui_ms": estimated_ui_ms,
+        "slowest_event": slowest_event,
+        "slowest_ms": round(slowest_ms, 1),
+    }
+
+    signature_text = json.dumps(run_signature, sort_keys=True, default=str)
+    last_saved_signature = st.session_state.get("last_perf_saved_signature", "")
+
+    if signature_text != last_saved_signature:
+        history = st.session_state.setdefault("perf_history", [])
+        action_label = str(st.session_state.get("perf_action_label", "")).strip()
+
+        history.append({
+            "run": len(history) + 1,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "action": action_label or "(unlabeled)",
+            "full_rerun_ms": full_rerun_ms,
+            "recorded_load_ms": recorded_load_ms,
+            "estimated_ui_build_ms": estimated_ui_ms,
+            "slowest_event": slowest_event,
+            "slowest_ms": round(slowest_ms, 1),
+            "event_count": len(events),
+        })
+
+        if len(history) > 300:
+            st.session_state["perf_history"] = history[-300:]
+
+        st.session_state["last_perf_saved_signature"] = signature_text
+
+    st.subheader("Loading / render debug")
+    st.caption(
+        "Estimated UI/build time = full rerun elapsed minus recorded Dropbox/load events. "
+        "This is not exact browser paint time, but it shows whether the slowdown is loading or Streamlit UI rebuild/render."
+    )
+
+    label_col, clear_col = st.columns([3, 1])
+    with label_col:
+        st.text_input(
+            "Action label for this/next test",
+            key="perf_action_label",
+            placeholder="Example: edit title, change reviewer, open review queue",
+        )
+    with clear_col:
+        if st.button("Clear perf history", key="clear_perf_history_btn", width="stretch"):
+            st.session_state["perf_history"] = []
+            st.session_state.pop("last_perf_saved_signature", None)
+            st.rerun()
+
+    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+    metric_col1.metric("Full rerun", f"{full_rerun_ms or 0} ms")
+    metric_col2.metric("Recorded load", f"{recorded_load_ms} ms")
+    metric_col3.metric("UI/build estimate", f"{estimated_ui_ms or 0} ms")
+    metric_col4.metric("Events", str(len(events)))
+
+    if slowest_event:
+        st.caption(f"Slowest recorded load step: {slowest_event} ({round(slowest_ms, 1)} ms)")
+
+    with st.expander("Current rerun events", expanded=False):
+        if not events:
+            st.warning("No loading events recorded for this rerun.")
+        else:
+            rows = [
+                {
+                    "step": event.get("step", ""),
+                    "ms": event.get("ms", ""),
+                    "detail": event.get("detail", ""),
+                }
+                for event in events
+            ]
+            st.dataframe(rows, hide_index=True, width="stretch")
+
+    history = list(st.session_state.get("perf_history", []))
+    st.markdown("### Performance history")
+
+    if not history:
+        st.caption("No completed runs saved yet.")
+        return
+
+    st.dataframe(history[-50:], hide_index=True, width="stretch")
+
+    csv_lines = [
+        "run,timestamp,action,full_rerun_ms,recorded_load_ms,estimated_ui_build_ms,slowest_event,slowest_ms,event_count"
+    ]
+
+    for row in history:
+        values = [
+            row.get("run", ""),
+            row.get("timestamp", ""),
+            str(row.get("action", "")).replace('"', '""'),
+            row.get("full_rerun_ms", ""),
+            row.get("recorded_load_ms", ""),
+            row.get("estimated_ui_build_ms", ""),
+            str(row.get("slowest_event", "")).replace('"', '""'),
+            row.get("slowest_ms", ""),
+            row.get("event_count", ""),
+        ]
+        csv_lines.append(
+            ",".join(
+                f'"{value}"' if isinstance(value, str) and "," in value else str(value)
+                for value in values
+            )
+        )
+
+    st.download_button(
+        "Download performance history CSV",
+        data="\\n".join(csv_lines).encode("utf-8"),
+        file_name="amazon_lister_performance_history.csv",
+        mime="text/csv",
+        key="download_perf_history_csv",
+    )
 
 SHEET_NAME = "Template"
 HEADER_ROW = 3
@@ -109,7 +392,7 @@ def dropbox_preview_url(path: str) -> str:
         return to_direct_url(shared)
     except Exception as exc:
         raise FileNotFoundError(f"Dropbox preview failed for {path}: {exc}") from exc
-    
+
 
 def build_header_map(ws, header_row: int) -> dict[str, int]:
     mapping: dict[str, int] = {}
@@ -423,7 +706,7 @@ def load_listing_memory_from_dropbox(folder_path: str) -> dict[str, Any]:
     if not path_exists(json_path):
         return {}
     content = download_text_file(json_path)
-    return json.loads(content)  
+    return json.loads(content)
 
 def initialize_listing_context_defaults(profile: dict[str, Any]) -> None:
     normalize_selected_variants_session_state(profile, {}, force_defaults=True)
@@ -753,7 +1036,7 @@ def render_design_color_grid(
                 st.image(entry["direct_url"], width=image_width)
             else:
                 st.warning("Not found")
-                st.code(path, language=None)    
+                st.code(path, language=None)
 
 def render_variant_combinations_preview(
     profile: dict[str, Any],
@@ -1481,7 +1764,7 @@ def render_color_grid(
                 st.image(entry["direct_url"], width=image_width)
             else:
                 st.warning("Not found")
-                st.code(path, language=None)    
+                st.code(path, language=None)
 
 
 def render_active_product_context(
@@ -1748,7 +2031,7 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
             variant_values=variant_values,
             color_image_map=data.get("color_image_map", {}),
             design_color_image_url_map=data.get("design_color_image_url_map", {}),
-        )        
+        )
 
         values = {
             "item_sku": build_child_sku(profile, data["parent_sku"], variant_values),
@@ -1839,7 +2122,7 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
                 "apparel_body_type": values.get("apparel_body_type"),
                 "apparel_height_type": values.get("apparel_height_type"),
                 "field_aliases": field_aliases,
-            })        
+            })
 
         if "dangerous_goods_regulation" in header_map:
             values["dangerous_goods_regulation"] = "Not Applicable"
@@ -1976,7 +2259,7 @@ def validate_template_file(profile: dict[str, Any]) -> list[str]:
 
     return errors
 
-    
+
 def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Path, dict[str, float]]:
 
     template_path = resolve_template_path(profile)
@@ -2238,7 +2521,7 @@ def build_preflight_report(
         else:
             preview_payload["dynamic_profile_fields"] = {}
     except Exception:
-        preview_payload["dynamic_profile_fields"] = {}  
+        preview_payload["dynamic_profile_fields"] = {}
 
     preview_payload_errors = validate_payload(preview_payload)
     preview_variant_errors = validate_variants(
@@ -3402,9 +3685,16 @@ def main() -> None:
     st.title("Amazon Listing Generator")
     st.caption("Template-based Amazon flat file generator.")
     render_workflow_flash()
+    reset_load_events()
+    load_debug_panel_slot = None
 
+    started_at = time.perf_counter()
     profiles = list_template_profiles()
+    record_load_event("Template profiles", started_at)
+
+    started_at = time.perf_counter()
     dropbox_cfg = load_dropbox_templates_config()
+    record_load_event("Dropbox template config", started_at)
 
     stage_root = dropbox_cfg.get("stage_root", "")
     ready_root = dropbox_cfg.get("ready_root", "")
@@ -3416,12 +3706,24 @@ def main() -> None:
         st.stop()
 
     try:
+        started_at = time.perf_counter()
         staged_folder_names = list_folder_names(stage_root)
+        record_load_event("Dropbox: list _stage folders", started_at, f"{len(staged_folder_names)} folder(s)")
+
+        started_at = time.perf_counter()
         ready_folder_names = list_folder_names(ready_root)
+        record_load_event("Dropbox: list ready folders", started_at, f"{len(ready_folder_names)} folder(s)")
+
+        started_at = time.perf_counter()
         approved_folder_names = list_folder_names(approved_root)
+        record_load_event("Dropbox: list approved folders", started_at, f"{len(approved_folder_names)} folder(s)")
+
+        started_at = time.perf_counter()
         finished_folder_names = list_folder_names(finished_root)
+        record_load_event("Dropbox: list finished folders", started_at, f"{len(finished_folder_names)} folder(s)")
     except Exception as exc:
         st.error(f"Could not read Dropbox folders: {exc}")
+        save_completed_load_events()
         st.stop()
 
     if not profiles:
@@ -3795,8 +4097,27 @@ def main() -> None:
 
     auto_load_image_mappings = bool(st.session_state.get("auto_load_image_mappings", False))
     load_image_mappings_now = bool(st.session_state.pop("load_image_mappings_now", False))
-    should_load_image_mappings = bool(staged_folder_name) and (auto_load_image_mappings or load_image_mappings_now)
-    image_resolution_reason = "auto_load" if auto_load_image_mappings and staged_folder_name else "manual_load" if load_image_mappings_now and staged_folder_name else ""
+    persisted_image_mappings_loaded = bool(
+        staged_folder_name
+        and st.session_state.get("image_mappings_loaded_folder") == staged_folder_name
+    )
+    if load_image_mappings_now and staged_folder_name:
+        st.session_state["image_mappings_loaded_folder"] = staged_folder_name
+        persisted_image_mappings_loaded = True
+
+    should_load_image_mappings = bool(staged_folder_name) and (
+        auto_load_image_mappings
+        or load_image_mappings_now
+        or persisted_image_mappings_loaded
+    )
+    if auto_load_image_mappings and staged_folder_name:
+        image_resolution_reason = "auto_load"
+    elif load_image_mappings_now and staged_folder_name:
+        image_resolution_reason = "manual_load"
+    elif persisted_image_mappings_loaded and staged_folder_name:
+        image_resolution_reason = "previously_loaded"
+    else:
+        image_resolution_reason = ""
     image_mappings_loaded_this_run = False
     resolved_image_error = ""
 
@@ -3960,14 +4281,15 @@ def main() -> None:
                 st.write(f"Garment support files configured: `{len(dropbox_overview.get('garment_resource_images', []))}`")
                 st.write(f"Shared support files configured: `{len(dropbox_overview.get('shared_resource_images', []))}`")
 
-                with st.expander("Raw staged folder contents", expanded=False):
-                    if not staged_folder_name:
-                        st.caption("Select a staged Dropbox folder to preview its images.")
-                    elif staged_preview_paths:
-                        for preview_path in staged_preview_paths:
-                            st.code(preview_path, language=None)
-                    else:
-                        st.caption("No staged image files found.")
+                if st.session_state.get("show_header_debug", False):
+                    with st.expander("Raw staged folder contents", expanded=False):
+                        if not staged_folder_name:
+                            st.caption("Select a staged Dropbox folder to preview its images.")
+                        elif staged_preview_paths:
+                            for preview_path in staged_preview_paths:
+                                st.code(preview_path, language=None)
+                        else:
+                            st.caption("No staged image files found.")
 
                 if image_mapping_status != "loaded":
                     st.info("Image mappings are not loaded yet. Use Load image mappings when you need parent/child/support image resolution.")
@@ -4212,6 +4534,8 @@ def main() -> None:
             profiles=profiles,
             dropbox_cfg=dropbox_cfg,
         )
+
+    render_inline_loading_debug()
 
     if not score_clicked and not ready_clicked:
         return
@@ -4521,5 +4845,20 @@ def main() -> None:
             st.write(f"Finalized SKU: `{final_sku}`")
         st.exception(exc)
 
+
+
+
+    record_load_event(
+        "Total: reached end of main",
+        st.session_state.get("current_rerun_started_at", time.perf_counter()),
+    )
+    save_completed_load_events()
+
+
 if __name__ == "__main__":
     main()
+
+
+
+
+
