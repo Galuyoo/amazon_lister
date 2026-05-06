@@ -4521,19 +4521,41 @@ def main() -> None:
 
     with tab_review_queue:
         st.caption("Review ready listings and approve them for generation.")
-        render_review_queue_view(
-            ready_folder_names=ready_folder_names,
-            profiles=profiles,
-            dropbox_cfg=dropbox_cfg,
-        )
+
+        review_col1, review_col2 = st.columns([1, 3])
+        with review_col1:
+            if st.button("Load / refresh review queue", key="load_review_queue_tab_btn", width="stretch"):
+                st.session_state["review_queue_tab_loaded"] = True
+                st.rerun()
+        with review_col2:
+            if not st.session_state.get("review_queue_tab_loaded", False):
+                st.info("Review queue is not loaded yet. Click Load / refresh review queue when you need admin review.")
+
+        if st.session_state.get("review_queue_tab_loaded", False):
+            render_review_queue_view(
+                ready_folder_names=ready_folder_names,
+                profiles=profiles,
+                dropbox_cfg=dropbox_cfg,
+            )
 
     with tab_approved_output:
         st.caption("Generate selected or all approved folders and download completed workbooks.")
-        render_approved_queue_view(
-            approved_folder_names=approved_folder_names,
-            profiles=profiles,
-            dropbox_cfg=dropbox_cfg,
-        )
+
+        approved_col1, approved_col2 = st.columns([1, 3])
+        with approved_col1:
+            if st.button("Load / refresh approved output", key="load_approved_output_tab_btn", width="stretch"):
+                st.session_state["approved_output_tab_loaded"] = True
+                st.rerun()
+        with approved_col2:
+            if not st.session_state.get("approved_output_tab_loaded", False):
+                st.info("Approved output is not loaded yet. Click Load / refresh approved output when you need generation.")
+
+        if st.session_state.get("approved_output_tab_loaded", False):
+            render_approved_queue_view(
+                approved_folder_names=approved_folder_names,
+                profiles=profiles,
+                dropbox_cfg=dropbox_cfg,
+            )
 
     render_inline_loading_debug()
 
