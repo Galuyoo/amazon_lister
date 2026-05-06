@@ -3937,17 +3937,23 @@ def render_approved_queue_view(
 
     st.markdown("### Generate output")
     with st.container(border=True):
-        selected_approved_folders = st.multiselect(
-            "Select approved folders to generate",
-            [item["folder_name"] for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"]],
-            key="approved_queue_selected_folders",
-        )
+        with st.form("approved_output_generation_form"):
+            selected_approved_folders = st.multiselect(
+                "Select approved folders to generate",
+                [item["folder_name"] for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"]],
+                key="approved_queue_selected_folders",
+            )
 
-        col1, col2 = st.columns(2)
-        with col1:
-            generate_selected = st.button("Generate selected", width="stretch")
-        with col2:
-            generate_all = st.button("Generate all approved", width="stretch")
+            col1, col2 = st.columns(2)
+            with col1:
+                generate_selected = st.form_submit_button("Generate selected", width="stretch")
+            with col2:
+                generate_all = st.form_submit_button("Generate all approved", width="stretch")
+
+    if generate_selected:
+        st.session_state["pending_perf_action_label"] = "generate selected approved"
+    elif generate_all:
+        st.session_state["pending_perf_action_label"] = "generate all approved"
 
     target_folders = selected_approved_folders if generate_selected else [
         item["folder_name"] for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"]
@@ -3955,6 +3961,9 @@ def render_approved_queue_view(
     if not target_folders:
         render_generation_results(stored_results, "approved_download")
         return
+
+    approved_generation_started_at = time.perf_counter()
+    approved_generation_target_count = len(target_folders)
 
     results: list[dict[str, Any]] = []
     for folder_name in target_folders:
@@ -3981,6 +3990,38 @@ def render_approved_queue_view(
                 "status": "Failed",
                 "message": str(exc),
             })
+
+    approved_generation_elapsed_ms = round(
+        (time.perf_counter() - approved_generation_started_at) * 1000,
+        1,
+    )
+    approved_generation_failures = sum(
+        1 for result in results if result.get("status") == "Failed"
+    )
+
+    perf_history = st.session_state.setdefault("perf_history", [])
+    perf_history.append({
+        "run": len(perf_history) + 1,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "action": (
+            "generate selected approved actual"
+            if generate_selected
+            else "generate all approved actual"
+        ),
+        "full_rerun_ms": approved_generation_elapsed_ms,
+        "recorded_load_ms": approved_generation_elapsed_ms,
+        "estimated_ui_build_ms": 0,
+        "slowest_event": f"Approved generation: {approved_generation_target_count} folder(s)",
+        "slowest_ms": approved_generation_elapsed_ms,
+        "event_count": approved_generation_target_count,
+    })
+
+    if len(perf_history) > 300:
+        st.session_state["perf_history"] = perf_history[-300:]
+
+    # Prevent the next display rerun from inheriting the generation label.
+    st.session_state.pop("pending_perf_action_label", None)
+    st.session_state.pop("active_perf_action_label", None)
 
     st.session_state["approved_queue_generation_results"] = results
     st.session_state.pop("approved_queue_selected_folders", None)
@@ -4920,6 +4961,7 @@ def main() -> None:
         approved_col1, approved_col2 = st.columns([1, 3])
         with approved_col1:
             if st.button("Load / refresh approved output", key="load_approved_output_tab_btn", width="stretch"):
+                st.session_state["pending_perf_action_label"] = "load approved output"
                 st.session_state["approved_output_tab_loaded"] = True
                 st.rerun()
         with approved_col2:
