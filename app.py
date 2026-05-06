@@ -1561,6 +1561,7 @@ def clear_runtime_caches() -> None:
         "dropbox_folder_list_cache",
         "dropbox_overview_cache",
         "preview_image_cache",
+        "preview_image_mapping_cache",
         "resolved_image_bundle_cache",
         "ready_queue_items_cache",
         "approved_queue_items_cache",
@@ -1627,6 +1628,90 @@ def build_preview_image_cache_key(
     return json.dumps(cache_parts, sort_keys=True)
 
 
+def build_preview_image_mapping_cache_key(
+    profile: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+) -> str:
+    template_key = profile.get("template_key", "")
+    cache_parts = {
+        "template_key": template_key,
+        "template_slug": profile.get("_slug", ""),
+        "staged_folder_name": staged_folder_name,
+        "template_cfg": dropbox_cfg.get("templates", {}).get(template_key, {}),
+        "general_resource_images": dropbox_cfg.get("general_resource_images", []),
+        "resource_root": dropbox_cfg.get("resource_root", ""),
+    }
+    return json.dumps(cache_parts, sort_keys=True)
+
+
+def build_image_mapping_variants_for_cache(
+    profile: dict[str, Any],
+    selected_variants: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    # Heavy Dropbox image mapping should be cached at folder/template level,
+    # not invalidated by normal listing-content variant edits.
+    mapping_variants: dict[str, list[str]] = {}
+
+    colors = get_profile_color_options(profile)
+    if colors:
+        mapping_variants["color"] = list(colors)
+    elif selected_variants.get("color"):
+        mapping_variants["color"] = list(selected_variants.get("color", []))
+
+    for dim in profile.get("variant_dimensions", []):
+        dim_name = str(dim.get("name", "")).strip().lower()
+        if dim_name == "design":
+            options = list(dim.get("options", []))
+            if options:
+                mapping_variants["design"] = options
+            elif selected_variants.get("design"):
+                mapping_variants["design"] = list(selected_variants.get("design", []))
+
+    return mapping_variants or dict(selected_variants)
+
+
+def filter_preview_image_maps_for_selected_variants(
+    profile: dict[str, Any],
+    selected_variants: dict[str, list[str]],
+    full_color_image_map: dict[str, str],
+    full_design_color_image_url_map: dict[str, dict[str, str]],
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    selected_colors = get_selected_colors_for_image_resolution(profile, selected_variants)
+    selected_designs = list(selected_variants.get("design", []))
+
+    if selected_colors:
+        color_image_map = {
+            color: image_url
+            for color, image_url in full_color_image_map.items()
+            if color in selected_colors
+        }
+    else:
+        color_image_map = dict(full_color_image_map)
+
+    if selected_colors or selected_designs:
+        design_color_image_url_map: dict[str, dict[str, str]] = {}
+        for color, design_map in full_design_color_image_url_map.items():
+            if selected_colors and color not in selected_colors:
+                continue
+
+            filtered_design_map = {
+                design: image_url
+                for design, image_url in dict(design_map).items()
+                if not selected_designs or design in selected_designs
+            }
+
+            if filtered_design_map:
+                design_color_image_url_map[color] = filtered_design_map
+    else:
+        design_color_image_url_map = {
+            color: dict(design_map)
+            for color, design_map in full_design_color_image_url_map.items()
+        }
+
+    return color_image_map, design_color_image_url_map
+
+
 def get_cached_preview_image_data(
     profile: dict[str, Any],
     dropbox_cfg: dict[str, Any],
@@ -1685,12 +1770,48 @@ def get_cached_preview_image_data(
     if staged_folder_name and include_mappings:
         try:
             preview_stage_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
-            _, _, preview_color_image_map, preview_design_color_image_url_map = resolve_folder_image_urls(
+            mapping_cache_key = build_preview_image_mapping_cache_key(
+                profile,
+                dropbox_cfg,
+                staged_folder_name,
+            )
+            mapping_cache = st.session_state.get("preview_image_mapping_cache", {})
+
+            if mapping_cache.get("key") == mapping_cache_key:
+                mapping_data = dict(mapping_cache.get("data", {}))
+                full_color_image_map = dict(mapping_data.get("color_image_map", {}))
+                full_design_color_image_url_map = {
+                    color: dict(design_map)
+                    for color, design_map in dict(mapping_data.get("design_color_image_url_map", {})).items()
+                }
+            else:
+                mapping_variants = build_image_mapping_variants_for_cache(profile, selected_variants)
+                mapping_colors = get_selected_colors_for_image_resolution(profile, mapping_variants)
+
+                _, _, full_color_image_map, full_design_color_image_url_map = resolve_folder_image_urls(
+                    profile,
+                    mapping_variants,
+                    mapping_colors,
+                    dropbox_overview,
+                    preview_stage_folder_path,
+                )
+
+                st.session_state["preview_image_mapping_cache"] = {
+                    "key": mapping_cache_key,
+                    "data": {
+                        "color_image_map": dict(full_color_image_map),
+                        "design_color_image_url_map": {
+                            color: dict(design_map)
+                            for color, design_map in dict(full_design_color_image_url_map).items()
+                        },
+                    },
+                }
+
+            preview_color_image_map, preview_design_color_image_url_map = filter_preview_image_maps_for_selected_variants(
                 profile,
                 selected_variants,
-                get_selected_colors_for_image_resolution(profile, selected_variants),
-                dropbox_overview,
-                preview_stage_folder_path,
+                full_color_image_map,
+                full_design_color_image_url_map,
             )
             parent_main_image_options = build_parent_main_image_options(
                 profile=profile,
@@ -4285,18 +4406,37 @@ def main() -> None:
     load_image_mappings_now = bool(st.session_state.pop("load_image_mappings_now", False))
     manual_image_load_requested = bool(load_image_mappings_now and staged_folder_name)
 
+    # Image mappings should persist while editing listing content.
+    # Treat mappings as loaded for the staged folder + template, not for every selected colour/size change.
+    image_mapping_context_key = json.dumps(
+        {
+            "folder": staged_folder_name or "",
+            "template_slug": active_profile.get("_slug", ""),
+            "template_key": active_profile.get("template_key", ""),
+        },
+        sort_keys=True,
+    )
+
     persisted_image_mappings_loaded = bool(
         staged_folder_name
         and st.session_state.get("image_mappings_loaded_folder") == staged_folder_name
+        and st.session_state.get("image_mappings_loaded_context") == image_mapping_context_key
+    )
+
+    image_mappings_stale = bool(
+        staged_folder_name
+        and st.session_state.get("image_mappings_loaded_folder") == staged_folder_name
+        and st.session_state.get("image_mappings_loaded_context") != image_mapping_context_key
     )
 
     if manual_image_load_requested:
         st.session_state["image_mappings_loaded_folder"] = staged_folder_name
+        st.session_state["image_mappings_loaded_context"] = image_mapping_context_key
         persisted_image_mappings_loaded = True
+        image_mappings_stale = False
 
-    # Include image mappings in the UI once this folder has been loaded.
-    # The preview/resolved image helpers should reuse their session caches on normal reruns.
-    # Expensive refresh should happen only when the user explicitly clicks Load / refresh.
+    # Only explicit load/auto-load may build image mappings.
+    # Previously-loaded mappings are included only when the current folder/template/variant context matches.
     should_load_image_mappings = bool(staged_folder_name) and (
         auto_load_image_mappings
         or manual_image_load_requested
@@ -4309,10 +4449,18 @@ def main() -> None:
         image_resolution_reason = "manual_load"
     elif persisted_image_mappings_loaded and staged_folder_name:
         image_resolution_reason = "cache_reuse"
+    elif image_mappings_stale:
+        image_resolution_reason = "stale_context"
     else:
         image_resolution_reason = ""
-    image_mappings_loaded_this_run = False
-    resolved_image_error = ""
+
+    image_preview_variants = selected_variants
+    if manual_image_load_requested:
+        st.session_state["image_mappings_loaded_variants"] = dict(selected_variants)
+    elif persisted_image_mappings_loaded and not auto_load_image_mappings:
+        image_preview_variants = dict(
+            st.session_state.get("image_mappings_loaded_variants", selected_variants)
+        )
 
     preview_image_cache_hit = (
         st.session_state.get("preview_image_cache", {}).get("key")
@@ -4320,7 +4468,7 @@ def main() -> None:
             profile,
             dropbox_cfg,
             staged_folder_name or "",
-            selected_variants,
+            image_preview_variants,
             should_load_image_mappings,
             should_load_image_mappings,
         )
@@ -4330,7 +4478,7 @@ def main() -> None:
         profile=profile,
         dropbox_cfg=dropbox_cfg,
         staged_folder_name=staged_folder_name or "",
-        selected_variants=selected_variants,
+        selected_variants=image_preview_variants,
         dropbox_overview=dropbox_overview,
         include_mappings=should_load_image_mappings,
         resolve_preview_urls=should_load_image_mappings,
@@ -4384,13 +4532,15 @@ def main() -> None:
         "color_image_map": preview_color_image_map,
         "design_color_image_url_map": preview_design_color_image_url_map,
     }
+    resolved_image_error = ""
+    image_mappings_loaded_this_run = False
     current_resolved_image_cache_key = ""
     if staged_folder_name:
         current_resolved_image_cache_key = build_resolved_image_bundle_cache_key(
             profile,
             dropbox_cfg,
             staged_folder_name,
-            selected_variants,
+            image_preview_variants,
             selected_parent_main_image_url,
         )
     resolved_image_bundle_cache_hit = bool(
@@ -4404,7 +4554,7 @@ def main() -> None:
                 profile=profile,
                 dropbox_cfg=dropbox_cfg,
                 staged_folder_name=staged_folder_name,
-                selected_variants=selected_variants,
+                selected_variants=image_preview_variants,
                 dropbox_overview=dropbox_overview,
                 selected_parent_main_image_url=selected_parent_main_image_url,
             )
@@ -4442,9 +4592,12 @@ def main() -> None:
     elif image_mappings_loaded:
         image_mapping_status = "loaded"
         image_mapping_detail = "Image mappings loaded."
+    elif image_mappings_stale:
+        image_mapping_status = "not_loaded"
+        image_mapping_detail = "Image mappings need refresh because the folder or template changed. Click Load / refresh image mappings to update them."
     else:
         image_mapping_status = "not_loaded"
-        image_mapping_detail = "Image mappings not loaded yet. Use Load image mappings when you need image review or full checks."
+        image_mapping_detail = "Image mappings not loaded yet. Use Load / refresh image mappings when you need image review or full checks."
 
     with tab_setup:
         render_active_product_context(
@@ -4470,6 +4623,7 @@ def main() -> None:
             st.session_state["load_image_mappings_now"] = True
             if staged_folder_name:
                 st.session_state["image_mappings_loaded_folder"] = staged_folder_name
+                st.session_state["image_mappings_loaded_context"] = image_mapping_context_key
 
             st.rerun()
 
