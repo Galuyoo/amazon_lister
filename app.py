@@ -64,6 +64,40 @@ def format_folder_detail(folder_path: str) -> str:
     return folder_path.split("/")[-1] if folder_path else ""
 
 
+def get_cached_folder_names(cache_key: str, root_path: str, label: str) -> list[str]:
+    cache = st.session_state.setdefault("dropbox_folder_list_cache", {})
+    cached = cache.get(cache_key)
+
+    if cached and cached.get("root_path") == root_path:
+        folder_names = list(cached.get("folder_names", []))
+        record_load_event(
+            f"Dropbox: cached {label}",
+            time.perf_counter(),
+            f"{len(folder_names)} folder(s)",
+        )
+        return folder_names
+
+    started_at = time.perf_counter()
+    folder_names = list_folder_names(root_path)
+    record_load_event(
+        f"Dropbox: list {label}",
+        started_at,
+        f"{len(folder_names)} folder(s)",
+    )
+
+    cache[cache_key] = {
+        "root_path": root_path,
+        "folder_names": folder_names,
+    }
+    return folder_names
+
+
+def refresh_cached_folder_names(*cache_keys: str) -> None:
+    cache = st.session_state.setdefault("dropbox_folder_list_cache", {})
+    for cache_key in cache_keys:
+        cache.pop(cache_key, None)
+
+
 DEBUG_STATE_SKIP_KEYS = {
     "current_load_events",
     "current_rerun_started_at",
@@ -3866,24 +3900,12 @@ def main() -> None:
         st.stop()
 
     try:
-        started_at = time.perf_counter()
-        staged_folder_names = list_folder_names(stage_root)
-        record_load_event("Dropbox: list _stage folders", started_at, f"{len(staged_folder_names)} folder(s)")
-
-        started_at = time.perf_counter()
-        ready_folder_names = list_folder_names(ready_root)
-        record_load_event("Dropbox: list ready folders", started_at, f"{len(ready_folder_names)} folder(s)")
-
-        started_at = time.perf_counter()
-        approved_folder_names = list_folder_names(approved_root)
-        record_load_event("Dropbox: list approved folders", started_at, f"{len(approved_folder_names)} folder(s)")
-
-        started_at = time.perf_counter()
-        finished_folder_names = list_folder_names(finished_root)
-        record_load_event("Dropbox: list finished folders", started_at, f"{len(finished_folder_names)} folder(s)")
+        staged_folder_names = get_cached_folder_names("stage", stage_root, "_stage folders")
+        ready_folder_names = get_cached_folder_names("ready", ready_root, "ready folders")
+        approved_folder_names = get_cached_folder_names("approved", approved_root, "approved folders")
+        finished_folder_names = get_cached_folder_names("finished", finished_root, "finished folders")
     except Exception as exc:
         st.error(f"Could not read Dropbox folders: {exc}")
-        save_completed_load_events()
         st.stop()
 
     if not profiles:
@@ -4014,6 +4036,10 @@ def main() -> None:
     st.sidebar.checkbox("Show troubleshooting debug", key="show_header_debug", value=False)
     st.sidebar.checkbox("Copy row styles", key="copy_row_styles", value=True)
     st.sidebar.checkbox("Auto-load image mappings", key="auto_load_image_mappings", value=False)
+    if st.sidebar.button("Refresh Dropbox queues", key="refresh_dropbox_queues_btn", width="stretch"):
+        st.session_state["pending_perf_action_label"] = "refresh Dropbox queues"
+        refresh_cached_folder_names("stage", "ready", "approved", "finished")
+        st.rerun()
 
     colors_available = get_profile_color_options(active_profile)
     sizes_available = active_profile.get("sizes", [])
