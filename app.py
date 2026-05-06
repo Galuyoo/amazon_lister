@@ -3806,18 +3806,29 @@ def render_review_queue_view(
             if review_reviewer_key != reviewer_context_key:
                 st.session_state["review_queue_reviewed_by"] = default_reviewer if default_reviewer in WORKFLOW_ASSIGNEES else ""
                 st.session_state["review_queue_review_folder_reviewer_key"] = reviewer_context_key
-            st.selectbox(
-                "Reviewed by",
-                WORKFLOW_ASSIGNEES,
-                key="review_queue_reviewed_by",
-            )
-            action_col1, action_col2 = st.columns(2)
-            with action_col1:
-                approve_clicked = st.button("Approve for generation", key="approve_ready_listing_btn", width="stretch")
-            with action_col2:
-                deny_clicked = st.button("Deny and return to staging", key="deny_ready_listing_btn", width="stretch")
+
+            with st.form("review_queue_decision_form"):
+                st.selectbox(
+                    "Reviewed by",
+                    WORKFLOW_ASSIGNEES,
+                    key="review_queue_reviewed_by",
+                )
+                action_col1, action_col2 = st.columns(2)
+                with action_col1:
+                    approve_clicked = st.form_submit_button(
+                        "Approve for generation",
+                        width="stretch",
+                    )
+                with action_col2:
+                    deny_clicked = st.form_submit_button(
+                        "Deny and return to staging",
+                        width="stretch",
+                    )
 
             if approve_clicked or deny_clicked:
+                st.session_state["pending_perf_action_label"] = (
+                    "approve ready listing" if approve_clicked else "deny ready listing"
+                )
                 reviewed_by = st.session_state.get("review_queue_reviewed_by", "")
                 if not reviewed_by:
                     st.warning("Select who reviewed this listing before approving or denying it.")
