@@ -115,7 +115,6 @@ def capture_rerun_cause() -> None:
         current = build_debug_state_snapshot()
 
         changed_keys: list[dict[str, str]] = []
-
         all_keys = sorted(set(previous.keys()) | set(current.keys()))
 
         for key in all_keys:
@@ -145,41 +144,107 @@ def save_debug_state_snapshot() -> None:
         pass
 
 
-def render_rerun_cause_debug() -> None:
-    if not st.session_state.get("show_loading_debug_inline", False):
-        return
+def consume_pending_perf_action_label() -> None:
+    pending_label = str(st.session_state.pop("pending_perf_action_label", "")).strip()
+    if pending_label:
+        st.session_state["active_perf_action_label"] = pending_label
 
-    changed_keys = list(st.session_state.get("current_rerun_changed_keys", []))
 
-    st.markdown("### Rerun cause tracker")
-    st.caption(
-        "These are Streamlit session-state keys that changed since the previous completed rerun. "
-        "This helps identify which widget/action triggered the loading spinner."
-    )
+def infer_perf_action_label_from_changed_keys() -> str:
+    changed_keys = [
+        str(row.get("key", ""))
+        for row in st.session_state.get("current_rerun_changed_keys", [])
+    ]
 
     if not changed_keys:
-        st.success("No session-state changes detected from the previous completed rerun.")
-        return
+        return ""
 
-    summary = ", ".join(row.get("key", "") for row in changed_keys[:12])
-    st.info(f"Likely trigger key(s): {summary}")
+    debug_keys = {
+        "show_loading_debug_inline",
+        "perf_action_label",
+        "clear_perf_history_btn",
+        "download_perf_history_csv",
+    }
 
-    with st.expander("Changed session-state keys", expanded=False):
-        st.dataframe(changed_keys, hide_index=True, width="stretch")
+    non_debug_keys = [
+        key for key in changed_keys
+        if key and key not in debug_keys
+    ]
+
+    if not non_debug_keys:
+        return "debug/profiler toggle"
+
+    key_set = set(non_debug_keys)
+
+    if "load_image_mappings_now" in key_set or "image_mappings_loaded_folder" in key_set:
+        return "load/refresh image mappings"
+
+    if "staged_folder_select" in key_set:
+        return "select staged folder"
+
+    if "folder_source_mode" in key_set:
+        return "change folder source"
+
+    if "template_family_select" in key_set or "listing_template_select" in key_set:
+        return "change template"
+
+    if "parent_main_image_choice" in key_set:
+        return "change parent main image"
+
+    if "title_input" in key_set:
+        return "edit title"
+
+    if any(key.startswith("bullet_") for key in key_set):
+        return "edit bullets"
+
+    if "product_description" in key_set:
+        return "edit description"
+
+    if "generic_keywords" in key_set:
+        return "edit search terms"
+
+    if "variant_quantity" in key_set:
+        return "change quantity"
+
+    if any(key.startswith("price_") for key in key_set):
+        return "change price"
+
+    if any("selected_variant" in key or key.startswith("variant_") for key in key_set):
+        return "change variants"
+
+    if "ready_queue_review_folder" in key_set:
+        return "select review queue item"
+
+    if "review_queue_reviewed_by" in key_set:
+        return "change reviewer"
+
+    if "approved_queue_review_folder" in key_set:
+        return "select approved review item"
+
+    if "approved_queue_selected_folders" in key_set:
+        return "select approved folders"
+
+    if "review_queue_tab_loaded" in key_set:
+        return "load review queue"
+
+    if "approved_output_tab_loaded" in key_set:
+        return "load approved output"
+
+    preview = ", ".join(non_debug_keys[:4])
+    return f"rerun: {preview}"
 
 
-def render_inline_loading_debug() -> None:
-    st.divider()
+def get_current_perf_action_label() -> str:
+    active_label = str(st.session_state.get("active_perf_action_label", "")).strip()
+    manual_label = str(st.session_state.get("perf_action_label", "")).strip()
+    inferred_label = infer_perf_action_label_from_changed_keys()
 
-    show_debug = st.checkbox(
-        "Show loading debug",
-        key="show_loading_debug_inline",
-        value=False,
-    )
+    # One-shot button labels win. Manual label is useful for controlled test sessions.
+    # If neither exists, infer from changed Streamlit session-state keys.
+    return active_label or manual_label or inferred_label or "(unlabeled)"
 
-    if not show_debug:
-        return
 
+def build_current_perf_summary() -> dict[str, Any]:
     events = list(st.session_state.get("current_load_events", []))
     rerun_started_at = st.session_state.get("current_rerun_started_at")
 
@@ -203,32 +268,77 @@ def render_inline_loading_debug() -> None:
         slowest_event = str(slowest.get("step", ""))
         slowest_ms = float(slowest.get("ms", 0) or 0)
 
-    run_signature = {
+    return {
         "events": events,
         "full_rerun_ms": full_rerun_ms,
         "recorded_load_ms": recorded_load_ms,
-        "estimated_ui_ms": estimated_ui_ms,
+        "estimated_ui_build_ms": estimated_ui_ms,
         "slowest_event": slowest_event,
         "slowest_ms": round(slowest_ms, 1),
+        "event_count": len(events),
     }
 
-    signature_text = json.dumps(run_signature, sort_keys=True, default=str)
-    last_saved_signature = st.session_state.get("last_perf_saved_signature", "")
 
-    if signature_text != last_saved_signature:
+def should_skip_perf_history_row(action_label: str) -> bool:
+    changed_keys = [
+        row.get("key", "")
+        for row in st.session_state.get("current_rerun_changed_keys", [])
+    ]
+
+    debug_only_keys = {
+        "show_loading_debug_inline",
+        "perf_action_label",
+        "clear_perf_history_btn",
+        "download_perf_history_csv",
+    }
+
+    if changed_keys and all(key in debug_only_keys for key in changed_keys):
+        return True
+
+    return False
+
+
+def save_current_perf_run() -> None:
+    try:
+        summary = build_current_perf_summary()
+        events = summary["events"]
+
+        if not events:
+            return
+
+        action_label = get_current_perf_action_label()
+
+        if should_skip_perf_history_row(action_label):
+            return
+
+        run_signature = {
+            "action": action_label,
+            "events": events,
+            "full_rerun_ms": summary["full_rerun_ms"],
+            "recorded_load_ms": summary["recorded_load_ms"],
+            "estimated_ui_build_ms": summary["estimated_ui_build_ms"],
+            "slowest_event": summary["slowest_event"],
+            "slowest_ms": summary["slowest_ms"],
+        }
+
+        signature_text = json.dumps(run_signature, sort_keys=True, default=str)
+        last_saved_signature = st.session_state.get("last_perf_saved_signature", "")
+
+        if signature_text == last_saved_signature:
+            return
+
         history = st.session_state.setdefault("perf_history", [])
-        action_label = str(st.session_state.get("perf_action_label", "")).strip()
 
         history.append({
             "run": len(history) + 1,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "action": action_label or "(unlabeled)",
-            "full_rerun_ms": full_rerun_ms,
-            "recorded_load_ms": recorded_load_ms,
-            "estimated_ui_build_ms": estimated_ui_ms,
-            "slowest_event": slowest_event,
-            "slowest_ms": round(slowest_ms, 1),
-            "event_count": len(events),
+            "action": action_label,
+            "full_rerun_ms": summary["full_rerun_ms"],
+            "recorded_load_ms": summary["recorded_load_ms"],
+            "estimated_ui_build_ms": summary["estimated_ui_build_ms"],
+            "slowest_event": summary["slowest_event"],
+            "slowest_ms": summary["slowest_ms"],
+            "event_count": summary["event_count"],
         })
 
         if len(history) > 300:
@@ -236,33 +346,50 @@ def render_inline_loading_debug() -> None:
 
         st.session_state["last_perf_saved_signature"] = signature_text
 
-    st.subheader("Loading / render debug")
-    st.caption(
-        "Estimated UI/build time = full rerun elapsed minus recorded Dropbox/load events. "
-        "This is not exact browser paint time, but it shows whether the slowdown is loading or Streamlit UI rebuild/render."
-    )
+        # One-shot button labels should not leak into later debug toggles/reruns.
+        st.session_state.pop("active_perf_action_label", None)
+    except Exception:
+        pass
 
-    label_col, clear_col = st.columns([3, 1])
-    with label_col:
-        st.text_input(
-            "Action label for this/next test",
-            key="perf_action_label",
-            placeholder="Example: edit title, change reviewer, open review queue",
+
+def render_inline_loading_debug() -> None:
+    save_current_perf_run()
+
+    st.divider()
+
+    control_col1, control_col2 = st.columns([1, 4])
+    with control_col1:
+        show_debug = st.checkbox(
+            "Show profiler",
+            key="show_loading_debug_inline",
+            value=False,
         )
-    with clear_col:
-        if st.button("Clear perf history", key="clear_perf_history_btn", width="stretch"):
-            st.session_state["perf_history"] = []
-            st.session_state.pop("last_perf_saved_signature", None)
-            st.rerun()
+    with control_col2:
+        st.text_input(
+            "Manual action label for next test",
+            key="perf_action_label",
+            placeholder="Optional label: edit title, change reviewer, load images...",
+            label_visibility="collapsed",
+        )
+
+    if not show_debug:
+        return
+
+    st.subheader("Loading / render debug")
+
+    summary = build_current_perf_summary()
+    events = summary["events"]
 
     metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
-    metric_col1.metric("Full rerun", f"{full_rerun_ms or 0} ms")
-    metric_col2.metric("Recorded load", f"{recorded_load_ms} ms")
-    metric_col3.metric("UI/build estimate", f"{estimated_ui_ms or 0} ms")
-    metric_col4.metric("Events", str(len(events)))
+    metric_col1.metric("Full rerun", f"{summary['full_rerun_ms'] or 0} ms")
+    metric_col2.metric("Recorded load", f"{summary['recorded_load_ms']} ms")
+    metric_col3.metric("UI/build estimate", f"{summary['estimated_ui_build_ms'] or 0} ms")
+    metric_col4.metric("Events", str(summary["event_count"]))
 
-    if slowest_event:
-        st.caption(f"Slowest recorded load step: {slowest_event} ({round(slowest_ms, 1)} ms)")
+    if summary["slowest_event"]:
+        st.caption(
+            f"Slowest recorded load step: {summary['slowest_event']} ({summary['slowest_ms']} ms)"
+        )
 
     with st.expander("Current rerun events", expanded=False):
         if not events:
@@ -280,6 +407,15 @@ def render_inline_loading_debug() -> None:
 
     history = list(st.session_state.get("perf_history", []))
     st.markdown("### Performance history")
+
+    clear_col, download_col = st.columns([1, 3])
+    with clear_col:
+        if st.button("Clear perf history", key="clear_perf_history_btn", width="stretch"):
+            st.session_state["perf_history"] = []
+            st.session_state.pop("last_perf_saved_signature", None)
+            st.session_state.pop("active_perf_action_label", None)
+            st.session_state.pop("perf_action_label", None)
+            st.rerun()
 
     if not history:
         st.caption("No completed runs saved yet.")
@@ -310,13 +446,36 @@ def render_inline_loading_debug() -> None:
             )
         )
 
-    st.download_button(
-        "Download performance history CSV",
-        data="\\n".join(csv_lines).encode("utf-8"),
-        file_name="amazon_lister_performance_history.csv",
-        mime="text/csv",
-        key="download_perf_history_csv",
+    with download_col:
+        st.download_button(
+            "Download performance history CSV",
+            data="\n".join(csv_lines).encode("utf-8"),
+            file_name="amazon_lister_performance_history.csv",
+            mime="text/csv",
+            key="download_perf_history_csv",
+        )
+
+def render_rerun_cause_debug() -> None:
+    if not st.session_state.get("show_loading_debug_inline", False):
+        return
+
+    changed_keys = list(st.session_state.get("current_rerun_changed_keys", []))
+
+    st.markdown("### Rerun cause tracker")
+    st.caption(
+        "These are Streamlit session-state keys that changed since the previous completed rerun. "
+        "This helps identify which widget/action triggered the loading spinner."
     )
+
+    if not changed_keys:
+        st.success("No session-state changes detected from the previous completed rerun.")
+        return
+
+    summary = ", ".join(row.get("key", "") for row in changed_keys[:12])
+    st.info(f"Likely trigger key(s): {summary}")
+
+    with st.expander("Changed session-state keys", expanded=False):
+        st.dataframe(changed_keys, hide_index=True, width="stretch")
 
 SHEET_NAME = "Template"
 HEADER_ROW = 3
@@ -3686,7 +3845,8 @@ def main() -> None:
     st.caption("Template-based Amazon flat file generator.")
     render_workflow_flash()
     reset_load_events()
-    load_debug_panel_slot = None
+    consume_pending_perf_action_label()
+    capture_rerun_cause()
 
     started_at = time.perf_counter()
     profiles = list_template_profiles()
@@ -4097,25 +4257,32 @@ def main() -> None:
 
     auto_load_image_mappings = bool(st.session_state.get("auto_load_image_mappings", False))
     load_image_mappings_now = bool(st.session_state.pop("load_image_mappings_now", False))
+    manual_image_load_requested = bool(load_image_mappings_now and staged_folder_name)
+
     persisted_image_mappings_loaded = bool(
         staged_folder_name
         and st.session_state.get("image_mappings_loaded_folder") == staged_folder_name
     )
-    if load_image_mappings_now and staged_folder_name:
+
+    if manual_image_load_requested:
         st.session_state["image_mappings_loaded_folder"] = staged_folder_name
         persisted_image_mappings_loaded = True
 
+    # Include image mappings in the UI once this folder has been loaded.
+    # The preview/resolved image helpers should reuse their session caches on normal reruns.
+    # Expensive refresh should happen only when the user explicitly clicks Load / refresh.
     should_load_image_mappings = bool(staged_folder_name) and (
         auto_load_image_mappings
-        or load_image_mappings_now
+        or manual_image_load_requested
         or persisted_image_mappings_loaded
     )
+
     if auto_load_image_mappings and staged_folder_name:
         image_resolution_reason = "auto_load"
-    elif load_image_mappings_now and staged_folder_name:
+    elif manual_image_load_requested:
         image_resolution_reason = "manual_load"
     elif persisted_image_mappings_loaded and staged_folder_name:
-        image_resolution_reason = "previously_loaded"
+        image_resolution_reason = "cache_reuse"
     else:
         image_resolution_reason = ""
     image_mappings_loaded_this_run = False
@@ -4143,6 +4310,11 @@ def main() -> None:
         resolve_preview_urls=should_load_image_mappings,
     )
     t_preview_image_end = time.perf_counter()
+    record_load_event(
+        "Images: preview/mapping data",
+        t_preview_image_start,
+        "with mappings" if should_load_image_mappings else "paths only",
+    )
     staged_preview_paths = preview_image_data.get("staged_preview_paths", [])
     staged_preview_entries = preview_image_data.get("staged_preview_entries", [])
     design_color_preview_entries = preview_image_data.get("design_color_preview_entries", [])
@@ -4220,6 +4392,11 @@ def main() -> None:
                 "design_color_image_url_map": preview_design_color_image_url_map,
             }
     t_resolved_image_end = time.perf_counter()
+    record_load_event(
+        "Images: resolved image bundle",
+        t_resolved_image_start,
+        image_resolution_reason or "cache/no-load",
+    )
     preview_parent_main_image_url = resolved_image_bundle.get("parent_main_image_url", preview_parent_main_image_url)
     preview_other_images = list(resolved_image_bundle.get("other_images", []))
     preview_color_image_map = dict(resolved_image_bundle.get("color_image_map", preview_color_image_map))
@@ -4255,15 +4432,23 @@ def main() -> None:
             image_mapping_status=image_mapping_status,
             image_mapping_detail=image_mapping_detail,
         )
-        load_col, reload_col = st.columns(2)
-        with load_col:
-            if st.button("Load image mappings", key="load_image_mappings_setup", width="stretch"):
-                st.session_state["load_image_mappings_now"] = True
-                st.rerun()
-        with reload_col:
-            if st.button("Reload images", key="reload_images_setup", width="stretch"):
-                clear_runtime_caches()
-                st.rerun()
+        load_images_disabled = not bool(staged_folder_name)
+        if st.button(
+            "Load / refresh image mappings",
+            key="load_image_mappings_setup",
+            width="stretch",
+            disabled=load_images_disabled,
+        ):
+            st.session_state["pending_perf_action_label"] = "load/refresh image mappings"
+
+            st.session_state["load_image_mappings_now"] = True
+            if staged_folder_name:
+                st.session_state["image_mappings_loaded_folder"] = staged_folder_name
+
+            st.rerun()
+
+        if load_images_disabled:
+            st.caption("Select a staged folder before loading image mappings.")
 
         st.subheader("Image review")
 
@@ -4558,6 +4743,8 @@ def main() -> None:
             )
 
     render_inline_loading_debug()
+    render_rerun_cause_debug()
+    save_debug_state_snapshot()
 
     if not score_clicked and not ready_clicked:
         return
