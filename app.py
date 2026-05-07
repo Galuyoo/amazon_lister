@@ -98,6 +98,17 @@ def refresh_cached_folder_names(*cache_keys: str) -> None:
         cache.pop(cache_key, None)
 
 
+def clear_cached_listing_memory(*folder_paths: str) -> None:
+    cache = st.session_state.setdefault("listing_memory_cache", {})
+
+    if not folder_paths:
+        cache.clear()
+        return
+
+    for folder_path in folder_paths:
+        cache.pop(str(folder_path or "").rstrip("/"), None)
+
+
 DEBUG_STATE_SKIP_KEYS = {
     "current_load_events",
     "current_rerun_started_at",
@@ -961,15 +972,68 @@ def save_listing_inputs_json_to_dropbox(
         json_path,
         json.dumps(memory_payload, indent=2, ensure_ascii=False),
     )
+
+    folder_cache_key = str(folder_path or "").rstrip("/")
+    if folder_cache_key:
+        st.session_state.setdefault("listing_memory_cache", {})[folder_cache_key] = {
+            "json_path": json_path,
+            "data": json.loads(json.dumps(memory_payload)),
+            "missing": False,
+        }
+
     return json_path
 
 
 def load_listing_memory_from_dropbox(folder_path: str) -> dict[str, Any]:
-    json_path = build_listing_memory_path(folder_path)
-    if not path_exists(json_path):
+    folder_path = str(folder_path or "").rstrip("/")
+    if not folder_path:
         return {}
+
+    json_path = build_listing_memory_path(folder_path)
+    cache = st.session_state.setdefault("listing_memory_cache", {})
+    cached = cache.get(folder_path)
+
+    if cached and cached.get("json_path") == json_path:
+        started_at = time.perf_counter()
+        cached_data = json.loads(json.dumps(cached.get("data", {})))
+        record_load_event(
+            "Dropbox: cached listing_inputs.json",
+            started_at,
+            format_folder_detail(folder_path),
+        )
+        return cached_data
+
+    started_at = time.perf_counter()
+
+    if not path_exists(json_path):
+        cache[folder_path] = {
+            "json_path": json_path,
+            "data": {},
+            "missing": True,
+        }
+        record_load_event(
+            "Dropbox: missing listing_inputs.json",
+            started_at,
+            format_folder_detail(folder_path),
+        )
+        return {}
+
     content = download_text_file(json_path)
-    return json.loads(content)
+    data = json.loads(content)
+
+    cache[folder_path] = {
+        "json_path": json_path,
+        "data": json.loads(json.dumps(data)),
+        "missing": False,
+    }
+
+    record_load_event(
+        "Dropbox: load listing_inputs.json",
+        started_at,
+        format_folder_detail(folder_path),
+    )
+
+    return data
 
 def initialize_listing_context_defaults(profile: dict[str, Any]) -> None:
     normalize_selected_variants_session_state(profile, {}, force_defaults=True)
@@ -1629,6 +1693,7 @@ def get_cached_dropbox_overview(
 def clear_runtime_caches() -> None:
     for key in [
         "dropbox_folder_list_cache",
+        "listing_memory_cache",
         "dropbox_overview_cache",
         "preview_image_cache",
         "preview_image_mapping_cache",
@@ -4499,6 +4564,7 @@ def main() -> None:
     if st.sidebar.button("Refresh Dropbox queues", key="refresh_dropbox_queues_btn", width="stretch"):
         st.session_state["pending_perf_action_label"] = "refresh Dropbox queues"
         refresh_cached_folder_names("stage", "ready", "approved", "finished")
+        clear_cached_listing_memory()
         st.rerun()
 
     colors_available = get_profile_color_options(active_profile)
