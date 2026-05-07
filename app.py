@@ -592,6 +592,64 @@ def dropbox_preview_url(path: str) -> str:
         raise FileNotFoundError(f"Dropbox preview failed for {path}: {exc}") from exc
 
 
+def get_cached_dropbox_shared_link(path: str) -> str:
+    path = str(path or "").strip()
+    if not path:
+        return ""
+
+    cache = st.session_state.setdefault("dropbox_shared_link_cache", {})
+    if path in cache:
+        return str(cache[path])
+
+    shared_link = get_or_create_shared_link(path)
+    cache[path] = shared_link
+    return shared_link
+
+
+def render_dropbox_folder_links(
+    source_folder_path: str | None,
+    dropbox_overview: dict[str, Any],
+) -> None:
+    st.markdown("**Dropbox folders**")
+
+    folder_rows: list[dict[str, str]] = []
+
+    if source_folder_path:
+        folder_rows.append({
+            "label": "Listing folder",
+            "path": source_folder_path,
+        })
+
+    resource_root = str(dropbox_overview.get("resource_root", "") or "").strip()
+    garment_resource_root = str(dropbox_overview.get("garment_resource_root", "") or "").strip()
+
+    if garment_resource_root:
+        folder_rows.append({
+            "label": "Garment resources",
+            "path": garment_resource_root,
+        })
+
+    if resource_root:
+        folder_rows.append({
+            "label": "Shared resources root",
+            "path": resource_root,
+        })
+
+    if not folder_rows:
+        st.caption("No Dropbox folder links available.")
+        return
+
+    for row in folder_rows:
+        label = row["label"]
+        path = row["path"]
+
+        try:
+            shared_link = get_cached_dropbox_shared_link(path)
+            st.markdown(f"- **{label}:** [{path}]({shared_link})")
+        except Exception:
+            st.markdown(f"- **{label}:** `{path}`")
+
+
 def build_header_map(ws, header_row: int) -> dict[str, int]:
     mapping: dict[str, int] = {}
     for col in range(1, ws.max_column + 1):
@@ -3423,69 +3481,54 @@ def render_ready_review_panel(
         st.text_area("Keywords preview", value=review_data["generic_keywords"], height=100, disabled=True)
 
     with images_tab:
-        show_image_previews = st.checkbox(
-            "Show image previews",
-            value=False,
-            key=f"{review_key_prefix}_show_image_previews",
-        )
+        dropbox_overview = get_cached_dropbox_overview(item.get("profile", {}), dropbox_cfg)
+        render_dropbox_folder_links(source_folder_path, dropbox_overview)
+
         if not review_data["image_review_loaded"]:
-            st.info("Image mappings are not loaded for this review yet.")
+            st.info("Image mappings are not loaded for this review yet. Use the Dropbox folder links above for normal review.")
             if st.button("Load image review", key=f"{review_key_prefix}_load_image_review_btn", width="content"):
+                st.session_state["active_perf_action_label"] = "load image review"
                 st.session_state[f"{review_key_prefix}_load_image_review"] = True
                 st.rerun()
         else:
-            st.markdown("**Parent main image**")
             support_images = review_data.get("support_images", [])
             child_image_rows = review_data.get("child_image_rows", [])
 
-            if show_image_previews:
-                if review_data["parent_main_image_url"]:
-                    st.image(review_data["parent_main_image_url"], width=240)
-                    st.caption(Path(review_data["parent_main_image_url"]).name)
-                else:
-                    st.caption("No resolved parent main image.")
-            elif review_data["parent_main_image_url"]:
-                st.code(review_data["parent_main_image_url"], language=None)
+            st.success("Image review data loaded.")
+
+            st.markdown("**Parent main image**")
+            if review_data["parent_main_image_url"]:
+                st.image(review_data["parent_main_image_url"], width=240)
+                st.caption(Path(review_data["parent_main_image_url"]).name)
             else:
                 st.caption("No resolved parent main image.")
 
             st.markdown("**Support image order**")
-            if show_image_previews:
-                if support_images:
-                    cols = st.columns(min(4, len(support_images)))
-                    for idx, image_entry in enumerate(support_images):
-                        with cols[idx % len(cols)]:
-                            st.image(image_entry["url"], width=170)
-                            st.caption(image_entry["label"])
-                else:
-                    st.caption("No support images found.")
-            elif support_images:
-                for image_entry in support_images:
-                    st.write(image_entry["label"])
+            if support_images:
+                cols = st.columns(min(4, len(support_images)))
+                for idx, image_entry in enumerate(support_images):
+                    with cols[idx % len(cols)]:
+                        st.image(image_entry["url"], width=170)
+                        st.caption(image_entry["label"])
             else:
                 st.caption("No support images found.")
 
             st.markdown("**Child variant image mapping**")
-            if show_image_previews:
-                if child_image_rows:
-                    cols_per_row = 3
-                    cols = st.columns(cols_per_row)
-                    for idx, image_entry in enumerate(child_image_rows):
-                        with cols[idx % cols_per_row]:
-                            st.markdown(f"**{image_entry['variant']}**")
-                            if image_entry.get("url"):
-                                st.image(image_entry["url"], width=180)
-                                st.caption(image_entry.get("filename", ""))
-                            else:
-                                st.caption("No resolved image URL.")
-                else:
-                    st.caption("No child image mappings found.")
-            elif child_image_rows:
-                st.dataframe(child_image_rows, width="stretch", hide_index=True)
+            if child_image_rows:
+                cols_per_row = 3
+                cols = st.columns(cols_per_row)
+                for idx, image_entry in enumerate(child_image_rows):
+                    with cols[idx % cols_per_row]:
+                        st.markdown(f"**{image_entry['variant']}**")
+                        if image_entry.get("url"):
+                            st.image(image_entry["url"], width=180)
+                            st.caption(image_entry.get("filename", ""))
+                        else:
+                            st.caption("No resolved image URL.")
             else:
                 st.caption("No child image mappings found.")
 
-            with st.expander("Image URLs and filenames", expanded=False):
+            with st.expander("Technical image URLs and filenames", expanded=False):
                 st.markdown("**Parent main image URL**")
                 if review_data["parent_main_image_url"]:
                     st.code(review_data["parent_main_image_url"], language=None)
