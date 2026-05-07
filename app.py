@@ -24,6 +24,7 @@ from utils.dropbox_client import (
     move_dropbox_folder,
     path_exists,
     upload_text_file,
+    upload_binary_file,
     download_text_file,
 )
 
@@ -949,6 +950,12 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
 
     if isinstance(payload.get("workflow_events"), list):
         memory_payload["workflow_events"] = list(payload.get("workflow_events", []))
+
+    if isinstance(payload.get("sku_manifest"), dict):
+        memory_payload["sku_manifest"] = dict(payload.get("sku_manifest", {}))
+
+    if isinstance(payload.get("generated_outputs"), list):
+        memory_payload["generated_outputs"] = list(payload.get("generated_outputs", []))
 
     return memory_payload
 
@@ -3853,6 +3860,96 @@ def build_approved_queue_items(
     )
 
 
+
+def build_sku_manifest(
+    profile: dict[str, Any],
+    payload: dict[str, Any],
+    finished_folder_path: str,
+    output_path: Path | None = None,
+) -> dict[str, Any]:
+    selected_variants = dict(payload.get("selected_variants", {}))
+    size_price_map = dict(payload.get("size_price_map", {}))
+    parent_sku = str(payload.get("parent_sku", "") or "").strip()
+    variant_combos = build_variant_combinations(profile, selected_variants)
+
+    children: list[dict[str, Any]] = []
+
+    for variant_values in variant_combos:
+        seller_sku = build_child_sku(profile, parent_sku, variant_values)
+        size_value = str(variant_values.get("size", "") or "")
+        price_value = size_price_map.get(size_value, size_price_map.get("default", ""))
+
+        child_row: dict[str, Any] = {
+            "amazon_seller_sku": seller_sku,
+            "canonical_sku": seller_sku,
+            "parent_sku": parent_sku,
+            "variant_values": dict(variant_values),
+            "quantity": int(payload.get("quantity", 0) or 0),
+            "price": price_value,
+        }
+
+        for variant_key, variant_value in variant_values.items():
+            child_row[str(variant_key)] = variant_value
+
+        children.append(child_row)
+
+    return {
+        "schema_version": 1,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "marketplace": "amazon",
+        "template_label": profile.get("label", profile.get("_slug", "")),
+        "template_slug": profile.get("_slug", ""),
+        "template_key": profile.get("template_key", ""),
+        "parent_sku": parent_sku,
+        "finished_folder_path": str(finished_folder_path or ""),
+        "output_workbook_name": output_path.name if output_path else "",
+        "child_sku_count": len(children),
+        "children": children,
+    }
+
+
+def save_generated_artifacts_to_dropbox(
+    profile: dict[str, Any],
+    payload: dict[str, Any],
+    finished_folder_path: str,
+    output_path: Path,
+) -> dict[str, Any]:
+    finished_folder_path = str(finished_folder_path or "").rstrip("/")
+    if not finished_folder_path:
+        raise ValueError("Finished folder path is required before saving generated artifacts.")
+
+    workbook_dropbox_path = f"{finished_folder_path}/{output_path.name}"
+    with output_path.open("rb") as workbook_file:
+        upload_binary_file(workbook_dropbox_path, workbook_file.read())
+
+    sku_manifest = build_sku_manifest(
+        profile=profile,
+        payload=payload,
+        finished_folder_path=finished_folder_path,
+        output_path=output_path,
+    )
+
+    sku_manifest_path = f"{finished_folder_path}/sku_manifest.json"
+    upload_text_file(
+        sku_manifest_path,
+        json.dumps(sku_manifest, indent=2, ensure_ascii=False),
+    )
+
+    artifact = {
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "workbook_name": output_path.name,
+        "workbook_dropbox_path": workbook_dropbox_path,
+        "sku_manifest_dropbox_path": sku_manifest_path,
+        "child_sku_count": sku_manifest.get("child_sku_count", 0),
+    }
+
+    payload["sku_manifest"] = sku_manifest
+    generated_outputs = list(payload.get("generated_outputs", []))
+    generated_outputs.append(artifact)
+    payload["generated_outputs"] = generated_outputs[-50:]
+
+    return artifact
+
 def generate_approved_listing(
     profile: dict[str, Any],
     listing_memory: dict[str, Any],
@@ -3959,6 +4056,15 @@ def generate_approved_listing(
         for workbook_step, workbook_seconds in workbook_timings.items():
             generation_timings[f"workbook_{workbook_step}"] = round(float(workbook_seconds), 4)
 
+        step_started_at = time.perf_counter()
+        generated_artifact = save_generated_artifacts_to_dropbox(
+            profile=profile,
+            payload=payload,
+            finished_folder_path=finished_folder_path,
+            output_path=output_path,
+        )
+        generation_timings["save_generated_artifacts"] = round(time.perf_counter() - step_started_at, 4)
+
         append_workflow_event(
             payload,
             action="generate_approved_listing",
@@ -3966,7 +4072,12 @@ def generate_approved_listing(
             from_state="approved",
             to_state="finished",
             folder_path=finished_folder_path,
-            details={"output_name": output_path.name},
+            details={
+                "output_name": output_path.name,
+                "workbook_dropbox_path": generated_artifact.get("workbook_dropbox_path", ""),
+                "sku_manifest_dropbox_path": generated_artifact.get("sku_manifest_dropbox_path", ""),
+                "child_sku_count": generated_artifact.get("child_sku_count", 0),
+            },
         )
 
         step_started_at = time.perf_counter()
@@ -3980,6 +4091,7 @@ def generate_approved_listing(
             "output_path": str(output_path),
             "output_name": output_path.name,
             "finished_folder_path": finished_folder_path,
+            "generated_artifact": generated_artifact,
             "timings": generation_timings,
         }
     except Exception:
@@ -5605,6 +5717,27 @@ def main() -> None:
         progress_bar.progress(75)
 
         output_path, workbook_timings = build_workbook(profile, payload)
+
+        generated_artifact = save_generated_artifacts_to_dropbox(
+            profile=profile,
+            payload=payload,
+            finished_folder_path=finished_folder_path,
+            output_path=output_path,
+        )
+        append_workflow_event(
+            payload,
+            action="generate_staged_listing",
+            actor=st.session_state.get("content_prepared_by", "") or st.session_state.get("assets_prepared_by", ""),
+            from_state="_stage",
+            to_state="finished",
+            folder_path=finished_folder_path,
+            details={
+                "output_name": output_path.name,
+                "workbook_dropbox_path": generated_artifact.get("workbook_dropbox_path", ""),
+                "sku_manifest_dropbox_path": generated_artifact.get("sku_manifest_dropbox_path", ""),
+                "child_sku_count": generated_artifact.get("child_sku_count", 0),
+            },
+        )
 
         listing_memory_path = save_listing_memory_to_dropbox(
             profile=profile,
