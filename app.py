@@ -3815,13 +3815,30 @@ def render_review_queue_view(
         )
         review_item = ready_lookup.get(selected_review_folder)
         if review_item:
-            with st.expander("Review panel", expanded=True):
-                render_ready_review_panel(
-                    review_item,
-                    dropbox_cfg,
-                    key_prefix="review_queue",
-                    source_folder_path=build_ready_folder_path(dropbox_cfg, review_item["folder_name"]),
-                )
+            review_panel_key_suffix = selected_review_folder.replace("/", "_").replace("\\", "_").replace(" ", "_")
+            review_panel_open_key = f"review_queue_panel_open_{review_panel_key_suffix}"
+
+            panel_col1, panel_col2 = st.columns([1, 3])
+            with panel_col1:
+                if st.button("Open review panel", key=f"{review_panel_open_key}_open_btn", width="stretch"):
+                    st.session_state["active_perf_action_label"] = "open ready review panel"
+                    st.session_state[review_panel_open_key] = True
+            with panel_col2:
+                if st.session_state.get(review_panel_open_key, False):
+                    if st.button("Hide review panel", key=f"{review_panel_open_key}_hide_btn"):
+                        st.session_state["active_perf_action_label"] = "hide ready review panel"
+                        st.session_state[review_panel_open_key] = False
+                else:
+                    st.info("Review panel is not loaded yet. Open it only when you need detailed content/image/quality review.")
+
+            if st.session_state.get(review_panel_open_key, False):
+                with st.expander("Review panel", expanded=True):
+                    render_ready_review_panel(
+                        review_item,
+                        dropbox_cfg,
+                        key_prefix="review_queue",
+                        source_folder_path=build_ready_folder_path(dropbox_cfg, review_item["folder_name"]),
+                    )
 
             default_reviewer = review_item.get("listing_memory", {}).get("reviewed_by", "")
             review_reviewer_key = st.session_state.get("review_queue_review_folder_reviewer_key", "")
@@ -3948,13 +3965,30 @@ def render_approved_queue_view(
             )
             review_item = approved_lookup.get(selected_review_folder)
             if review_item:
-                with st.expander("Review panel", expanded=True):
-                    render_ready_review_panel(
-                        review_item,
-                        dropbox_cfg,
-                        key_prefix="approved_output",
-                        source_folder_path=build_approved_folder_path(dropbox_cfg, review_item["folder_name"]),
-                    )
+                approved_panel_key_suffix = selected_review_folder.replace("/", "_").replace("\\", "_").replace(" ", "_")
+                approved_panel_open_key = f"approved_output_panel_open_{approved_panel_key_suffix}"
+
+                panel_col1, panel_col2 = st.columns([1, 3])
+                with panel_col1:
+                    if st.button("Open approved review panel", key=f"{approved_panel_open_key}_open_btn", width="stretch"):
+                        st.session_state["active_perf_action_label"] = "open approved review panel"
+                        st.session_state[approved_panel_open_key] = True
+                with panel_col2:
+                    if st.session_state.get(approved_panel_open_key, False):
+                        if st.button("Hide approved review panel", key=f"{approved_panel_open_key}_hide_btn"):
+                            st.session_state["active_perf_action_label"] = "hide approved review panel"
+                            st.session_state[approved_panel_open_key] = False
+                    else:
+                        st.info("Approved review panel is not loaded yet. Open it only when you need detailed review.")
+
+                if st.session_state.get(approved_panel_open_key, False):
+                    with st.expander("Review panel", expanded=True):
+                        render_ready_review_panel(
+                            review_item,
+                            dropbox_cfg,
+                            key_prefix="approved_output",
+                            source_folder_path=build_approved_folder_path(dropbox_cfg, review_item["folder_name"]),
+                        )
         else:
             st.caption("No approved listings available to review yet.")
 
