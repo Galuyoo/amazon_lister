@@ -932,6 +932,13 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
     if original_finished_folder_name:
         memory_payload["original_finished_folder_name"] = original_finished_folder_name
 
+    # Additive metadata for review/dashboard use. Old listing_inputs.json files remain valid.
+    if isinstance(payload.get("review_snapshot"), dict):
+        memory_payload["review_snapshot"] = dict(payload.get("review_snapshot", {}))
+
+    if isinstance(payload.get("workflow_events"), list):
+        memory_payload["workflow_events"] = list(payload.get("workflow_events", []))
+
     return memory_payload
 
 
@@ -3307,6 +3314,88 @@ def build_price_summary(size_price_map: dict[str, float]) -> str:
     return f"{len(prices)} variant(s) from {min(prices):.2f} to {max(prices):.2f}"
 
 
+def append_workflow_event(
+    payload: dict[str, Any],
+    action: str,
+    actor: str = "",
+    from_state: str = "",
+    to_state: str = "",
+    folder_path: str = "",
+    details: dict[str, Any] | None = None,
+) -> None:
+    events = list(payload.get("workflow_events", []))
+
+    event = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "action": action,
+        "actor": str(actor or ""),
+        "from_state": str(from_state or ""),
+        "to_state": str(to_state or ""),
+        "folder_path": str(folder_path or ""),
+    }
+
+    if details:
+        event["details"] = dict(details)
+
+    events.append(event)
+    payload["workflow_events"] = events[-100:]
+
+
+def build_review_snapshot(
+    profile: dict[str, Any],
+    payload: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+    folder_path: str,
+    quality_report: dict[str, Any] | None = None,
+    preview_errors: list[str] | None = None,
+) -> dict[str, Any]:
+    selected_variants = dict(payload.get("selected_variants", {}))
+    size_price_map = dict(payload.get("size_price_map", {}))
+    quality_report = dict(quality_report or {})
+    preview_errors = list(preview_errors or [])
+
+    try:
+        dropbox_overview = get_cached_dropbox_overview(profile, dropbox_cfg)
+    except Exception:
+        dropbox_overview = {}
+
+    try:
+        variant_combos = build_variant_combinations(profile, selected_variants)
+    except Exception:
+        variant_combos = []
+
+    blockers = list(quality_report.get("blockers", []))
+    warnings = list(quality_report.get("warnings", []))
+
+    return {
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "listing_folder_path": str(folder_path or ""),
+        "template": profile.get("label", profile.get("_slug", "")) if profile else "",
+        "template_key": profile.get("template_key", "") if profile else "",
+        "resource_root": str(dropbox_overview.get("resource_root", "") or ""),
+        "garment_resource_root": str(dropbox_overview.get("garment_resource_root", "") or ""),
+        "variants_summary": build_variants_summary(selected_variants),
+        "price_summary": build_price_summary(size_price_map),
+        "quantity": int(payload.get("quantity", 0) or 0),
+        "image_summary": {
+            "selected_color_count": len(get_selected_colors_for_image_resolution(profile, selected_variants)) if profile else 0,
+            "selected_size_count": len(selected_variants.get("size", [])),
+            "expected_child_variants": len(variant_combos),
+            "support_images_configured": len(dropbox_overview.get("garment_resource_images", [])) + len(dropbox_overview.get("shared_resource_images", [])),
+            "preview_error_count": len(preview_errors),
+        },
+        "quality_summary": {
+            "score": quality_report.get("score", 0),
+            "blocker_count": len(blockers),
+            "warning_count": len(warnings),
+        },
+        "prepared_by": {
+            "assets_prepared_by": str(payload.get("assets_prepared_by", "") or ""),
+            "content_prepared_by": str(payload.get("content_prepared_by", "") or ""),
+        },
+    }
+
+
 def build_ready_review_data(
     profile: dict[str, Any] | None,
     listing_memory: dict[str, Any],
@@ -3338,6 +3427,8 @@ def build_ready_review_data(
         "errors": [],
         "image_review_loaded": include_images or include_quality,
         "quality_check_loaded": include_quality,
+        "review_snapshot": dict(listing_memory.get("review_snapshot", {})) if isinstance(listing_memory.get("review_snapshot"), dict) else {},
+        "workflow_events": list(listing_memory.get("workflow_events", [])) if isinstance(listing_memory.get("workflow_events"), list) else [],
     }
 
     if not profile:
@@ -3469,6 +3560,24 @@ def render_ready_review_panel(
             st.write(f"Quantity: {review_data['quantity']}")
             st.write(f"Pricing: {review_data['price_summary']}")
 
+        snapshot = review_data.get("review_snapshot", {}) or {}
+        if snapshot:
+            st.markdown("**Review snapshot**")
+            image_summary = snapshot.get("image_summary", {}) or {}
+            quality_summary = snapshot.get("quality_summary", {}) or {}
+            st.caption(
+                f"Snapshot: {snapshot.get('created_at', '-')} | "
+                f"Expected child variants: {image_summary.get('expected_child_variants', '-')} | "
+                f"Support images configured: {image_summary.get('support_images_configured', '-')} | "
+                f"Quality blockers: {quality_summary.get('blocker_count', 0)} | "
+                f"Warnings: {quality_summary.get('warning_count', 0)}"
+            )
+
+        workflow_events = review_data.get("workflow_events", []) or []
+        if workflow_events:
+            with st.expander("Workflow history", expanded=False):
+                st.dataframe(workflow_events[-20:], hide_index=True, width="stretch")
+
     with content_tab:
         st.markdown("**Title**")
         st.write(review_data["title"] or "-")
@@ -3551,8 +3660,37 @@ def render_ready_review_panel(
 
     with quality_tab:
         if not review_data["quality_check_loaded"]:
-            st.info("Full image quality check has not been run yet.")
-            if st.button("Run full image quality check", key=f"{review_key_prefix}_run_full_quality_btn", width="content"):
+            snapshot = review_data.get("review_snapshot", {}) or {}
+            quality_summary = snapshot.get("quality_summary", {}) or {}
+            image_summary = snapshot.get("image_summary", {}) or {}
+
+            if snapshot:
+                st.markdown("**Saved review snapshot**")
+                q_col1, q_col2, q_col3, q_col4 = st.columns(4)
+                q_col1.metric("Score", quality_summary.get("score", 0))
+                q_col2.metric("Blockers", quality_summary.get("blocker_count", 0))
+                q_col3.metric("Warnings", quality_summary.get("warning_count", 0))
+                q_col4.metric("Expected variants", image_summary.get("expected_child_variants", 0))
+
+                st.caption(
+                    f"Snapshot created: {snapshot.get('created_at', '-')} | "
+                    f"Support images configured: {image_summary.get('support_images_configured', 0)} | "
+                    f"Preview errors at submit: {image_summary.get('preview_error_count', 0)}"
+                )
+
+                if int(quality_summary.get("blocker_count", 0) or 0) == 0:
+                    st.success("Saved submit-time quality snapshot has no blockers.")
+                else:
+                    st.error("Saved submit-time quality snapshot had blockers.")
+            else:
+                st.info("No saved review snapshot found for this older listing.")
+
+            st.caption(
+                "Full image quality check is optional. It loads current Dropbox image mappings again "
+                "only when you need a deeper live verification."
+            )
+            if st.button("Run full live image quality check", key=f"{review_key_prefix}_run_full_quality_btn", width="content"):
+                st.session_state["active_perf_action_label"] = "run full live image quality check"
                 st.session_state[f"{review_key_prefix}_run_full_quality"] = True
                 st.rerun()
         else:
@@ -3691,6 +3829,10 @@ def generate_approved_listing(
     generation_payload["reviewed_by"] = listing_memory.get("reviewed_by", "")
     generation_payload["prepared_at"] = listing_memory.get("prepared_at", "")
     generation_payload["reviewed_at"] = listing_memory.get("reviewed_at", "") or format_workflow_timestamp()
+    if isinstance(listing_memory.get("review_snapshot"), dict):
+        generation_payload["review_snapshot"] = dict(listing_memory.get("review_snapshot", {}))
+    if isinstance(listing_memory.get("workflow_events"), list):
+        generation_payload["workflow_events"] = list(listing_memory.get("workflow_events", []))
     generation_errors = generation_prep["errors"]
     if generation_errors:
         raise ValueError("; ".join(generation_errors))
@@ -3751,6 +3893,16 @@ def generate_approved_listing(
         generation_timings["build_workbook_total"] = round(time.perf_counter() - step_started_at, 4)
         for workbook_step, workbook_seconds in workbook_timings.items():
             generation_timings[f"workbook_{workbook_step}"] = round(float(workbook_seconds), 4)
+
+        append_workflow_event(
+            payload,
+            action="generate_approved_listing",
+            actor=str(payload.get("reviewed_by", "") or ""),
+            from_state="approved",
+            to_state="finished",
+            folder_path=finished_folder_path,
+            details={"output_name": output_path.name},
+        )
 
         step_started_at = time.perf_counter()
         save_listing_inputs_json_to_dropbox(profile=profile, payload=payload, folder_path=finished_folder_path)
@@ -3924,6 +4076,15 @@ def render_review_queue_view(
                 payload = dict(review_item["listing_memory"])
                 payload["reviewed_by"] = reviewed_by
                 payload["reviewed_at"] = format_workflow_timestamp()
+                append_workflow_event(
+                    payload,
+                    action="approve_ready_listing" if approve_clicked else "deny_ready_listing",
+                    actor=reviewed_by,
+                    from_state="ready",
+                    to_state="approved" if approve_clicked else "_stage",
+                    folder_path=ready_folder_path,
+                    details={"review_folder": selected_review_folder},
+                )
 
                 try:
                     save_listing_inputs_json_to_dropbox(
@@ -5252,6 +5413,27 @@ def main() -> None:
             stage_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
             generation_payload["prepared_at"] = format_workflow_timestamp()
             st.session_state["prepared_at"] = generation_payload["prepared_at"]
+
+            generation_payload["review_snapshot"] = build_review_snapshot(
+                profile=profile,
+                payload=generation_payload,
+                dropbox_cfg=dropbox_cfg,
+                folder_path=stage_folder_path,
+                quality_report=quality_report,
+                preview_errors=all_preview_errors,
+            )
+            append_workflow_event(
+                generation_payload,
+                action="submit_for_review",
+                actor=st.session_state.get("content_prepared_by", "") or st.session_state.get("assets_prepared_by", ""),
+                from_state="_stage",
+                to_state="ready",
+                folder_path=stage_folder_path,
+                details={
+                    "assets_prepared_by": st.session_state.get("assets_prepared_by", ""),
+                    "content_prepared_by": st.session_state.get("content_prepared_by", ""),
+                },
+            )
 
             listing_memory_path = save_listing_inputs_json_to_dropbox(
                 profile=profile,
