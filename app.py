@@ -439,6 +439,11 @@ def render_inline_loading_debug() -> None:
             ]
             st.dataframe(rows, hide_index=True, width="stretch")
 
+    approved_generation_step_rows = list(st.session_state.get("approved_generation_step_rows", []))
+    if approved_generation_step_rows:
+        with st.expander("Last approved generation step breakdown", expanded=True):
+            st.dataframe(approved_generation_step_rows, hide_index=True, width="stretch")
+
     history = list(st.session_state.get("perf_history", []))
     st.markdown("### Performance history")
 
@@ -3651,10 +3656,15 @@ def generate_approved_listing(
     approved_folder_path = build_approved_folder_path(dropbox_cfg, approved_folder_name)
     selected_colors = generation_payload["colors"]
 
+    generation_timings: dict[str, float] = {}
+
+    step_started_at = time.perf_counter()
     template_path = resolve_template_path(profile)
     wb = load_workbook(template_path, keep_vba=True, read_only=True)
     wb.close()
+    generation_timings["template_check"] = round(time.perf_counter() - step_started_at, 4)
 
+    step_started_at = time.perf_counter()
     resolve_folder_image_urls(
         profile,
         selected_variants,
@@ -3662,17 +3672,21 @@ def generate_approved_listing(
         dropbox_overview,
         approved_folder_path,
     )
+    generation_timings["pre_move_image_check"] = round(time.perf_counter() - step_started_at, 4)
 
     finished_folder_path = ""
 
     try:
+        step_started_at = time.perf_counter()
         final_sku, finished_folder_path = finalize_approved_dropbox_folder(
             dropbox_cfg=dropbox_cfg,
             approved_folder_name=approved_folder_name,
             parent_sku=generation_payload["parent_sku"],
             reuse_finished_folder_name=original_finished_folder_name,
         )
+        generation_timings["move_approved_to_finished"] = round(time.perf_counter() - step_started_at, 4)
 
+        step_started_at = time.perf_counter()
         parent_main_image_url, other_images, color_image_map, design_color_image_url_map = resolve_folder_image_urls(
             profile,
             selected_variants,
@@ -3680,6 +3694,7 @@ def generate_approved_listing(
             dropbox_overview,
             finished_folder_path,
         )
+        generation_timings["final_image_resolve"] = round(time.perf_counter() - step_started_at, 4)
 
         payload = dict(generation_payload)
         payload["parent_sku"] = final_sku
@@ -3688,8 +3703,15 @@ def generate_approved_listing(
         payload["color_image_map"] = color_image_map
         payload["design_color_image_url_map"] = design_color_image_url_map
 
-        output_path, _ = build_workbook(profile, payload)
+        step_started_at = time.perf_counter()
+        output_path, workbook_timings = build_workbook(profile, payload)
+        generation_timings["build_workbook_total"] = round(time.perf_counter() - step_started_at, 4)
+        for workbook_step, workbook_seconds in workbook_timings.items():
+            generation_timings[f"workbook_{workbook_step}"] = round(float(workbook_seconds), 4)
+
+        step_started_at = time.perf_counter()
         save_listing_inputs_json_to_dropbox(profile=profile, payload=payload, folder_path=finished_folder_path)
+        generation_timings["save_finished_listing_inputs"] = round(time.perf_counter() - step_started_at, 4)
 
         return {
             "folder_name": approved_folder_name,
@@ -3698,6 +3720,7 @@ def generate_approved_listing(
             "output_path": str(output_path),
             "output_name": output_path.name,
             "finished_folder_path": finished_folder_path,
+            "timings": generation_timings,
         }
     except Exception:
         if finished_folder_path and path_exists(finished_folder_path):
@@ -3999,6 +4022,32 @@ def render_approved_queue_view(
         1 for result in results if result.get("status") == "Failed"
     )
 
+    generation_step_rows: list[dict[str, Any]] = []
+    for result in results:
+        timings = result.get("timings", {}) if isinstance(result, dict) else {}
+        for step_name, seconds in dict(timings).items():
+            try:
+                generation_step_rows.append({
+                    "folder_name": result.get("folder_name", ""),
+                    "step": step_name,
+                    "ms": round(float(seconds) * 1000, 1),
+                })
+            except Exception:
+                pass
+
+    if generation_step_rows:
+        slowest_generation_step = max(generation_step_rows, key=lambda row: row["ms"])
+        slowest_generation_event = (
+            f"Approved generation: {slowest_generation_step['step']} "
+            f"({slowest_generation_step['folder_name']})"
+        )
+        slowest_generation_ms = slowest_generation_step["ms"]
+    else:
+        slowest_generation_event = f"Approved generation: {approved_generation_target_count} folder(s)"
+        slowest_generation_ms = approved_generation_elapsed_ms
+
+    st.session_state["approved_generation_step_rows"] = generation_step_rows
+
     perf_history = st.session_state.setdefault("perf_history", [])
     perf_history.append({
         "run": len(perf_history) + 1,
@@ -4011,8 +4060,8 @@ def render_approved_queue_view(
         "full_rerun_ms": approved_generation_elapsed_ms,
         "recorded_load_ms": approved_generation_elapsed_ms,
         "estimated_ui_build_ms": 0,
-        "slowest_event": f"Approved generation: {approved_generation_target_count} folder(s)",
-        "slowest_ms": approved_generation_elapsed_ms,
+        "slowest_event": slowest_generation_event,
+        "slowest_ms": slowest_generation_ms,
         "event_count": approved_generation_target_count,
     })
 
@@ -4942,8 +4991,8 @@ def main() -> None:
         review_col1, review_col2 = st.columns([1, 3])
         with review_col1:
             if st.button("Load / refresh review queue", key="load_review_queue_tab_btn", width="stretch"):
+                st.session_state["active_perf_action_label"] = "load review queue"
                 st.session_state["review_queue_tab_loaded"] = True
-                st.rerun()
         with review_col2:
             if not st.session_state.get("review_queue_tab_loaded", False):
                 st.info("Review queue is not loaded yet. Click Load / refresh review queue when you need admin review.")
@@ -4961,9 +5010,8 @@ def main() -> None:
         approved_col1, approved_col2 = st.columns([1, 3])
         with approved_col1:
             if st.button("Load / refresh approved output", key="load_approved_output_tab_btn", width="stretch"):
-                st.session_state["pending_perf_action_label"] = "load approved output"
+                st.session_state["active_perf_action_label"] = "load approved output"
                 st.session_state["approved_output_tab_loaded"] = True
-                st.rerun()
         with approved_col2:
             if not st.session_state.get("approved_output_tab_loaded", False):
                 st.info("Approved output is not loaded yet. Click Load / refresh approved output when you need generation.")
