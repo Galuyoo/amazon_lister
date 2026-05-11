@@ -13,6 +13,24 @@ DEFAULT_EXISTING_CONFIG = REPO_ROOT / "config" / "stock_references.json"
 DEFAULT_OUTPUT_CONFIG = REPO_ROOT / "config" / "stock_references.generated.json"
 
 UNEEK_REQUIRED_COLUMNS = ["ItemNo", "ProductCode", "ColourDesc", "SizeDesc"]
+UNEEK_SIZE_ALIASES = {
+    "Small": "S",
+    "Medium": "M",
+    "Large": "L",
+    "X Large": "XL",
+    "XL": "XL",
+    "XX Large": "2XL",
+    "2XL": "2XL",
+    "XXX Large": "3XL",
+    "XXXL Large": "3XL",
+    "3XL": "3XL",
+    "XXXX Large": "4XL",
+    "XXXXL Large": "4XL",
+    "4XL": "4XL",
+    "XS": "XS",
+    "X Small": "XS",
+    "Xtra Small": "XS",
+}
 
 
 def read_csv_rows(path: Path) -> tuple[list[dict[str, str]], list[str]]:
@@ -40,6 +58,13 @@ def validate_required_columns(headers: list[str], required: list[str], label: st
     return [f"{label}: missing required column(s): {', '.join(missing)}"]
 
 
+def normalize_uneek_size_label(size_desc: str) -> tuple[str, bool]:
+    size_desc = str(size_desc or "").strip()
+    if size_desc in UNEEK_SIZE_ALIASES:
+        return UNEEK_SIZE_ALIASES[size_desc], UNEEK_SIZE_ALIASES[size_desc] != size_desc
+    return size_desc, False
+
+
 def generate_uneek_references(csv_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     rows, headers = read_csv_rows(csv_path)
     errors = validate_required_columns(headers, UNEEK_REQUIRED_COLUMNS, "Uneek")
@@ -52,6 +77,8 @@ def generate_uneek_references(csv_path: Path) -> tuple[dict[str, Any], dict[str,
             "duplicate_keys": [],
             "missing_item_no_rows": [],
             "empty_product_code_rows": [],
+            "size_labels_normalized_count": 0,
+            "unknown_size_desc_values": [],
         }
 
     row_counts: dict[str, int] = defaultdict(int)
@@ -59,6 +86,8 @@ def generate_uneek_references(csv_path: Path) -> tuple[dict[str, Any], dict[str,
     duplicate_keys: list[dict[str, Any]] = []
     missing_item_no_rows: list[dict[str, Any]] = []
     empty_product_code_rows: list[dict[str, Any]] = []
+    unknown_size_desc: dict[str, dict[str, Any]] = OrderedDict()
+    size_labels_normalized_count = 0
     product_maps: dict[str, OrderedDict[str, str]] = OrderedDict()
     seen_keys: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -67,6 +96,14 @@ def generate_uneek_references(csv_path: Path) -> tuple[dict[str, Any], dict[str,
         product_code = str(row.get("ProductCode", "") or "").strip()
         colour_desc = str(row.get("ColourDesc", "") or "").strip()
         size_desc = str(row.get("SizeDesc", "") or "").strip()
+        size_label, size_was_normalized = normalize_uneek_size_label(size_desc)
+        if size_was_normalized:
+            size_labels_normalized_count += 1
+        elif size_desc and size_desc not in UNEEK_SIZE_ALIASES:
+            unknown_entry = unknown_size_desc.setdefault(size_desc, {"count": 0, "sample_rows": []})
+            unknown_entry["count"] += 1
+            if len(unknown_entry["sample_rows"]) < 10:
+                unknown_entry["sample_rows"].append(row_number)
 
         if not product_code:
             empty_product_code_rows.append({
@@ -74,6 +111,7 @@ def generate_uneek_references(csv_path: Path) -> tuple[dict[str, Any], dict[str,
                 "item_no": item_no,
                 "colour": colour_desc,
                 "size": size_desc,
+                "size_label": size_label,
             })
             continue
 
@@ -85,24 +123,31 @@ def generate_uneek_references(csv_path: Path) -> tuple[dict[str, Any], dict[str,
                 "product_code": product_code,
                 "colour": colour_desc,
                 "size": size_desc,
+                "size_label": size_label,
             })
             continue
 
-        variant_key = f"{colour_desc}|{size_desc}"
+        variant_key = f"{colour_desc}|{size_label}"
         seen_key = (product_code, variant_key)
         previous = seen_keys.get(seen_key)
         if previous:
             duplicate_keys.append({
                 "product_code": product_code,
                 "variant_key": variant_key,
+                "original_size": size_desc,
                 "first_row": previous["row"],
                 "first_item_no": previous["item_no"],
+                "first_original_size": previous["original_size"],
                 "duplicate_row": row_number,
                 "duplicate_item_no": item_no,
             })
             continue
 
-        seen_keys[seen_key] = {"row": row_number, "item_no": item_no}
+        seen_keys[seen_key] = {
+            "row": row_number,
+            "item_no": item_no,
+            "original_size": size_desc,
+        }
         product_maps.setdefault(product_code, OrderedDict())[variant_key] = item_no
         mapped_counts[product_code] += 1
 
@@ -129,6 +174,15 @@ def generate_uneek_references(csv_path: Path) -> tuple[dict[str, Any], dict[str,
         "duplicate_keys": duplicate_keys,
         "missing_item_no_rows": missing_item_no_rows,
         "empty_product_code_rows": empty_product_code_rows,
+        "size_labels_normalized_count": size_labels_normalized_count,
+        "unknown_size_desc_values": [
+            {
+                "size_desc": size_desc,
+                "count": details["count"],
+                "sample_rows": details["sample_rows"],
+            }
+            for size_desc, details in unknown_size_desc.items()
+        ],
     }
 
     return references, report
@@ -244,13 +298,22 @@ def print_uneek_report(report: dict[str, Any]) -> None:
     duplicate_keys = report.get("duplicate_keys", [])
     missing_item_no_rows = report.get("missing_item_no_rows", [])
     empty_product_code_rows = report.get("empty_product_code_rows", [])
+    unknown_size_desc_values = report.get("unknown_size_desc_values", [])
 
-    print(f"Duplicate color|size keys: {len(duplicate_keys)}")
+    print(f"Size labels normalized: {report.get('size_labels_normalized_count', 0)}")
+    print(f"Unknown SizeDesc values: {len(unknown_size_desc_values)}")
+    for item in unknown_size_desc_values[:20]:
+        print(
+            f"- {item['size_desc']}: "
+            f"{item['count']} row(s), sample rows {item['sample_rows']}"
+        )
+
+    print(f"Duplicate keys after normalization: {len(duplicate_keys)}")
     for item in duplicate_keys[:20]:
         print(
             f"- {item['product_code']} {item['variant_key']}: "
-            f"row {item['first_row']}={item['first_item_no']}, "
-            f"row {item['duplicate_row']}={item['duplicate_item_no']}"
+            f"row {item['first_row']}={item['first_item_no']} ({item['first_original_size']}), "
+            f"row {item['duplicate_row']}={item['duplicate_item_no']} ({item['original_size']})"
         )
 
     print(f"Rows with missing ItemNo: {len(missing_item_no_rows)}")
