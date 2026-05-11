@@ -35,7 +35,7 @@ from utils.dropbox_client import (
     download_text_file,
 )
 
-GLOBAL_BRAND_NAME = "Generic"
+GLOBAL_BRAND_NAME = "sloganitto"
 WORKFLOW_ASSIGNEES = ["", "Hannan", "Amroz", "Moon", "Sal", "Richard", "Ben"]
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -5877,6 +5877,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 
