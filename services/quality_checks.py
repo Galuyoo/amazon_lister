@@ -5,6 +5,8 @@ from collections import Counter
 from itertools import product
 from typing import Any
 
+from services.stock_references import build_child_sku_details
+
 
 DISALLOWED_SYMBOL_PATTERN = re.compile(r"[★☆✓✔➡•◆►■□☑️🔥💥✨✅❌]")
 EMOJI_PATTERN = re.compile(
@@ -91,50 +93,7 @@ def build_child_sku_for_validation(
     parent_sku: str,
     variant_values: dict[str, str],
 ) -> str:
-    color_map = profile.get("color_sku_map", {})
-    size_map = profile.get("size_code_map", {})
-    design_map = profile.get("design_sku_map", {})
-
-    def slugify_part(value: str) -> str:
-        safe = value.strip().replace(" ", "-").replace("/", "-")
-        while "--" in safe:
-            safe = safe.replace("--", "-")
-        return safe
-
-    color_code = ""
-    size_code = ""
-    design_code = ""
-
-    if "color" in variant_values:
-        color_value = variant_values["color"]
-        color_code = color_map.get(color_value, slugify_part(color_value))
-
-    if "size" in variant_values:
-        size_value = variant_values["size"]
-        size_code = size_map.get(size_value, slugify_part(size_value))
-
-    if "design" in variant_values:
-        design_value = variant_values["design"]
-        design_code = design_map.get(design_value, slugify_part(design_value))
-
-    parts: list[str] = []
-
-    if color_code:
-        if color_code.startswith(parent_sku):
-            parts.append(color_code)
-        else:
-            parts.append(parent_sku)
-            parts.append(color_code)
-    else:
-        parts.append(parent_sku)
-
-    if size_code:
-        parts.append(size_code)
-
-    if design_code:
-        parts.append(design_code)
-
-    return "-".join(parts)
+    return build_child_sku_details(profile, parent_sku, variant_values)["amazon_seller_sku"]
 
 
 def resolve_variant_image_for_validation(

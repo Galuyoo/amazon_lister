@@ -14,6 +14,13 @@ import streamlit as st
 from openpyxl import load_workbook
 from itertools import product
 from services.quality_checks import validate_listing_quality
+from services.stock_references import (
+    build_child_sku_details,
+    get_stock_reference,
+    has_stock_reference,
+    is_strict_stock_ready,
+    validate_stock_ready_skus,
+)
 
 from utils.dropbox_client import (
     get_or_create_shared_link,
@@ -542,10 +549,25 @@ def load_dropbox_templates_config() -> dict[str, Any]:
         return json.load(f)
 
 
+def load_stock_references_config() -> dict[str, Any]:
+    config_path = CONFIG_DIR / "stock_references.json"
+    if not config_path.exists():
+        return {}
+    try:
+        with config_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    references = data.get("references", data)
+    return references if isinstance(references, dict) else {}
+
+
 def list_template_profiles() -> list[dict[str, Any]]:
     profiles: list[dict[str, Any]] = []
     if not TEMPLATES_DIR.exists():
         return profiles
+
+    stock_references = load_stock_references_config()
 
     for family_folder in sorted(TEMPLATES_DIR.iterdir()):
         if not family_folder.is_dir():
@@ -581,6 +603,13 @@ def list_template_profiles() -> list[dict[str, Any]]:
 
                 # family owns workbook now
                 config["template_file"] = schema.get("workbook_file", "")
+
+                stock_reference_key = str(config.get("stock_reference_key", "") or "").strip()
+                if stock_reference_key:
+                    stock_reference = stock_references.get(stock_reference_key, {})
+                    if isinstance(stock_reference, dict):
+                        config["_stock_reference"] = dict(stock_reference)
+
                 profiles.append(config)
             except Exception:
                 continue
@@ -779,44 +808,7 @@ def get_selected_colors_for_image_resolution(
 
 
 def build_child_sku(profile: dict[str, Any], parent_sku: str, variant_values: dict[str, str]) -> str:
-    color_map = profile.get("color_sku_map", {})
-    size_map = profile.get("size_code_map", {})
-    design_map = profile.get("design_sku_map", {})
-
-    color_code = ""
-    size_code = ""
-    design_code = ""
-
-    if "color" in variant_values:
-        color_value = variant_values["color"]
-        color_code = color_map.get(color_value, slugify_part(color_value))
-
-    if "size" in variant_values:
-        size_value = variant_values["size"]
-        size_code = size_map.get(size_value, slugify_part(size_value))
-
-    if "design" in variant_values:
-        design_value = variant_values["design"]
-        design_code = design_map.get(design_value, slugify_part(design_value))
-
-    parts: list[str] = []
-
-    if color_code:
-        if color_code.startswith(parent_sku):
-            parts.append(color_code)
-        else:
-            parts.append(parent_sku)
-            parts.append(color_code)
-    else:
-        parts.append(parent_sku)
-
-    if size_code:
-        parts.append(size_code)
-
-    if design_code:
-        parts.append(design_code)
-
-    return "-".join(parts)
+    return build_child_sku_details(profile, parent_sku, variant_values)["amazon_seller_sku"]
 
 def build_variant_field_values(profile: dict[str, Any], variant_values: dict[str, str]) -> dict[str, Any]:
     values: dict[str, Any] = {}
@@ -1389,7 +1381,13 @@ def render_variant_combinations_preview(
     for idx, combo in enumerate(combos, start=1):
         row = {"#": idx}
         row.update(combo)
-        row["child_sku"] = build_child_sku(profile, parent_sku, combo)
+        sku_details = build_child_sku_details(profile, parent_sku, combo)
+        row["child_sku"] = sku_details["amazon_seller_sku"]
+        if has_stock_reference(profile):
+            row["supplier"] = sku_details.get("supplier", "")
+            row["supplier_stock_key"] = sku_details.get("supplier_stock_key", "")
+            row["supplier_stock_key_status"] = sku_details.get("supplier_stock_key_status", "")
+            row["supplier_stock_key_reason"] = sku_details.get("supplier_stock_key_reason", "")
         rows.append(row)
 
     st.dataframe(rows, width="stretch", hide_index=True)
@@ -2723,6 +2721,10 @@ def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Pa
     if not template_path.exists():
         raise FileNotFoundError(f"Template not found: {template_path}")
 
+    stock_ready_report = validate_stock_ready_payload(profile, payload)
+    if stock_ready_report.get("errors"):
+        raise ValueError("Stock-ready SKU validation failed: " + "; ".join(stock_ready_report["errors"]))
+
     t0 = time.perf_counter()
     wb = load_workbook(template_path, keep_vba=True)
     t1 = time.perf_counter()
@@ -2872,6 +2874,14 @@ def validate_parent_child_structure(payload: dict[str, Any]) -> list[str]:
 
     return errors
 
+
+def validate_stock_ready_payload(profile: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    selected_variants = dict(payload.get("selected_variants", {}))
+    parent_sku = str(payload.get("parent_sku", "") or "").strip()
+    variant_combos = build_variant_combinations(profile, selected_variants)
+    return validate_stock_ready_skus(profile, parent_sku or "PARENT", variant_combos)
+
+
 def build_preflight_report(
     profile: dict[str, Any],
     dropbox_cfg: dict[str, Any],
@@ -2988,6 +2998,7 @@ def build_preflight_report(
     preview_structure_errors = validate_parent_child_structure(preview_payload)
 
     template_errors = validate_template_file(profile)
+    stock_ready_report = validate_stock_ready_payload(profile, preview_payload)
 
     all_preview_errors = [
         *profile_schema_errors,
@@ -2995,14 +3006,25 @@ def build_preflight_report(
         *preview_variant_errors,
         *preview_structure_errors,
         *template_errors,
+        *stock_ready_report.get("errors", []),
     ]
 
     quality_report = validate_listing_quality(profile, preview_payload)
+    stock_ready_warnings = list(stock_ready_report.get("warnings", []))
+    if stock_ready_warnings:
+        quality_report["warnings"] = list(quality_report.get("warnings", [])) + stock_ready_warnings
+    quality_report["stock_ready"] = {
+        "missing_supplier_stock_key_count": stock_ready_report.get("missing_supplier_stock_key_count", 0),
+        "duplicate_skus": stock_ready_report.get("duplicate_skus", []),
+        "strict_stock_ready": is_strict_stock_ready(profile),
+        "stock_reference_key": profile.get("stock_reference_key", ""),
+    }
 
     return {
         "preview_payload": preview_payload,
         "all_preview_errors": all_preview_errors,
         "quality_report": quality_report,
+        "stock_ready_report": stock_ready_report,
     }
 
 
@@ -3084,11 +3106,23 @@ def prepare_generation_payload(
     errors.extend(validate_template_file(profile))
 
     quality_report = validate_listing_quality(profile, payload)
+    stock_ready_report = validate_stock_ready_payload(profile, payload)
+    errors.extend(stock_ready_report.get("errors", []))
+    stock_ready_warnings = list(stock_ready_report.get("warnings", []))
+    if stock_ready_warnings:
+        quality_report["warnings"] = list(quality_report.get("warnings", [])) + stock_ready_warnings
+    quality_report["stock_ready"] = {
+        "missing_supplier_stock_key_count": stock_ready_report.get("missing_supplier_stock_key_count", 0),
+        "duplicate_skus": stock_ready_report.get("duplicate_skus", []),
+        "strict_stock_ready": is_strict_stock_ready(profile),
+        "stock_reference_key": profile.get("stock_reference_key", ""),
+    }
 
     return {
         "payload": payload,
         "errors": errors,
         "quality_report": quality_report,
+        "stock_ready_report": stock_ready_report,
     }
 
 
@@ -3875,14 +3909,20 @@ def build_sku_manifest(
     children: list[dict[str, Any]] = []
 
     for variant_values in variant_combos:
-        seller_sku = build_child_sku(profile, parent_sku, variant_values)
+        sku_details = build_child_sku_details(profile, parent_sku, variant_values)
+        seller_sku = sku_details["amazon_seller_sku"]
         size_value = str(variant_values.get("size", "") or "")
         price_value = size_price_map.get(size_value, size_price_map.get("default", ""))
 
         child_row: dict[str, Any] = {
             "amazon_seller_sku": seller_sku,
-            "canonical_sku": seller_sku,
+            "canonical_sku": sku_details.get("canonical_sku", seller_sku),
             "parent_sku": parent_sku,
+            "supplier": sku_details.get("supplier", ""),
+            "supplier_stock_key": sku_details.get("supplier_stock_key", ""),
+            "supplier_stock_key_status": sku_details.get("supplier_stock_key_status", ""),
+            "supplier_stock_key_reason": sku_details.get("supplier_stock_key_reason", ""),
+            "design_or_listing_code": sku_details.get("design_or_listing_code", ""),
             "variant_values": dict(variant_values),
             "quantity": int(payload.get("quantity", 0) or 0),
             "price": price_value,
@@ -3893,17 +3933,32 @@ def build_sku_manifest(
 
         children.append(child_row)
 
+    suppliers = sorted({
+        str(child.get("supplier", "") or "")
+        for child in children
+        if str(child.get("supplier", "") or "")
+    })
+    missing_supplier_stock_key_count = sum(
+        1
+        for child in children
+        if child.get("supplier_stock_key_status") == "missing"
+    )
+
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "marketplace": "amazon",
         "template_label": profile.get("label", profile.get("_slug", "")),
         "template_slug": profile.get("_slug", ""),
         "template_key": profile.get("template_key", ""),
+        "stock_reference_key": profile.get("stock_reference_key", ""),
+        "strict_stock_ready": is_strict_stock_ready(profile),
+        "suppliers": suppliers,
         "parent_sku": parent_sku,
         "finished_folder_path": str(finished_folder_path or ""),
         "output_workbook_name": output_path.name if output_path else "",
         "child_sku_count": len(children),
+        "missing_supplier_stock_key_count": missing_supplier_stock_key_count,
         "children": children,
     }
 
@@ -3941,6 +3996,7 @@ def save_generated_artifacts_to_dropbox(
         "workbook_dropbox_path": workbook_dropbox_path,
         "sku_manifest_dropbox_path": sku_manifest_path,
         "child_sku_count": sku_manifest.get("child_sku_count", 0),
+        "missing_supplier_stock_key_count": sku_manifest.get("missing_supplier_stock_key_count", 0),
     }
 
     payload["sku_manifest"] = sku_manifest
@@ -4077,6 +4133,7 @@ def generate_approved_listing(
                 "workbook_dropbox_path": generated_artifact.get("workbook_dropbox_path", ""),
                 "sku_manifest_dropbox_path": generated_artifact.get("sku_manifest_dropbox_path", ""),
                 "child_sku_count": generated_artifact.get("child_sku_count", 0),
+                "missing_supplier_stock_key_count": generated_artifact.get("missing_supplier_stock_key_count", 0),
             },
         )
 
@@ -5238,6 +5295,20 @@ def main() -> None:
                 value=str(get_default(profile, "recommended_browse_nodes", "")),
                 disabled=True,
             )
+        stock_reference_key = str(active_profile.get("stock_reference_key", "") or "").strip()
+        if stock_reference_key:
+            stock_reference = get_stock_reference(active_profile)
+            st.subheader("Stock reference")
+            stock_col1, stock_col2, stock_col3 = st.columns(3)
+            stock_col1.text_input("Reference key", value=stock_reference_key, disabled=True)
+            stock_col2.text_input("Supplier", value=str(stock_reference.get("supplier", "") or ""), disabled=True)
+            stock_col3.text_input(
+                "Stock-ready mode",
+                value="Strict" if is_strict_stock_ready(active_profile) else "Warning only",
+                disabled=True,
+            )
+            if not stock_reference:
+                st.warning("This template has a stock_reference_key, but no matching config/stock_references.json entry was found.")
 
     with tab_content:
         render_active_product_context(
@@ -5736,6 +5807,7 @@ def main() -> None:
                 "workbook_dropbox_path": generated_artifact.get("workbook_dropbox_path", ""),
                 "sku_manifest_dropbox_path": generated_artifact.get("sku_manifest_dropbox_path", ""),
                 "child_sku_count": generated_artifact.get("child_sku_count", 0),
+                "missing_supplier_stock_key_count": generated_artifact.get("missing_supplier_stock_key_count", 0),
             },
         )
 

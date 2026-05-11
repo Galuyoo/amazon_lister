@@ -149,6 +149,7 @@ Staff should not manually move folders between Dropbox queues during normal oper
 - Staff workflow: `docs/STAFF_RUNBOOK.md`
 - Deployment checklist: `docs/DEPLOYMENT_CHECKLIST.md`
 - Approval workflow release notes: `docs/CHANGELOG_APPROVAL_WORKFLOW.md`
+- Stock-ready manifest contract: `docs/STOCK_READY_MANIFEST.md`
 - Archived project notes: `docs/archive/`
 
 ## Legacy and Archive Files
