@@ -118,13 +118,13 @@
 "UC604": {
   "variant_folder": "UC604",
   "main_image_map": {
-    "Bottle Green": "UC604BG.jpg",
-    "Black": "UC604BK.jpg",
-    "Charcoal": "UC604CH.jpg",
-    "Maroon": "UC604MR.jpg",
-    "Navy": "UC604NY.jpg",
-    "Red": "UC604RD.jpg",
-    "Royal": "UC604RY.jpg"
+    "Bottle Green": "UC604BG.png",
+    "Black": "UC604BK.png",
+    "Charcoal": "UC604CH.png",
+    "Maroon": "UC604MR.png",
+    "Navy": "UC604NY.png",
+    "Red": "UC604RD.png",
+    "Royal": "UC604RY.png"
   }
 },
 "UC620": {
@@ -335,6 +335,31 @@
     "Navy/Royal": "R238XNYRB.jpg",
     "Navy/Red": "R238XNYRD.jpg",
     "Navy/Yellow": "R238XNYYE.jpg"
+  }
+},
+"UC301": {
+  "variant_folder": "UC301",
+  "main_image_map": {
+    "Royal": "1.png",
+    "Military Green": "2.png",
+    "Brown": "3.png",
+    "Black": "4.png",
+    "Bottle Green": "5.png",
+    "Beige": "6.png",
+    "Yellow": "7.png",
+    "Sapphire Blue": "8.png",
+    "White": "9.png",
+    "Sky": "10.png",
+    "Red": "11.png",
+    "Purple": "12.png",
+    "Orange": "13.png",
+    "French Navy": "14.png",
+    "Kelly Green": "15.png",
+    "Maroon": "16.png",
+    "Hot Pink": "17.png",
+    "Heather Grey": "18.png",
+    "Navy": "19.png",
+    "Charcoal": "20.png"
   }
 }
 }

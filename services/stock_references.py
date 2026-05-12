@@ -35,6 +35,51 @@ def lookup_mapping(mapping: dict[str, Any], key: str) -> str:
     return ""
 
 
+def normalize_code_for_prefix(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
+
+
+def build_product_prefix_candidates(profile: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+
+    for field_name in ["parent_sku", "template_key", "_slug", "stock_reference_key"]:
+        raw_value = str(profile.get(field_name, "") or "").strip()
+        if not raw_value:
+            continue
+
+        for value in [raw_value, raw_value.replace("_", ""), raw_value.replace("-", "")]:
+            normalized = normalize_code_for_prefix(value)
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+
+            if normalized.startswith("UC") and len(normalized) > 2:
+                without_uc = normalized[2:]
+                if without_uc and without_uc not in candidates:
+                    candidates.append(without_uc)
+
+    candidates.sort(key=len, reverse=True)
+    return candidates
+
+
+def strip_repeated_product_prefix(profile: dict[str, Any], code: str) -> str:
+    code = str(code or "").strip()
+    if not code:
+        return code
+
+    normalized_code = normalize_code_for_prefix(code)
+    if not normalized_code:
+        return code
+
+    for prefix in build_product_prefix_candidates(profile):
+        if not normalized_code.startswith(prefix) or len(normalized_code) <= len(prefix):
+            continue
+
+        stripped = code[len(prefix):].lstrip("-_ ")
+        return stripped or code
+
+    return code
+
+
 def has_stock_reference(profile: dict[str, Any]) -> bool:
     return bool(str(profile.get("stock_reference_key", "") or "").strip())
 
@@ -137,6 +182,7 @@ def build_legacy_child_sku(
     if "color" in variant_values:
         color_value = variant_values["color"]
         color_code = lookup_mapping(color_map, color_value) or slugify_part(color_value)
+        color_code = strip_repeated_product_prefix(profile, color_code)
 
     if "size" in variant_values:
         size_value = variant_values["size"]

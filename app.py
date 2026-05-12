@@ -904,6 +904,85 @@ def restage_finished_dropbox_folder(
     moved_path = move_dropbox_folder(source_path, target_path)
     return moved_path
 
+
+def reset_restaged_selection_state() -> None:
+    st.session_state["last_loaded_listing_memory_folder"] = ""
+    st.session_state.pop("finalized_stage_folder", None)
+    st.session_state.pop("finalized_finished_folder_path", None)
+    st.session_state.pop("finalized_sku", None)
+    st.session_state.pop("last_detected_template_folder", None)
+
+
+def restage_finished_listing_for_review(
+    dropbox_cfg: dict[str, Any],
+    profiles: list[dict[str, Any]],
+    fallback_profile: dict[str, Any],
+    finished_folder_name: str,
+) -> dict[str, Any]:
+    finished_folder_name = str(finished_folder_name or "").strip()
+    old_finished_path = build_finished_folder_path(dropbox_cfg, finished_folder_name)
+    result = {
+        "old_finished_folder_name": finished_folder_name,
+        "old_finished_folder_path": old_finished_path,
+        "new_staged_folder_name": "",
+        "new_staged_folder_path": "",
+        "status": "Failed",
+        "warning": "",
+        "error": "",
+    }
+
+    try:
+        moved_path = restage_finished_dropbox_folder(
+            dropbox_cfg=dropbox_cfg,
+            finished_folder_name=finished_folder_name,
+        )
+        result["new_staged_folder_path"] = moved_path
+        result["new_staged_folder_name"] = Path(moved_path).name
+
+        warning_messages: list[str] = []
+        listing_memory_path = build_listing_memory_path(moved_path)
+        try:
+            if not path_exists(listing_memory_path):
+                warning_messages.append("listing_inputs.json was missing; created a minimal restage memory file.")
+                restaged_listing_memory = {}
+            else:
+                restaged_listing_memory = load_listing_memory_from_dropbox(moved_path)
+                if not restaged_listing_memory:
+                    warning_messages.append("listing_inputs.json was empty; saved restage metadata.")
+        except Exception as exc:
+            warning_messages.append(f"listing_inputs.json could not be loaded: {exc}")
+            restaged_listing_memory = {}
+
+        restaged_listing_memory["original_finished_folder_name"] = finished_folder_name
+        append_workflow_event(
+            restaged_listing_memory,
+            action="restage_finished_listing",
+            actor="",
+            from_state="finished",
+            to_state="stage",
+            folder_path=moved_path,
+            details={
+                "original_finished_folder_name": finished_folder_name,
+                "old_finished_folder_name": finished_folder_name,
+                "old_finished_folder_path": old_finished_path,
+            },
+        )
+
+        restaged_profile = find_profile_for_listing_memory(profiles, restaged_listing_memory) or fallback_profile
+        save_listing_inputs_json_to_dropbox(
+            profile=restaged_profile,
+            payload=restaged_listing_memory,
+            folder_path=moved_path,
+        )
+
+        result["status"] = "Success"
+        result["warning"] = " ".join(warning_messages)
+    except Exception as exc:
+        result["error"] = str(exc)
+
+    return result
+
+
 def build_listing_memory_path(folder_path: str) -> str:
     return f"{folder_path.rstrip('/')}/listing_inputs.json"
 
@@ -4802,39 +4881,29 @@ def main() -> None:
                         st.warning("Select a finished folder first.")
                         st.stop()
 
+                    st.session_state["pending_perf_action_label"] = "restage finished folder"
                     try:
-                        moved_path = restage_finished_dropbox_folder(
+                        result = restage_finished_listing_for_review(
                             dropbox_cfg=dropbox_cfg,
+                            profiles=profiles,
+                            fallback_profile=profile,
                             finished_folder_name=selected_finished_folder,
                         )
 
-                        try:
-                            restaged_listing_memory = load_listing_memory_from_dropbox(moved_path)
-                        except Exception:
-                            restaged_listing_memory = {}
-
-                        restaged_listing_memory["original_finished_folder_name"] = selected_finished_folder
-                        restaged_profile = find_profile_for_listing_memory(profiles, restaged_listing_memory) or profile
-                        save_listing_inputs_json_to_dropbox(
-                            profile=restaged_profile,
-                            payload=restaged_listing_memory,
-                            folder_path=moved_path,
-                        )
+                        if result.get("status") != "Success":
+                            raise RuntimeError(result.get("error") or "Restage failed.")
 
                         clear_runtime_caches()
                         set_workflow_flash(
                             "success",
-                            f"Restaged successfully: {Path(moved_path).name}",
+                            f"Restaged successfully: {result.get('new_staged_folder_name', '')}",
+                            result.get("warning", ""),
                         )
 
-                        st.session_state["last_loaded_listing_memory_folder"] = ""
-                        st.session_state.pop("finalized_stage_folder", None)
-                        st.session_state.pop("finalized_finished_folder_path", None)
-                        st.session_state.pop("finalized_sku", None)
-                        restaged_folder_name = Path(moved_path).name
-                        st.session_state["staged_folder_select"] = restaged_folder_name
+                        reset_restaged_selection_state()
+                        st.session_state["staged_folder_select"] = result.get("new_staged_folder_name", "")
                         st.session_state["auto_switch_to_staged"] = True
-                        st.session_state.pop("last_detected_template_folder", None)
+                        st.session_state["finished_restage_results"] = [result]
 
                         st.rerun()
                     except Exception as exc:
@@ -5493,6 +5562,89 @@ def main() -> None:
 
     with tab_approved_output:
         st.caption("Generate selected or all approved folders and download completed workbooks.")
+
+        with st.expander("Restage finished folders", expanded=bool(st.session_state.get("finished_restage_results", []))):
+            existing_finished_restage_selection = list(st.session_state.get("finished_output_restage_selected", []))
+            valid_finished_restage_selection = [
+                folder_name for folder_name in existing_finished_restage_selection
+                if folder_name in finished_folder_names
+            ]
+            if valid_finished_restage_selection != existing_finished_restage_selection:
+                st.session_state["finished_output_restage_selected"] = valid_finished_restage_selection
+
+            with st.form("finished_output_restaging_form"):
+                selected_finished_folders_to_restage = st.multiselect(
+                    "Select finished folders to restage",
+                    finished_folder_names,
+                    key="finished_output_restage_selected",
+                )
+                restage_selected_finished = st.form_submit_button(
+                    "Restage selected finished folders",
+                    width="stretch",
+                    disabled=not bool(finished_folder_names),
+                )
+
+            if restage_selected_finished:
+                if not selected_finished_folders_to_restage:
+                    st.warning("Select at least one finished folder to restage.")
+                else:
+                    restage_action_label = (
+                        "restage finished folder"
+                        if len(selected_finished_folders_to_restage) == 1
+                        else "bulk restage finished folders"
+                    )
+                    st.session_state["active_perf_action_label"] = restage_action_label
+                    st.session_state["pending_perf_action_label"] = restage_action_label
+
+                    restage_results = [
+                        restage_finished_listing_for_review(
+                            dropbox_cfg=dropbox_cfg,
+                            profiles=profiles,
+                            fallback_profile=profile,
+                            finished_folder_name=finished_folder_name,
+                        )
+                        for finished_folder_name in selected_finished_folders_to_restage
+                    ]
+                    success_results = [
+                        row for row in restage_results
+                        if row.get("status") == "Success"
+                    ]
+                    failed_results = [
+                        row for row in restage_results
+                        if row.get("status") == "Failed"
+                    ]
+
+                    st.session_state["finished_restage_results"] = restage_results
+
+                    if len(selected_finished_folders_to_restage) == 1 and len(success_results) == 1:
+                        reset_restaged_selection_state()
+                        st.session_state["staged_folder_select"] = success_results[0].get("new_staged_folder_name", "")
+                        st.session_state["auto_switch_to_staged"] = True
+                        flash_title = f"Restaged successfully: {success_results[0].get('new_staged_folder_name', '')}"
+                        flash_detail = success_results[0].get("warning", "")
+                    else:
+                        flash_title = f"Restaged {len(success_results)} of {len(selected_finished_folders_to_restage)} selected finished folders."
+                        flash_detail = "Select a restaged folder manually from Product setup."
+                        if failed_results:
+                            flash_detail = f"{len(failed_results)} folder(s) failed. " + flash_detail
+
+                    clear_runtime_caches()
+                    set_workflow_flash(
+                        "success" if not failed_results else "warning",
+                        flash_title,
+                        flash_detail,
+                    )
+                    st.rerun()
+
+            finished_restage_results = list(st.session_state.get("finished_restage_results", []))
+            if finished_restage_results:
+                success_count = sum(1 for row in finished_restage_results if row.get("status") == "Success")
+                failed_count = sum(1 for row in finished_restage_results if row.get("status") == "Failed")
+                col_a, col_b, col_c = st.columns(3)
+                col_a.metric("Selected", len(finished_restage_results))
+                col_b.metric("Success", success_count)
+                col_c.metric("Failed", failed_count)
+                st.dataframe(finished_restage_results, width="stretch", hide_index=True)
 
         approved_col1, approved_col2 = st.columns([1, 3])
         with approved_col1:
