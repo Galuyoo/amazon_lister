@@ -88,6 +88,12 @@ def repeated_word_ratio(value: str) -> float:
     return max(counts.values()) / len(words)
 
 
+def words_repeated_at_least(value: str, limit: int = 3) -> list[str]:
+    words = re.findall(r"\b[a-zA-Z0-9]+\b", (value or "").lower())
+    counts = Counter(words)
+    return sorted(word for word, count in counts.items() if count >= limit)
+
+
 def build_child_sku_for_validation(
     profile: dict[str, Any],
     parent_sku: str,
@@ -180,6 +186,15 @@ def validate_listing_quality(
     # Content quality checks - title
     title_chars = character_length(title)
     if title:
+        repeated_title_words = words_repeated_at_least(title, 3)
+        if repeated_title_words:
+            blockers.append(
+                "Title repeats the same word 3+ times: "
+                + ", ".join(repeated_title_words[:8])
+                + "."
+            )
+            breakdown["content_quality"] -= 6
+
         if title_chars < 80:
             warnings.append("Title looks short and may be too weak.")
             breakdown["content_quality"] -= 4

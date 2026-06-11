@@ -1,0 +1,121 @@
+{
+  "label": "UC306 Childrens Classic T-Shirt",
+  "template_key": "UC306",
+  "template_file": "UC306/SHIRT.xlsm",
+  "parent_sku": "UC306",
+  "stock_reference_key": "UC306",
+  "feed_product_type": "shirt",
+  "recommended_browse_nodes": "1730830031",
+  "product_category": "apparel",
+  "brand_name": "sloganitto",
+  "manufacturer": "Generic",
+  "department_name": "unisex-child",
+  "target_gender": "unisex",
+  "age_range_description": "Child",
+  "material_type": "100% Cotton",
+  "style_name": "Childrens Classic T-Shirt",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "t-shirt",
+  "care_instructions": "Machine Wash; Washable at 40 Degrees",
+  "theme": "Custom Printed Kids T Shirt",
+  "fit_type": "Regular",
+  "collar_style": "Crew Neck",
+  "lifestyle": "Casual",
+  "pattern_type": "Plain",
+  "weave_type": "Knit",
+  "colors": [
+    "Black",
+    "Bottle Green",
+    "Heather Grey",
+    "Navy",
+    "Red",
+    "Royal",
+    "Sky",
+    "White",
+    "Yellow"
+  ],
+  "sizes": [
+    "2 YRS",
+    "3/4 YRS",
+    "5/6 YRS",
+    "7/8 YRS",
+    "9/10 YRS",
+    "11/13 YRS"
+  ],
+  "size_code_map": {
+    "2 YRS": "2Y",
+    "3/4 YRS": "34Y",
+    "5/6 YRS": "56Y",
+    "7/8 YRS": "78Y",
+    "9/10 YRS": "910Y",
+    "11/13 YRS": "1113Y"
+  },
+  "color_sku_map": {
+    "Black": "306BK",
+    "Bottle Green": "306BG",
+    "Heather Grey": "306HG",
+    "Navy": "306NY",
+    "Red": "306RD",
+    "Royal": "306RY",
+    "Sky": "306SK",
+    "White": "306WH",
+    "Yellow": "306YW"
+  },
+  "extra_parent_fields": {
+    "outer_material_type": "Natural",
+    "material_type1": "100% Cotton",
+    "fabric_type": "Cotton",
+    "weave_type": "Knit",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Age",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+  "extra_child_fields": {
+    "outer_material_type": "Natural",
+    "material_type1": "100% Cotton",
+    "fabric_type": "Cotton",
+    "weave_type": "Knit",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Age",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+  "field_aliases": {
+    "apparel_size_system": [
+      "shirt_size_system",
+      "tops_size_system",
+      "outerwear_size_system"
+    ],
+    "apparel_size_class": [
+      "shirt_size_class",
+      "tops_size_class",
+      "outerwear_size_class"
+    ],
+    "apparel_size": [
+      "shirt_size",
+      "tops_size_value",
+      "outerwear_size_value"
+    ],
+    "apparel_body_type": [
+      "shirt_body_type",
+      "tops_body_type",
+      "outerwear_body_type"
+    ],
+    "apparel_height_type": [
+      "shirt_height_type",
+      "tops_height_type",
+      "outerwear_height_type"
+    ],
+    "outer_material_type": [
+      "material_type",
+      "material_type1",
+      "fabric_type"
+    ]
+  }
+}

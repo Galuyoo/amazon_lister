@@ -2,10 +2,31 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from itertools import product
 from typing import Any
 
 
 SAFE_SKU_PART_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
+
+DEFAULT_VARIANT_VALUE_ALIASES = {
+    "size": {
+        "2 Years": ["1-2 Years", "Child 2 yrs"],
+        "1-2 Years": ["2 Years", "Child 2 yrs"],
+        "Child 2 yrs": ["2 Years", "1-2 Years"],
+        "3-4 Years": ["Child 3 Years"],
+        "Child 3 Years": ["3-4 Years"],
+        "5-6 Years": ["Child 5/6 yrs"],
+        "Child 5/6 yrs": ["5-6 Years"],
+        "7-8 Years": ["Child 7/8 yrs"],
+        "Child 7/8 yrs": ["7-8 Years"],
+        "9-10 Years": ["9-11 Years", "Child 9/10"],
+        "9-11 Years": ["9-10 Years", "Child 9/10"],
+        "Child 9/10": ["9-10 Years", "9-11 Years"],
+        "11-13 Years": ["12-13 Years", "Child 11/13"],
+        "12-13 Years": ["11-13 Years", "Child 11/13"],
+        "Child 11/13": ["11-13 Years", "12-13 Years"],
+    }
+}
 
 
 def sanitize_sku_part(value: str) -> str:
@@ -108,6 +129,80 @@ def build_variant_reference_key(
     return "|".join(str(variant_values.get(str(field), "") or "") for field in fields)
 
 
+def _lookup_alias_values(alias_map: dict[str, Any], value: str) -> list[str]:
+    if not isinstance(alias_map, dict):
+        return []
+
+    value_lower = str(value or "").lower()
+    for alias_key, alias_values in alias_map.items():
+        if str(alias_key).lower() != value_lower:
+            continue
+
+        if isinstance(alias_values, list):
+            return [str(item) for item in alias_values if str(item).strip()]
+        if str(alias_values).strip():
+            return [str(alias_values)]
+
+    return []
+
+
+def _variant_field_value_candidates(
+    profile: dict[str, Any],
+    reference: dict[str, Any],
+    field: str,
+    value: str,
+) -> list[str]:
+    candidates: list[str] = []
+
+    def add(candidate: str) -> None:
+        candidate = str(candidate or "")
+        if candidate and candidate.lower() not in [existing.lower() for existing in candidates]:
+            candidates.append(candidate)
+
+    add(value)
+
+    for alias_root in (
+        DEFAULT_VARIANT_VALUE_ALIASES,
+        reference.get("variant_value_aliases", {}),
+        profile.get("variant_value_aliases", {}),
+    ):
+        if not isinstance(alias_root, dict):
+            continue
+        field_aliases = alias_root.get(field, {})
+        for alias in _lookup_alias_values(field_aliases, value):
+            add(alias)
+
+    return candidates
+
+
+def build_variant_reference_key_candidates(
+    profile: dict[str, Any],
+    reference: dict[str, Any],
+    variant_values: dict[str, str],
+) -> list[str]:
+    fields = reference.get("variant_key_fields", ["color", "size"])
+    if not isinstance(fields, list) or not fields:
+        fields = ["color", "size"]
+
+    value_lists = [
+        _variant_field_value_candidates(
+            profile,
+            reference,
+            str(field),
+            str(variant_values.get(str(field), "") or ""),
+        )
+        for field in fields
+    ]
+
+    candidates: list[str] = []
+    for values in product(*value_lists):
+        key = "|".join(values)
+        if key and key.lower() not in [existing.lower() for existing in candidates]:
+            candidates.append(key)
+
+    return candidates
+
+
 def resolve_supplier_stock_key(
     profile: dict[str, Any],
     variant_values: dict[str, str],
@@ -143,6 +238,15 @@ def resolve_supplier_stock_key(
     variant_reference_key = build_variant_reference_key(reference, variant_values)
     supplier_stock_key = lookup_mapping(variant_stock_key_map, variant_reference_key)
 
+    if not supplier_stock_key:
+        for candidate_key in build_variant_reference_key_candidates(profile, reference, variant_values):
+            if candidate_key == variant_reference_key:
+                continue
+            supplier_stock_key = lookup_mapping(variant_stock_key_map, candidate_key)
+            if supplier_stock_key:
+                variant_reference_key = candidate_key
+                break
+
     if supplier_stock_key:
         return {
             "supplier": supplier,
@@ -166,6 +270,8 @@ def build_legacy_child_sku(
     profile: dict[str, Any],
     parent_sku: str,
     variant_values: dict[str, str],
+    *,
+    include_design: bool = True,
 ) -> str:
     color_map = profile.get("color_sku_map", {})
     size_map = profile.get("size_code_map", {})
@@ -188,7 +294,7 @@ def build_legacy_child_sku(
         size_value = variant_values["size"]
         size_code = lookup_mapping(size_map, size_value) or slugify_part(size_value)
 
-    if "design" in variant_values:
+    if include_design and "design" in variant_values:
         design_value = variant_values["design"]
         design_code = lookup_mapping(design_map, design_value) or slugify_part(design_value)
 
@@ -211,6 +317,129 @@ def build_legacy_child_sku(
         parts.append(design_code)
 
     return "-".join(part for part in parts if part)
+
+
+SKU_DECORATION_CODES = {"PRINT", "EMB", "PERSO", "PLAIN"}
+
+
+def resolve_sku_decoration_code(profile: dict[str, Any]) -> str:
+    explicit_code = str(
+        profile.get("sku_decoration_code")
+        or profile.get("decoration_code")
+        or profile.get("sku_prefix")
+        or ""
+    ).strip().upper()
+    if explicit_code:
+        return sanitize_sku_part(explicit_code)
+
+    searchable_text = " ".join(
+        str(profile.get(field_name, "") or "")
+        for field_name in [
+            "theme",
+            "style_name",
+            "item_type_name",
+            "label",
+            "template_key",
+        ]
+    ).lower()
+
+    if "personalised" in searchable_text or "personalized" in searchable_text or "perso" in searchable_text:
+        return "PERSO"
+    if "embroider" in searchable_text or "embroidery" in searchable_text:
+        return "EMB"
+    if "print" in searchable_text:
+        return "PRINT"
+    if "plain" in searchable_text:
+        return "PLAIN"
+
+    return "PLAIN"
+
+
+def resolve_variant_design_code(profile: dict[str, Any], variant_values: dict[str, str]) -> str:
+    design_value = str(variant_values.get("design", "") or "").strip()
+    if not design_value:
+        return ""
+
+    design_listing_code_map = profile.get("design_listing_code_map", {})
+    design_listing_code_map = design_listing_code_map if isinstance(design_listing_code_map, dict) else {}
+    explicit_design_code = lookup_mapping(design_listing_code_map, design_value)
+    if explicit_design_code:
+        return sanitize_sku_part(explicit_design_code)
+
+    design_map = profile.get("design_sku_map", {})
+    design_map = design_map if isinstance(design_map, dict) else {}
+    return sanitize_sku_part(lookup_mapping(design_map, design_value) or slugify_part(design_value))
+
+
+def strip_repeated_leading_sku_context(variant_sku: str, prefix_codes: list[str]) -> str:
+    cleaned_variant_sku = sanitize_sku_part(variant_sku)
+    if not cleaned_variant_sku:
+        return ""
+
+    candidates: list[str] = []
+    for prefix_code in prefix_codes:
+        parts = [
+            part
+            for part in sanitize_sku_part(prefix_code).split("-")
+            if part
+        ]
+        for idx in range(len(parts)):
+            candidate = "-".join(parts[idx:])
+            if candidate and candidate.lower() not in [existing.lower() for existing in candidates]:
+                candidates.append(candidate)
+
+    candidates.sort(key=len, reverse=True)
+    for candidate in candidates:
+        if cleaned_variant_sku.lower() == candidate.lower():
+            return cleaned_variant_sku
+        prefix = f"{candidate}-"
+        if cleaned_variant_sku.lower().startswith(prefix.lower()):
+            return cleaned_variant_sku[len(prefix):]
+
+    return cleaned_variant_sku
+
+
+def sku_code_contains_trailing_segment(prefix_code: str, segment: str) -> bool:
+    prefix_parts = [
+        part.lower()
+        for part in sanitize_sku_part(prefix_code).split("-")
+        if part
+    ]
+    segment_parts = [
+        part.lower()
+        for part in sanitize_sku_part(segment).split("-")
+        if part
+    ]
+    if not prefix_parts or not segment_parts or len(segment_parts) > len(prefix_parts):
+        return False
+    return prefix_parts[-len(segment_parts):] == segment_parts
+
+
+def build_clear_child_sku(
+    profile: dict[str, Any],
+    parent_sku: str,
+    variant_values: dict[str, str],
+) -> str:
+    decoration_code = resolve_sku_decoration_code(profile)
+    design_code = resolve_variant_design_code(profile, variant_values)
+    if design_code and sku_code_contains_trailing_segment(decoration_code, design_code):
+        design_code = ""
+    variant_sku = build_legacy_child_sku(
+        profile,
+        parent_sku,
+        variant_values,
+        include_design=False,
+    )
+    variant_sku = strip_repeated_leading_sku_context(
+        variant_sku,
+        [decoration_code, design_code],
+    )
+
+    return "-".join(
+        part
+        for part in [decoration_code, design_code, variant_sku]
+        if str(part or "").strip()
+    )
 
 
 def resolve_design_or_listing_code(
@@ -250,21 +479,17 @@ def build_child_sku_details(
     variant_values: dict[str, str],
 ) -> dict[str, str]:
     legacy_sku = build_legacy_child_sku(profile, parent_sku, variant_values)
+    clear_sku = build_clear_child_sku(profile, parent_sku, variant_values)
     design_or_listing_code = resolve_design_or_listing_code(profile, parent_sku, variant_values)
     stock_key_result = resolve_supplier_stock_key(profile, variant_values)
     supplier_stock_key = stock_key_result.get("supplier_stock_key", "")
 
-    if not has_stock_reference(profile):
-        amazon_seller_sku = legacy_sku
-    elif supplier_stock_key:
-        amazon_seller_sku = f"{design_or_listing_code}-{supplier_stock_key}" if design_or_listing_code else supplier_stock_key
-    else:
-        missing_suffix = sanitize_sku_part(legacy_sku) or "UNKNOWN"
-        amazon_seller_sku = f"{design_or_listing_code}-MISSING-STOCK-KEY-{missing_suffix}"
+    amazon_seller_sku = clear_sku
 
     return {
         "amazon_seller_sku": amazon_seller_sku,
         "canonical_sku": amazon_seller_sku,
+        "clear_sku": clear_sku,
         "legacy_sku": legacy_sku,
         "supplier": stock_key_result.get("supplier", ""),
         "supplier_stock_key": supplier_stock_key,

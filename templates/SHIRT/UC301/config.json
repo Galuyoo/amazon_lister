@@ -53,7 +53,13 @@
     "3XL",
     "4XL",
     "5XL",
-    "6XL"
+    "6XL",
+    "1-2 Years",
+    "3-4 Years",
+    "5-6 Years",
+    "7-8 Years",
+    "9-11 Years",
+    "12-13 Years"
   ],
   "size_code_map": {
     "XS": "XS",
@@ -65,7 +71,14 @@
     "3XL": "3XL",
     "4XL": "4XL",
     "5XL": "5XL",
-    "6XL": "6XL"
+    "6XL": "6XL",
+    "1-2 Years": "1-2 Years",
+    "3-4 Years": "3-4 Years",
+    "5-6 Years": "5-6 Years",
+    "7-8 Years": "7-8 Years",
+    "9-11 Years": "9-11 Years",
+    "12-13 Years": "12-13 Years"
+
   },
   "color_sku_map": {
     "Beige": "BEIG",
@@ -88,6 +101,28 @@
     "White": "WHIT",
     "Yellow": "YELL",
     "Military Green": "MGRN"
+  },
+  "color_size_map": {
+    "Beige": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Bottle Green": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Black": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Brown": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Charcoal": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "French Navy": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Heather Grey": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Hot Pink": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Kelly Green": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Maroon": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Navy": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Orange": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Purple": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Red": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Royal": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Sky": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Sapphire Blue": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "White": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Yellow": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Military Green": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"]
   },
   "extra_parent_fields": {
     "outer_material_type": "Natural",
