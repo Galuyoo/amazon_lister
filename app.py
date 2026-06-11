@@ -6403,6 +6403,23 @@ def main() -> None:
     preview_color_image_map = preview_image_data.get("color_image_map", {})
     preview_design_color_image_url_map = preview_image_data.get("design_color_image_url_map", {})
 
+    pending_mapped_colour_key = st.session_state.get("apply_mapped_colours_widget_key", "")
+    if pending_mapped_colour_key and should_load_image_mappings:
+        pending_valid_colours = (
+            get_profile_color_options(profile)
+            or list(selected_variants.get("color", []))
+            or list(selected_variants.get("colour", []))
+        )
+        mapped_colours_to_apply = get_mapped_color_options(
+            pending_valid_colours,
+            preview_color_image_map,
+            preview_design_color_image_url_map,
+        )
+        if mapped_colours_to_apply:
+            st.session_state[pending_mapped_colour_key] = list(mapped_colours_to_apply)
+            st.session_state.pop("apply_mapped_colours_widget_key", None)
+            st.rerun()
+
     price_dimension_values = selected_variants.get("size", ["default"])
     saved_prices = listing_memory.get("size_price_map", {})
     existing_values = [saved_prices.get(size) for size in price_dimension_values if size in saved_prices]
@@ -6774,10 +6791,18 @@ def main() -> None:
                         "Mapped colours",
                         key=f"{widget_key}_mapped",
                         width="stretch",
-                        disabled=not bool(mapped_colors),
+                        disabled=not bool(staged_folder_name),
                         help="Select only colours that have staged images mapped by filename.",
                     ):
-                        st.session_state[widget_key] = list(mapped_colors)
+                        if mapped_colors:
+                            st.session_state[widget_key] = list(mapped_colors)
+                        else:
+                            st.session_state["apply_mapped_colours_widget_key"] = widget_key
+                            st.session_state["load_image_mappings_now"] = True
+                            if staged_folder_name:
+                                st.session_state["image_mappings_loaded_folder"] = staged_folder_name
+                                st.session_state["image_mappings_loaded_context"] = image_mapping_context_key
+                            st.rerun()
 
                 selected_variants[dim_name] = st.multiselect(
                     dim_label,
@@ -6799,10 +6824,18 @@ def main() -> None:
                 "Mapped colours",
                 key="selected_colours_mapped",
                 width="stretch",
-                disabled=not bool(mapped_colors),
+                disabled=not bool(staged_folder_name),
                 help="Select only colours that have staged images mapped by filename.",
             ):
-                st.session_state["selected_colours"] = list(mapped_colors)
+                if mapped_colors:
+                    st.session_state["selected_colours"] = list(mapped_colors)
+                else:
+                    st.session_state["apply_mapped_colours_widget_key"] = "selected_colours"
+                    st.session_state["load_image_mappings_now"] = True
+                    if staged_folder_name:
+                        st.session_state["image_mappings_loaded_folder"] = staged_folder_name
+                        st.session_state["image_mappings_loaded_context"] = image_mapping_context_key
+                    st.rerun()
 
             selected_colors = st.multiselect(
                 "Colours",
