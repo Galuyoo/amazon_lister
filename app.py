@@ -2017,8 +2017,10 @@ def normalize_multiselect_values(
     current_values: list[str] | None,
     valid_options: list[str],
     fallback_values: list[str] | None,
+    allow_empty: bool = True,
 ) -> tuple[list[str], bool]:
     valid_options = list(valid_options)
+    current_missing = current_values is None
     current_list = list(current_values or [])
     fallback_list = list(fallback_values or [])
 
@@ -2029,10 +2031,13 @@ def normalize_multiselect_values(
         valid_fallback = list(valid_options)
 
     should_reset = (
-        not current_list
+        current_missing
         or not valid_current
         or len(valid_current) != len(current_list)
     )
+
+    if allow_empty and not current_missing and not current_list:
+        return [], False
 
     if should_reset:
         return valid_fallback, True
@@ -2062,11 +2067,16 @@ def normalize_selected_variants_session_state(
                 if value in dim_options
             ]
             fallback_values = list(dim_options) if force_defaults else (saved_values or list(dim_options))
-            current_values = [] if force_saved_values or force_defaults else st.session_state.get(widget_key, [])
+            current_values = (
+                []
+                if force_saved_values or force_defaults
+                else st.session_state.get(widget_key) if widget_key in st.session_state else None
+            )
             normalized_values, should_set = normalize_multiselect_values(
                 current_values,
                 dim_options,
                 fallback_values,
+                allow_empty=not (force_saved_values or force_defaults),
             )
             if should_set or widget_key not in st.session_state:
                 st.session_state[widget_key] = list(normalized_values)
@@ -2080,11 +2090,16 @@ def normalize_selected_variants_session_state(
         if color in color_options
     ]
     color_fallback = list(color_options) if force_defaults else (saved_colors or list(color_options))
-    current_colors = [] if force_saved_values or force_defaults else st.session_state.get("selected_colours", [])
+    current_colors = (
+        []
+        if force_saved_values or force_defaults
+        else st.session_state.get("selected_colours") if "selected_colours" in st.session_state else None
+    )
     normalized_colors, should_set_colors = normalize_multiselect_values(
         current_colors,
         color_options,
         color_fallback,
+        allow_empty=not (force_saved_values or force_defaults),
     )
     if should_set_colors or "selected_colours" not in st.session_state:
         st.session_state["selected_colours"] = list(normalized_colors)
@@ -2096,11 +2111,16 @@ def normalize_selected_variants_session_state(
         if size in available_sizes
     ]
     size_fallback = list(available_sizes) if force_defaults else (saved_sizes or list(available_sizes))
-    current_sizes = [] if force_saved_values or force_defaults else st.session_state.get("selected_sizes", [])
+    current_sizes = (
+        []
+        if force_saved_values or force_defaults
+        else st.session_state.get("selected_sizes") if "selected_sizes" in st.session_state else None
+    )
     normalized_sizes, should_set_sizes = normalize_multiselect_values(
         current_sizes,
         available_sizes,
         size_fallback,
+        allow_empty=not (force_saved_values or force_defaults),
     )
     if should_set_sizes or "selected_sizes" not in st.session_state:
         st.session_state["selected_sizes"] = list(normalized_sizes)
@@ -2422,6 +2442,57 @@ def filter_preview_image_maps_for_selected_variants(
     return color_image_map, design_color_image_url_map
 
 
+def get_mapped_color_options(
+    valid_colors: list[str],
+    color_image_map: dict[str, str],
+    design_color_image_url_map: dict[str, dict[str, str]],
+) -> list[str]:
+    valid_color_set = set(valid_colors)
+    mapped_colors: list[str] = []
+
+    for color in list(color_image_map.keys()) + list(design_color_image_url_map.keys()):
+        if color in valid_color_set and color not in mapped_colors:
+            mapped_colors.append(color)
+
+    return mapped_colors
+
+
+def build_lenient_image_maps(
+    selected_colors: list[str],
+    dropbox_overview: dict[str, Any],
+    folder_path: str,
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    main_image_map = dropbox_overview.get("main_image_map", {})
+    design_color_image_map = dropbox_overview.get("design_color_image_map", {})
+
+    color_image_map: dict[str, str] = {}
+    for color in selected_colors:
+        filename = main_image_map.get(color, "")
+        if not filename:
+            continue
+        path = f"{folder_path}/{filename}"
+        if not path_exists(path):
+            continue
+        url = dropbox_preview_url(path)
+        if url:
+            color_image_map[color] = url
+
+    design_color_image_url_map: dict[str, dict[str, str]] = {}
+    for color in selected_colors:
+        for design, filename in dict(design_color_image_map.get(color, {})).items():
+            if not filename:
+                continue
+            path = f"{folder_path}/{filename}"
+            if not path_exists(path):
+                continue
+            url = dropbox_preview_url(path)
+            if not url:
+                continue
+            design_color_image_url_map.setdefault(color, {})[design] = url
+
+    return color_image_map, design_color_image_url_map
+
+
 def get_cached_preview_image_data(
     profile: dict[str, Any],
     dropbox_cfg: dict[str, Any],
@@ -2499,9 +2570,7 @@ def get_cached_preview_image_data(
                 mapping_variants = build_image_mapping_variants_for_cache(profile, selected_variants)
                 mapping_colors = get_selected_colors_for_image_resolution(profile, mapping_variants)
 
-                _, _, full_color_image_map, full_design_color_image_url_map = resolve_folder_image_urls(
-                    profile,
-                    mapping_variants,
+                full_color_image_map, full_design_color_image_url_map = build_lenient_image_maps(
                     mapping_colors,
                     dropbox_overview,
                     preview_stage_folder_path,
@@ -6690,12 +6759,51 @@ def main() -> None:
                 dim_label = dim.get("label", dim_name.title())
                 dim_options = dim.get("options", [])
                 widget_key = f"variant_{dim_name}"
+                if str(dim_name).strip().lower() in {"color", "colour"}:
+                    mapped_colors = get_mapped_color_options(
+                        list(dim_options),
+                        preview_color_image_map,
+                        preview_design_color_image_url_map,
+                    )
+                    action_cols = st.columns(3)
+                    if action_cols[0].button("All colours", key=f"{widget_key}_all", width="stretch"):
+                        st.session_state[widget_key] = list(dim_options)
+                    if action_cols[1].button("No colours", key=f"{widget_key}_none", width="stretch"):
+                        st.session_state[widget_key] = []
+                    if action_cols[2].button(
+                        "Mapped colours",
+                        key=f"{widget_key}_mapped",
+                        width="stretch",
+                        disabled=not bool(mapped_colors),
+                        help="Select only colours that have staged images mapped by filename.",
+                    ):
+                        st.session_state[widget_key] = list(mapped_colors)
+
                 selected_variants[dim_name] = st.multiselect(
                     dim_label,
                     dim_options,
                     key=widget_key,
                 )
         else:
+            mapped_colors = get_mapped_color_options(
+                list(colors_available),
+                preview_color_image_map,
+                preview_design_color_image_url_map,
+            )
+            color_action_cols = st.columns(3)
+            if color_action_cols[0].button("All colours", key="selected_colours_all", width="stretch"):
+                st.session_state["selected_colours"] = list(colors_available)
+            if color_action_cols[1].button("No colours", key="selected_colours_none", width="stretch"):
+                st.session_state["selected_colours"] = []
+            if color_action_cols[2].button(
+                "Mapped colours",
+                key="selected_colours_mapped",
+                width="stretch",
+                disabled=not bool(mapped_colors),
+                help="Select only colours that have staged images mapped by filename.",
+            ):
+                st.session_state["selected_colours"] = list(mapped_colors)
+
             selected_colors = st.multiselect(
                 "Colours",
                 colors_available,
