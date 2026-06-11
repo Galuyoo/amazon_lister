@@ -48,10 +48,11 @@ After deployment, verify:
 - saved `listing_inputs.json` hydrates the listing form
 - template detection works
 - `Check listing score` works
-- `Mark as Ready` works
+- `Submit for Review` works
 - `Review & output` loads
-- ready queue renders
-- `Generate selected` works for one known-good listing
+- review queue renders
+- approving a ready listing moves it to `approved`
+- `Generate selected` works for one known-good approved listing
 - a generated workbook can be downloaded
 
 ## 5. Rollback / Recovery Notes
@@ -64,7 +65,7 @@ If deployment fails:
 
 If runtime behavior is broken after deployment:
 
-- stop staff from using `Generate all ready`
+- stop staff from using `Generate all approved`
 - test a single known-good staged item first
 - verify Dropbox credentials and queue paths
 - compare the deployed branch against the last known-good commit
@@ -73,6 +74,6 @@ If runtime behavior is broken after deployment:
 
 Before first staff rollout:
 
-- confirm at least one full `_stage -> ready -> finished` path in the deployed environment
+- confirm at least one full `_stage -> ready -> approved -> finished` path in the deployed environment
 - confirm restaging still preserves original finished identity
 - confirm staff have the runbook: `docs/STAFF_RUNBOOK.md`

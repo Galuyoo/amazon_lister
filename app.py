@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 from datetime import datetime
 import time
 import json
@@ -13,7 +13,15 @@ from utils.image_resolver import resolve_one
 import streamlit as st
 from openpyxl import load_workbook
 from itertools import product
-from services.quality_checks import validate_listing_quality
+from services.quality_checks import validate_listing_quality, words_repeated_at_least
+from services.stock_references import (
+    build_child_sku_details,
+    get_stock_reference,
+    has_stock_reference,
+    is_strict_stock_ready,
+    resolve_sku_decoration_code,
+    validate_stock_ready_skus,
+)
 
 from utils.dropbox_client import (
     get_or_create_shared_link,
@@ -24,10 +32,11 @@ from utils.dropbox_client import (
     move_dropbox_folder,
     path_exists,
     upload_text_file,
+    upload_binary_file,
     download_text_file,
 )
 
-GLOBAL_BRAND_NAME = "Generic"
+GLOBAL_BRAND_NAME = "sloganitto"
 WORKFLOW_ASSIGNEES = ["", "Hannan", "Amroz", "Moon", "Sal", "Richard", "Ben"]
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -35,24 +44,565 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 CONFIG_DIR = BASE_DIR / "config"
 OUTPUT_DIR = BASE_DIR / "outputs"
 
+LOAD_EVENT_LIMIT = 160
+DEFAULT_HANDLING_TIME_DAYS = 2
+DROPBOX_FOLDER_LIST_ATTEMPTS = 2
+
+
+def reset_load_events() -> None:
+    st.session_state["current_load_events"] = []
+    st.session_state["current_rerun_started_at"] = time.perf_counter()
+
+
+def record_load_event(label: str, started_at: float, detail: str = "") -> None:
+    try:
+        elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
+        events = st.session_state.setdefault("current_load_events", [])
+        events.append({
+            "step": label,
+            "ms": elapsed_ms,
+            "detail": detail,
+        })
+        if len(events) > LOAD_EVENT_LIMIT:
+            st.session_state["current_load_events"] = events[-LOAD_EVENT_LIMIT:]
+    except Exception:
+        # Loading debug must never break the app.
+        pass
+
+
+def format_folder_detail(folder_path: str) -> str:
+    folder_path = str(folder_path or "").rstrip("/")
+    return folder_path.split("/")[-1] if folder_path else ""
+
+
+def get_cached_folder_names(cache_key: str, root_path: str, label: str) -> list[str]:
+    cache = st.session_state.setdefault("dropbox_folder_list_cache", {})
+    load_errors = st.session_state.setdefault("dropbox_folder_load_errors", {})
+    cached = cache.get(cache_key)
+
+    if cached and cached.get("root_path") == root_path:
+        folder_names = list(cached.get("folder_names", []))
+        record_load_event(
+            f"Dropbox: cached {label}",
+            time.perf_counter(),
+            f"{len(folder_names)} folder(s)",
+        )
+        return folder_names
+
+    started_at = time.perf_counter()
+    last_error: Exception | None = None
+    for attempt in range(DROPBOX_FOLDER_LIST_ATTEMPTS):
+        try:
+            folder_names = list_folder_names(root_path)
+            break
+        except Exception as exc:
+            last_error = exc
+            if attempt < DROPBOX_FOLDER_LIST_ATTEMPTS - 1:
+                time.sleep(0.5)
+    else:
+        load_errors[cache_key] = f"{label}: {last_error}"
+        if cached and cached.get("root_path") == root_path:
+            folder_names = list(cached.get("folder_names", []))
+            record_load_event(
+                f"Dropbox: cached after failed {label}",
+                started_at,
+                f"{len(folder_names)} folder(s); {last_error}",
+            )
+            return folder_names
+
+        record_load_event(
+            f"Dropbox: failed {label}",
+            started_at,
+            str(last_error or "Unknown Dropbox error"),
+        )
+        return []
+
+    load_errors.pop(cache_key, None)
+    record_load_event(
+        f"Dropbox: list {label}",
+        started_at,
+        f"{len(folder_names)} folder(s)",
+    )
+
+    cache[cache_key] = {
+        "root_path": root_path,
+        "folder_names": folder_names,
+    }
+    return folder_names
+
+
+def refresh_cached_folder_names(*cache_keys: str) -> None:
+    cache = st.session_state.setdefault("dropbox_folder_list_cache", {})
+    load_errors = st.session_state.setdefault("dropbox_folder_load_errors", {})
+    for cache_key in cache_keys:
+        cache.pop(cache_key, None)
+        load_errors.pop(cache_key, None)
+
+
+def clear_cached_listing_memory(*folder_paths: str) -> None:
+    cache = st.session_state.setdefault("listing_memory_cache", {})
+
+    if not folder_paths:
+        cache.clear()
+        return
+
+    for folder_path in folder_paths:
+        cache.pop(str(folder_path or "").rstrip("/"), None)
+
+
+DEBUG_STATE_SKIP_KEYS = {
+    "current_load_events",
+    "current_rerun_started_at",
+    "last_debug_state_snapshot",
+    "current_rerun_changed_keys",
+    "perf_history",
+    "last_perf_saved_signature",
+}
+
+DEBUG_STATE_SKIP_PREFIXES = (
+    "_",
+)
+
+
+def normalize_debug_state_value(value: Any) -> str:
+    try:
+        if isinstance(value, (str, int, float, bool, type(None))):
+            return repr(value)
+        if isinstance(value, (list, tuple, set)):
+            return f"{type(value).__name__}(len={len(value)})::{repr(list(value)[:8])}"
+        if isinstance(value, dict):
+            keys = list(value.keys())[:8]
+            return f"dict(len={len(value)}, keys={keys})"
+        return f"{type(value).__name__}::{repr(value)[:180]}"
+    except Exception:
+        return f"{type(value).__name__}::<unreadable>"
+
+
+def build_debug_state_snapshot() -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+
+    for key, value in st.session_state.items():
+        key_text = str(key)
+
+        if key_text in DEBUG_STATE_SKIP_KEYS:
+            continue
+
+        if key_text.startswith(DEBUG_STATE_SKIP_PREFIXES):
+            continue
+
+        snapshot[key_text] = normalize_debug_state_value(value)
+
+    return snapshot
+
+
+def capture_rerun_cause() -> None:
+    try:
+        previous = dict(st.session_state.get("last_debug_state_snapshot", {}))
+        current = build_debug_state_snapshot()
+
+        changed_keys: list[dict[str, str]] = []
+        all_keys = sorted(set(previous.keys()) | set(current.keys()))
+
+        for key in all_keys:
+            before = previous.get(key, "<missing>")
+            after = current.get(key, "<missing>")
+
+            if before != after:
+                changed_keys.append({
+                    "key": key,
+                    "before": before[:220],
+                    "after": after[:220],
+                })
+
+        st.session_state["current_rerun_changed_keys"] = changed_keys[:80]
+    except Exception as exc:
+        st.session_state["current_rerun_changed_keys"] = [{
+            "key": "debug_error",
+            "before": "",
+            "after": str(exc),
+        }]
+
+
+def save_debug_state_snapshot() -> None:
+    try:
+        st.session_state["last_debug_state_snapshot"] = build_debug_state_snapshot()
+    except Exception:
+        pass
+
+
+def consume_pending_perf_action_label() -> None:
+    pending_label = str(st.session_state.pop("pending_perf_action_label", "")).strip()
+    if pending_label:
+        st.session_state["active_perf_action_label"] = pending_label
+
+
+def infer_perf_action_label_from_changed_keys() -> str:
+    changed_keys = [
+        str(row.get("key", ""))
+        for row in st.session_state.get("current_rerun_changed_keys", [])
+    ]
+
+    if not changed_keys:
+        return ""
+
+    debug_keys = {
+        "show_loading_debug_inline",
+        "perf_action_label",
+        "clear_perf_history_btn",
+        "download_perf_history_csv",
+    }
+
+    non_debug_keys = [
+        key for key in changed_keys
+        if key and key not in debug_keys
+    ]
+
+    if not non_debug_keys:
+        return "debug/profiler toggle"
+
+    key_set = set(non_debug_keys)
+
+    if "load_image_mappings_now" in key_set or "image_mappings_loaded_folder" in key_set:
+        return "load/refresh image mappings"
+
+    if "staged_folder_select" in key_set:
+        return "select staged folder"
+
+    if "folder_source_mode" in key_set:
+        return "change folder source"
+
+    if "template_family_select" in key_set or "listing_template_select" in key_set:
+        return "change template"
+
+    if "parent_main_image_choice" in key_set:
+        return "change parent main image"
+
+    if "title_input" in key_set:
+        return "edit title"
+
+    if any(key.startswith("bullet_") for key in key_set):
+        return "edit bullets"
+
+    if "product_description" in key_set:
+        return "edit description"
+
+    if "generic_keywords" in key_set:
+        return "edit search terms"
+
+    if "variant_quantity" in key_set:
+        return "change quantity"
+
+    if any(key.startswith("price_") for key in key_set):
+        return "change price"
+
+    if any("selected_variant" in key or key.startswith("variant_") for key in key_set):
+        return "change variants"
+
+    if "ready_queue_review_folder" in key_set:
+        return "select review queue item"
+
+    if "review_queue_reviewed_by" in key_set:
+        return "change reviewer"
+
+    if "approved_queue_review_folder" in key_set:
+        return "select approved review item"
+
+    if "approved_queue_selected_folders" in key_set:
+        return "select approved folders"
+
+    if "review_queue_tab_loaded" in key_set:
+        return "load review queue"
+
+    if "approved_output_tab_loaded" in key_set:
+        return "load approved output"
+
+    preview = ", ".join(non_debug_keys[:4])
+    return f"rerun: {preview}"
+
+
+def get_current_perf_action_label() -> str:
+    active_label = str(st.session_state.get("active_perf_action_label", "")).strip()
+    manual_label = str(st.session_state.get("perf_action_label", "")).strip()
+    inferred_label = infer_perf_action_label_from_changed_keys()
+
+    # One-shot button labels win. Manual label is useful for controlled test sessions.
+    # If neither exists, infer from changed Streamlit session-state keys.
+    return active_label or manual_label or inferred_label or "(unlabeled)"
+
+
+def build_current_perf_summary() -> dict[str, Any]:
+    events = list(st.session_state.get("current_load_events", []))
+    rerun_started_at = st.session_state.get("current_rerun_started_at")
+
+    full_rerun_ms = None
+    if rerun_started_at:
+        full_rerun_ms = round((time.perf_counter() - float(rerun_started_at)) * 1000, 1)
+
+    recorded_load_ms = round(
+        sum(float(event.get("ms", 0) or 0) for event in events),
+        1,
+    )
+
+    estimated_ui_ms = None
+    if full_rerun_ms is not None:
+        estimated_ui_ms = round(max(full_rerun_ms - recorded_load_ms, 0), 1)
+
+    slowest_event = ""
+    slowest_ms = 0.0
+    if events:
+        slowest = max(events, key=lambda event: float(event.get("ms", 0) or 0))
+        slowest_event = str(slowest.get("step", ""))
+        slowest_ms = float(slowest.get("ms", 0) or 0)
+
+    return {
+        "events": events,
+        "full_rerun_ms": full_rerun_ms,
+        "recorded_load_ms": recorded_load_ms,
+        "estimated_ui_build_ms": estimated_ui_ms,
+        "slowest_event": slowest_event,
+        "slowest_ms": round(slowest_ms, 1),
+        "event_count": len(events),
+    }
+
+
+def should_skip_perf_history_row(action_label: str) -> bool:
+    changed_keys = [
+        row.get("key", "")
+        for row in st.session_state.get("current_rerun_changed_keys", [])
+    ]
+
+    debug_only_keys = {
+        "show_loading_debug_inline",
+        "perf_action_label",
+        "clear_perf_history_btn",
+        "download_perf_history_csv",
+    }
+
+    if changed_keys and all(key in debug_only_keys for key in changed_keys):
+        return True
+
+    return False
+
+
+def save_current_perf_run() -> None:
+    try:
+        summary = build_current_perf_summary()
+        events = summary["events"]
+
+        if not events:
+            return
+
+        action_label = get_current_perf_action_label()
+
+        if should_skip_perf_history_row(action_label):
+            return
+
+        run_signature = {
+            "action": action_label,
+            "events": events,
+            "full_rerun_ms": summary["full_rerun_ms"],
+            "recorded_load_ms": summary["recorded_load_ms"],
+            "estimated_ui_build_ms": summary["estimated_ui_build_ms"],
+            "slowest_event": summary["slowest_event"],
+            "slowest_ms": summary["slowest_ms"],
+        }
+
+        signature_text = json.dumps(run_signature, sort_keys=True, default=str)
+        last_saved_signature = st.session_state.get("last_perf_saved_signature", "")
+
+        if signature_text == last_saved_signature:
+            return
+
+        history = st.session_state.setdefault("perf_history", [])
+
+        history.append({
+            "run": len(history) + 1,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "action": action_label,
+            "full_rerun_ms": summary["full_rerun_ms"],
+            "recorded_load_ms": summary["recorded_load_ms"],
+            "estimated_ui_build_ms": summary["estimated_ui_build_ms"],
+            "slowest_event": summary["slowest_event"],
+            "slowest_ms": summary["slowest_ms"],
+            "event_count": summary["event_count"],
+        })
+
+        if len(history) > 300:
+            st.session_state["perf_history"] = history[-300:]
+
+        st.session_state["last_perf_saved_signature"] = signature_text
+
+        # One-shot button labels should not leak into later debug toggles/reruns.
+        st.session_state.pop("active_perf_action_label", None)
+    except Exception:
+        pass
+
+
+def render_inline_loading_debug() -> None:
+    save_current_perf_run()
+
+    st.divider()
+
+    control_col1, control_col2 = st.columns([1, 4])
+    with control_col1:
+        show_debug = st.checkbox(
+            "Show profiler",
+            key="show_loading_debug_inline",
+            value=False,
+        )
+    with control_col2:
+        st.text_input(
+            "Manual action label for next test",
+            key="perf_action_label",
+            placeholder="Optional label: edit title, change reviewer, load images...",
+            label_visibility="collapsed",
+        )
+
+    if not show_debug:
+        return
+
+    st.subheader("Loading / render debug")
+
+    summary = build_current_perf_summary()
+    events = summary["events"]
+
+    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+    metric_col1.metric("Full rerun", f"{summary['full_rerun_ms'] or 0} ms")
+    metric_col2.metric("Recorded load", f"{summary['recorded_load_ms']} ms")
+    metric_col3.metric("UI/build estimate", f"{summary['estimated_ui_build_ms'] or 0} ms")
+    metric_col4.metric("Events", str(summary["event_count"]))
+
+    if summary["slowest_event"]:
+        st.caption(
+            f"Slowest recorded load step: {summary['slowest_event']} ({summary['slowest_ms']} ms)"
+        )
+
+    with st.expander("Current rerun events", expanded=False):
+        if not events:
+            st.warning("No loading events recorded for this rerun.")
+        else:
+            rows = [
+                {
+                    "step": event.get("step", ""),
+                    "ms": event.get("ms", ""),
+                    "detail": event.get("detail", ""),
+                }
+                for event in events
+            ]
+            st.dataframe(rows, hide_index=True, width="stretch")
+
+    approved_generation_step_rows = list(st.session_state.get("approved_generation_step_rows", []))
+    if approved_generation_step_rows:
+        with st.expander("Last approved generation step breakdown", expanded=True):
+            st.dataframe(approved_generation_step_rows, hide_index=True, width="stretch")
+
+    history = list(st.session_state.get("perf_history", []))
+    st.markdown("### Performance history")
+
+    clear_col, download_col = st.columns([1, 3])
+    with clear_col:
+        if st.button("Clear perf history", key="clear_perf_history_btn", width="stretch"):
+            st.session_state["perf_history"] = []
+            st.session_state.pop("last_perf_saved_signature", None)
+            st.session_state.pop("active_perf_action_label", None)
+            st.session_state.pop("perf_action_label", None)
+            st.rerun()
+
+    if not history:
+        st.caption("No completed runs saved yet.")
+        return
+
+    st.dataframe(history[-50:], hide_index=True, width="stretch")
+
+    csv_lines = [
+        "run,timestamp,action,full_rerun_ms,recorded_load_ms,estimated_ui_build_ms,slowest_event,slowest_ms,event_count"
+    ]
+
+    for row in history:
+        values = [
+            row.get("run", ""),
+            row.get("timestamp", ""),
+            str(row.get("action", "")).replace('"', '""'),
+            row.get("full_rerun_ms", ""),
+            row.get("recorded_load_ms", ""),
+            row.get("estimated_ui_build_ms", ""),
+            str(row.get("slowest_event", "")).replace('"', '""'),
+            row.get("slowest_ms", ""),
+            row.get("event_count", ""),
+        ]
+        csv_lines.append(
+            ",".join(
+                f'"{value}"' if isinstance(value, str) and "," in value else str(value)
+                for value in values
+            )
+        )
+
+    with download_col:
+        st.download_button(
+            "Download performance history CSV",
+            data="\n".join(csv_lines).encode("utf-8"),
+            file_name="amazon_lister_performance_history.csv",
+            mime="text/csv",
+            key="download_perf_history_csv",
+        )
+
+def render_rerun_cause_debug() -> None:
+    if not st.session_state.get("show_loading_debug_inline", False):
+        return
+
+    changed_keys = list(st.session_state.get("current_rerun_changed_keys", []))
+
+    st.markdown("### Rerun cause tracker")
+    st.caption(
+        "These are Streamlit session-state keys that changed since the previous completed rerun. "
+        "This helps identify which widget/action triggered the loading spinner."
+    )
+
+    if not changed_keys:
+        st.success("No session-state changes detected from the previous completed rerun.")
+        return
+
+    summary = ", ".join(row.get("key", "") for row in changed_keys[:12])
+    st.info(f"Likely trigger key(s): {summary}")
+
+    with st.expander("Changed session-state keys", expanded=False):
+        st.dataframe(changed_keys, hide_index=True, width="stretch")
+
 SHEET_NAME = "Template"
 HEADER_ROW = 3
 PARENT_ROW = 4
 FIRST_CHILD_ROW = 5
+
+SKU_DECORATION_OPTIONS = ["PRINT", "EMB", "PERSO", "PLAIN", "Custom"]
 
 
 def load_dropbox_templates_config() -> dict[str, Any]:
     config_path = CONFIG_DIR / "dropbox_templates.json"
     if not config_path.exists():
         return {}
-    with config_path.open("r", encoding="utf-8") as f:
+    with config_path.open("r", encoding="utf-8-sig") as f:
         return json.load(f)
+
+
+def load_stock_references_config() -> dict[str, Any]:
+    config_path = CONFIG_DIR / "stock_references.json"
+    if not config_path.exists():
+        return {}
+    try:
+        with config_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    references = data.get("references", data)
+    return references if isinstance(references, dict) else {}
 
 
 def list_template_profiles() -> list[dict[str, Any]]:
     profiles: list[dict[str, Any]] = []
     if not TEMPLATES_DIR.exists():
         return profiles
+
+    stock_references = load_stock_references_config()
 
     for family_folder in sorted(TEMPLATES_DIR.iterdir()):
         if not family_folder.is_dir():
@@ -88,6 +638,13 @@ def list_template_profiles() -> list[dict[str, Any]]:
 
                 # family owns workbook now
                 config["template_file"] = schema.get("workbook_file", "")
+
+                stock_reference_key = str(config.get("stock_reference_key", "") or "").strip()
+                if stock_reference_key:
+                    stock_reference = stock_references.get(stock_reference_key, {})
+                    if isinstance(stock_reference, dict):
+                        config["_stock_reference"] = dict(stock_reference)
+
                 profiles.append(config)
             except Exception:
                 continue
@@ -109,7 +666,65 @@ def dropbox_preview_url(path: str) -> str:
         return to_direct_url(shared)
     except Exception as exc:
         raise FileNotFoundError(f"Dropbox preview failed for {path}: {exc}") from exc
-    
+
+
+def get_cached_dropbox_shared_link(path: str) -> str:
+    path = str(path or "").strip()
+    if not path:
+        return ""
+
+    cache = st.session_state.setdefault("dropbox_shared_link_cache", {})
+    if path in cache:
+        return str(cache[path])
+
+    shared_link = get_or_create_shared_link(path)
+    cache[path] = shared_link
+    return shared_link
+
+
+def render_dropbox_folder_links(
+    source_folder_path: str | None,
+    dropbox_overview: dict[str, Any],
+) -> None:
+    st.markdown("**Dropbox folders**")
+
+    folder_rows: list[dict[str, str]] = []
+
+    if source_folder_path:
+        folder_rows.append({
+            "label": "Listing folder",
+            "path": source_folder_path,
+        })
+
+    resource_root = str(dropbox_overview.get("resource_root", "") or "").strip()
+    garment_resource_root = str(dropbox_overview.get("garment_resource_root", "") or "").strip()
+
+    if garment_resource_root:
+        folder_rows.append({
+            "label": "Garment resources",
+            "path": garment_resource_root,
+        })
+
+    if resource_root:
+        folder_rows.append({
+            "label": "Shared resources root",
+            "path": resource_root,
+        })
+
+    if not folder_rows:
+        st.caption("No Dropbox folder links available.")
+        return
+
+    for row in folder_rows:
+        label = row["label"]
+        path = row["path"]
+
+        try:
+            shared_link = get_cached_dropbox_shared_link(path)
+            st.markdown(f"- **{label}:** [{path}]({shared_link})")
+        except Exception:
+            st.markdown(f"- **{label}:** `{path}`")
+
 
 def build_header_map(ws, header_row: int) -> dict[str, int]:
     mapping: dict[str, int] = {}
@@ -181,6 +796,90 @@ def normalize_size(size: str) -> str:
     }
     return size_map.get(size, size)
 
+
+def format_year_size(year: int) -> str:
+    return f"{year} Year" if year == 1 else f"{year} Years"
+
+
+def get_amazon_shirt_size_range(size: str) -> tuple[str, str]:
+    normalized_size = normalize_size(str(size or "").strip())
+    if not is_child_size_label(normalized_size):
+        return normalized_size, ""
+
+    compact_size = normalized_size.replace("/", "-")
+    match = re.search(r"(\d+)\s*-\s*(\d+)", compact_size)
+    if match:
+        start_year = int(match.group(1))
+        end_year = int(match.group(2))
+        return format_year_size(start_year), format_year_size(end_year)
+
+    match = re.search(r"(\d+)", normalized_size)
+    if match:
+        return format_year_size(int(match.group(1))), ""
+
+    return normalized_size, ""
+
+
+def get_row_age_range_description(
+    profile: dict[str, Any],
+    data: dict[str, Any],
+    size_value: str,
+) -> str:
+    if is_child_size_label(size_value):
+        return str(profile.get("child_age_range_description") or "Child")
+    return str(profile.get("adult_age_range_description") or data.get("age_range_description", ""))
+
+
+def get_row_department_name(
+    profile: dict[str, Any],
+    data: dict[str, Any],
+    size_value: str,
+) -> str:
+    if is_child_size_label(size_value):
+        return str(profile.get("child_department_name") or "unisex-child")
+    return str(profile.get("adult_department_name") or data.get("department_name", ""))
+
+
+def infer_model_name_from_supplier_key(supplier_stock_key: str) -> str:
+    stock_key = str(supplier_stock_key or "").strip()
+    match = re.match(r"^(\d{3,4})", stock_key)
+    if match:
+        return f"UC{match.group(1)}"
+    return ""
+
+
+def get_product_model_name(profile: dict[str, Any], data: dict[str, Any]) -> str:
+    return str(
+        profile.get("model_name")
+        or data.get("model_name")
+        or data.get("style_name")
+        or profile.get("style_name")
+        or data.get("item_type_name")
+        or profile.get("item_type_name")
+        or ""
+    ).strip()
+
+
+def get_garment_model_number(profile: dict[str, Any], data: dict[str, Any]) -> str:
+    return str(
+        data.get("base_parent_sku")
+        or profile.get("parent_sku")
+        or profile.get("template_key")
+        or profile.get("parent_sku")
+        or profile.get("_slug")
+        or ""
+    ).strip()
+
+
+def get_child_model_number(
+    profile: dict[str, Any],
+    data: dict[str, Any],
+    sku_details: dict[str, str],
+) -> str:
+    supplier_model = infer_model_name_from_supplier_key(sku_details.get("supplier_stock_key", ""))
+    return supplier_model or get_garment_model_number(profile, data)
+
+
 def is_variant_combo_allowed(profile: dict[str, Any], variant_values: dict[str, str]) -> bool:
     color = variant_values.get("color", "")
     size = variant_values.get("size", "")
@@ -213,6 +912,41 @@ def build_variant_combinations(
     return combos
 
 
+def sort_variant_combinations_by_price(
+    variant_combos: list[dict[str, str]],
+    size_price_map: dict[str, float],
+) -> list[dict[str, str]]:
+    indexed = list(enumerate(variant_combos))
+
+    def sort_key(item: tuple[int, dict[str, str]]) -> tuple[float, int]:
+        idx, combo = item
+        size_value = str(combo.get("size", "") or "")
+        price = size_price_map.get(size_value, size_price_map.get("default", 999999))
+        try:
+            price_value = float(price)
+        except (TypeError, ValueError):
+            price_value = 999999
+        return price_value, idx
+
+    return [combo for _, combo in sorted(indexed, key=sort_key)]
+
+
+def get_lowest_variant_price(size_price_map: dict[str, Any]) -> float | str:
+    prices: list[float] = []
+    for raw_price in dict(size_price_map or {}).values():
+        try:
+            price = float(raw_price)
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            prices.append(price)
+
+    if not prices:
+        return ""
+
+    return min(prices)
+
+
 def get_selected_colors_for_image_resolution(
     profile: dict[str, Any],
     selected_variants: dict[str, list[str]],
@@ -228,44 +962,97 @@ def get_selected_colors_for_image_resolution(
 
 
 def build_child_sku(profile: dict[str, Any], parent_sku: str, variant_values: dict[str, str]) -> str:
-    color_map = profile.get("color_sku_map", {})
-    size_map = profile.get("size_code_map", {})
-    design_map = profile.get("design_sku_map", {})
+    return build_child_sku_details(profile, parent_sku, variant_values)["amazon_seller_sku"]
 
-    color_code = ""
-    size_code = ""
-    design_code = ""
 
-    if "color" in variant_values:
-        color_value = variant_values["color"]
-        color_code = color_map.get(color_value, slugify_part(color_value))
+def build_child_item_name(base_title: str, variant_values: dict[str, str]) -> str:
+    title_parts = [
+        str(variant_values.get("color", "") or "").strip(),
+        str(variant_values.get("size", "") or "").strip(),
+    ]
+    title_parts = [part for part in title_parts if part]
+    base_title = str(base_title or "").strip()
 
-    if "size" in variant_values:
-        size_value = variant_values["size"]
-        size_code = size_map.get(size_value, slugify_part(size_value))
+    if base_title:
+        title_parts.append(base_title)
 
-    if "design" in variant_values:
-        design_value = variant_values["design"]
-        design_code = design_map.get(design_value, slugify_part(design_value))
+    return ", ".join(title_parts)
 
-    parts: list[str] = []
 
-    if color_code:
-        if color_code.startswith(parent_sku):
-            parts.append(color_code)
-        else:
-            parts.append(parent_sku)
-            parts.append(color_code)
-    else:
-        parts.append(parent_sku)
+def apply_sku_decoration_to_profile(profile: dict[str, Any], sku_decoration_code: str = "") -> dict[str, Any]:
+    sku_decoration_code = str(sku_decoration_code or "").strip()
+    if not sku_decoration_code:
+        return profile
 
-    if size_code:
-        parts.append(size_code)
+    effective_profile = dict(profile)
+    effective_profile["sku_decoration_code"] = sku_decoration_code
+    return effective_profile
 
-    if design_code:
-        parts.append(design_code)
 
-    return "-".join(parts)
+def get_default_sku_decoration_code(profile: dict[str, Any], listing_memory: dict[str, Any] | None = None) -> str:
+    saved_code = str((listing_memory or {}).get("sku_decoration_code", "") or "").strip()
+    return saved_code or resolve_sku_decoration_code(profile)
+
+
+def get_garment_sku_code(profile: dict[str, Any]) -> str:
+    return sanitize_sku(
+        str(
+            profile.get("parent_sku")
+            or profile.get("template_key")
+            or profile.get("_slug")
+            or "GARMENT"
+        )
+    ).upper()
+
+
+def get_saved_generated_sku_listing_code(listing_memory: dict[str, Any] | None = None) -> str:
+    listing_memory = listing_memory or {}
+    saved_code = str(
+        listing_memory.get("generated_sku_listing_code")
+        or listing_memory.get("sku_listing_code")
+        or ""
+    ).strip()
+    return sanitize_sku(saved_code).upper()
+
+
+def get_or_create_generated_sku_listing_code(listing_memory: dict[str, Any] | None = None) -> str:
+    saved_code = get_saved_generated_sku_listing_code(listing_memory)
+    if saved_code:
+        return saved_code
+
+    if "generated_sku_listing_code" not in st.session_state:
+        st.session_state["generated_sku_listing_code"] = f"D{generate_unique_sku(5)}"
+
+    return sanitize_sku(str(st.session_state.get("generated_sku_listing_code", ""))).upper()
+
+
+def build_parent_sku_from_context(
+    profile: dict[str, Any],
+    sku_decoration_code: str,
+    sku_listing_code: str,
+) -> str:
+    parts = [
+        sanitize_sku(str(sku_decoration_code or "")).upper(),
+        sanitize_sku(str(sku_listing_code or "")).upper(),
+        get_garment_sku_code(profile),
+    ]
+    return "-".join(part for part in parts if part)
+
+
+def apply_sku_context_to_profile(
+    profile: dict[str, Any],
+    sku_decoration_code: str = "",
+    sku_listing_code: str = "",
+) -> dict[str, Any]:
+    effective_profile = apply_sku_decoration_to_profile(profile, sku_decoration_code)
+    sku_listing_code = sanitize_sku(str(sku_listing_code or "")).upper()
+    if sku_listing_code:
+        effective_profile = dict(effective_profile)
+        effective_profile["design_or_listing_code"] = sku_listing_code
+        effective_profile["listing_code"] = sku_listing_code
+        effective_profile["sku_listing_code"] = sku_listing_code
+    return effective_profile
+
 
 def build_variant_field_values(profile: dict[str, Any], variant_values: dict[str, str]) -> dict[str, Any]:
     values: dict[str, Any] = {}
@@ -280,6 +1067,44 @@ def build_variant_field_values(profile: dict[str, Any], variant_values: dict[str
 
     if "design" in variant_values:
         values["style_name"] = variant_values["design"]
+
+    return values
+
+
+def get_apparel_size_class(size_value: str) -> str:
+    return "Age" if is_child_size_label(size_value) else "Alpha"
+
+
+def apply_apparel_size_fields(
+    values: dict[str, Any],
+    size_value: str,
+    *,
+    is_apparel: bool,
+) -> dict[str, Any]:
+    if not is_apparel:
+        return values
+
+    normalized_size = normalize_size(size_value) if size_value else ""
+    size_class = get_apparel_size_class(normalized_size)
+    shirt_size, shirt_size_to = get_amazon_shirt_size_range(normalized_size)
+    height_type = "" if size_class == "Age" else "Regular"
+
+    size_values = {
+        "apparel_size_system": "UK",
+        "apparel_size_class": size_class,
+        "apparel_size": normalized_size,
+        "apparel_body_type": "Regular",
+        "apparel_height_type": height_type,
+        "shirt_size_system": "UK",
+        "shirt_size_class": size_class,
+        "shirt_size": shirt_size,
+        "shirt_size_to": shirt_size_to,
+        "shirt_body_type": "Regular",
+        "shirt_height_type": height_type,
+    }
+
+    for field, value in size_values.items():
+        values[field] = value
 
     return values
 
@@ -361,6 +1186,209 @@ def restage_finished_dropbox_folder(
     moved_path = move_dropbox_folder(source_path, target_path)
     return moved_path
 
+
+def move_finished_dropbox_folder_to_approved(
+    dropbox_cfg: dict[str, Any],
+    finished_folder_name: str,
+) -> str:
+    approved_root = dropbox_cfg.get("approved_root", "").rstrip("/")
+    finished_root = dropbox_cfg.get("finished_root", "").rstrip("/")
+
+    if not finished_folder_name:
+        raise ValueError("Finished folder name is required.")
+
+    source_path = f"{finished_root}/{finished_folder_name}"
+    candidate_name = finished_folder_name
+    target_path = f"{approved_root}/{candidate_name}"
+
+    counter = 1
+    while path_exists(target_path):
+        candidate_name = f"{finished_folder_name}_approved_{counter}"
+        target_path = f"{approved_root}/{candidate_name}"
+        counter += 1
+
+    moved_path = move_dropbox_folder(source_path, target_path)
+    return moved_path
+
+
+def reset_restaged_selection_state() -> None:
+    st.session_state["last_loaded_listing_memory_folder"] = ""
+    st.session_state.pop("finalized_stage_folder", None)
+    st.session_state.pop("finalized_finished_folder_path", None)
+    st.session_state.pop("finalized_sku", None)
+    st.session_state.pop("last_detected_template_folder", None)
+
+
+def restage_finished_listing_for_review(
+    dropbox_cfg: dict[str, Any],
+    profiles: list[dict[str, Any]],
+    fallback_profile: dict[str, Any],
+    finished_folder_name: str,
+    target_state: str = "stage",
+) -> dict[str, Any]:
+    finished_folder_name = str(finished_folder_name or "").strip()
+    target_state = str(target_state or "stage").strip().lower()
+    if target_state not in {"stage", "approved"}:
+        raise ValueError("target_state must be either 'stage' or 'approved'.")
+
+    old_finished_path = build_finished_folder_path(dropbox_cfg, finished_folder_name)
+    result = {
+        "old_finished_folder_name": finished_folder_name,
+        "old_finished_folder_path": old_finished_path,
+        "new_staged_folder_name": "",
+        "new_staged_folder_path": "",
+        "new_approved_folder_name": "",
+        "new_approved_folder_path": "",
+        "target_state": target_state,
+        "status": "Failed",
+        "warning": "",
+        "error": "",
+    }
+
+    try:
+        if target_state == "approved":
+            moved_path = move_finished_dropbox_folder_to_approved(
+                dropbox_cfg=dropbox_cfg,
+                finished_folder_name=finished_folder_name,
+            )
+            result["new_approved_folder_path"] = moved_path
+            result["new_approved_folder_name"] = Path(moved_path).name
+        else:
+            moved_path = restage_finished_dropbox_folder(
+                dropbox_cfg=dropbox_cfg,
+                finished_folder_name=finished_folder_name,
+            )
+            result["new_staged_folder_path"] = moved_path
+            result["new_staged_folder_name"] = Path(moved_path).name
+
+        warning_messages: list[str] = []
+        listing_memory_path = build_listing_memory_path(moved_path)
+        try:
+            if not path_exists(listing_memory_path):
+                warning_messages.append("listing_inputs.json was missing; created a minimal restage memory file.")
+                restaged_listing_memory = {}
+            else:
+                restaged_listing_memory = load_listing_memory_from_dropbox(moved_path)
+                if not restaged_listing_memory:
+                    warning_messages.append("listing_inputs.json was empty; saved restage metadata.")
+        except Exception as exc:
+            warning_messages.append(f"listing_inputs.json could not be loaded: {exc}")
+            restaged_listing_memory = {}
+
+        restaged_listing_memory["original_finished_folder_name"] = finished_folder_name
+        append_workflow_event(
+            restaged_listing_memory,
+            action="restore_finished_to_approved" if target_state == "approved" else "restage_finished_listing",
+            actor="",
+            from_state="finished",
+            to_state="approved" if target_state == "approved" else "stage",
+            folder_path=moved_path,
+            details={
+                "original_finished_folder_name": finished_folder_name,
+                "old_finished_folder_name": finished_folder_name,
+                "old_finished_folder_path": old_finished_path,
+            },
+        )
+
+        restaged_profile = find_profile_for_listing_memory(profiles, restaged_listing_memory) or fallback_profile
+        save_listing_inputs_json_to_dropbox(
+            profile=restaged_profile,
+            payload=restaged_listing_memory,
+            folder_path=moved_path,
+        )
+
+        result["status"] = "Success"
+        result["warning"] = " ".join(warning_messages)
+    except Exception as exc:
+        result["error"] = str(exc)
+
+    return result
+
+
+def mark_finished_generation_ignored(
+    dropbox_cfg: dict[str, Any],
+    profiles: list[dict[str, Any]],
+    fallback_profile: dict[str, Any],
+    finished_folder_name: str,
+    reason: str = "",
+    actor: str = "",
+) -> dict[str, Any]:
+    finished_folder_name = str(finished_folder_name or "").strip()
+    finished_folder_path = build_finished_folder_path(dropbox_cfg, finished_folder_name)
+    result = {
+        "folder_name": finished_folder_name,
+        "finished_folder_path": finished_folder_path,
+        "status": "Failed",
+        "message": "",
+    }
+
+    try:
+        if not finished_folder_name:
+            raise ValueError("Finished folder name is required.")
+        if not path_exists(finished_folder_path):
+            raise FileNotFoundError(f"Finished folder not found: {finished_folder_path}")
+
+        listing_memory = load_listing_memory_from_dropbox(finished_folder_path)
+        if not listing_memory:
+            raise FileNotFoundError(f"listing_inputs.json not found in {finished_folder_path}")
+
+        ignored_at = format_workflow_timestamp()
+        payload = dict(listing_memory)
+        profile = find_profile_for_listing_memory(profiles, payload) or fallback_profile
+
+        ignore_record = {
+            "folder_name": finished_folder_name,
+            "finished_folder_path": finished_folder_path,
+            "ignored_at": ignored_at,
+            "ignored_by": actor,
+            "reason": reason,
+        }
+        ignored_generations = list(payload.get("ignored_generations", []))
+        ignored_generations.append(ignore_record)
+        payload["ignored_generations"] = ignored_generations[-50:]
+
+        payload["generation_status"] = "ignored"
+        payload["ignored_at"] = ignored_at
+        payload["ignored_by"] = actor
+        payload["ignored_reason"] = reason
+
+        generated_outputs = list(payload.get("generated_outputs", []))
+        if generated_outputs:
+            latest_output = dict(generated_outputs[-1])
+            latest_output["status"] = "ignored"
+            latest_output["ignored_at"] = ignored_at
+            latest_output["ignored_by"] = actor
+            latest_output["ignored_reason"] = reason
+            generated_outputs[-1] = latest_output
+            payload["generated_outputs"] = generated_outputs
+
+        append_workflow_event(
+            payload,
+            action="ignore_finished_generation",
+            actor=actor,
+            from_state="finished",
+            to_state="finished",
+            folder_path=finished_folder_path,
+            details={
+                "finished_folder_name": finished_folder_name,
+                "reason": reason,
+            },
+        )
+
+        save_listing_inputs_json_to_dropbox(
+            profile=profile,
+            payload=payload,
+            folder_path=finished_folder_path,
+        )
+
+        result["status"] = "Success"
+        result["message"] = "Marked generation as ignored."
+    except Exception as exc:
+        result["message"] = str(exc)
+
+    return result
+
+
 def build_listing_memory_path(folder_path: str) -> str:
     return f"{folder_path.rstrip('/')}/listing_inputs.json"
 
@@ -381,6 +1409,13 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
         "selected_variants": payload.get("selected_variants", {}),
         "size_price_map": payload.get("size_price_map", {}),
         "use_same_price_for_all_sizes": payload.get("use_same_price_for_all_sizes", False),
+        "write_parent_starting_price": payload.get("write_parent_starting_price", False),
+        "sku_decoration_code": payload.get("sku_decoration_code", ""),
+        "manual_sku_listing_code": payload.get("manual_sku_listing_code", ""),
+        "generated_sku_listing_code": payload.get("generated_sku_listing_code", ""),
+        "sku_listing_code": payload.get("sku_listing_code", ""),
+        "base_parent_sku": payload.get("base_parent_sku", ""),
+        "parent_sku": payload.get("parent_sku", ""),
         "quantity": payload.get("quantity", 0),
         "assets_prepared_by": payload.get("assets_prepared_by", ""),
         "content_prepared_by": payload.get("content_prepared_by", ""),
@@ -392,6 +1427,26 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
     original_finished_folder_name = str(payload.get("original_finished_folder_name", "")).strip()
     if original_finished_folder_name:
         memory_payload["original_finished_folder_name"] = original_finished_folder_name
+
+    # Additive metadata for review/dashboard use. Old listing_inputs.json files remain valid.
+    if isinstance(payload.get("review_snapshot"), dict):
+        memory_payload["review_snapshot"] = dict(payload.get("review_snapshot", {}))
+
+    if isinstance(payload.get("workflow_events"), list):
+        memory_payload["workflow_events"] = list(payload.get("workflow_events", []))
+
+    if isinstance(payload.get("sku_manifest"), dict):
+        memory_payload["sku_manifest"] = dict(payload.get("sku_manifest", {}))
+
+    if isinstance(payload.get("generated_outputs"), list):
+        memory_payload["generated_outputs"] = list(payload.get("generated_outputs", []))
+
+    if isinstance(payload.get("ignored_generations"), list):
+        memory_payload["ignored_generations"] = list(payload.get("ignored_generations", []))
+
+    for field_name in ["generation_status", "ignored_at", "ignored_by", "ignored_reason"]:
+        if payload.get(field_name) not in (None, "", [], {}):
+            memory_payload[field_name] = payload.get(field_name, "")
 
     return memory_payload
 
@@ -415,30 +1470,77 @@ def save_listing_inputs_json_to_dropbox(
         json_path,
         json.dumps(memory_payload, indent=2, ensure_ascii=False),
     )
+
+    folder_cache_key = str(folder_path or "").rstrip("/")
+    if folder_cache_key:
+        st.session_state.setdefault("listing_memory_cache", {})[folder_cache_key] = {
+            "json_path": json_path,
+            "data": json.loads(json.dumps(memory_payload)),
+            "missing": False,
+        }
+
     return json_path
 
 
 def load_listing_memory_from_dropbox(folder_path: str) -> dict[str, Any]:
-    json_path = build_listing_memory_path(folder_path)
-    if not path_exists(json_path):
+    folder_path = str(folder_path or "").rstrip("/")
+    if not folder_path:
         return {}
+
+    json_path = build_listing_memory_path(folder_path)
+    cache = st.session_state.setdefault("listing_memory_cache", {})
+    cached = cache.get(folder_path)
+
+    if cached and cached.get("json_path") == json_path:
+        started_at = time.perf_counter()
+        cached_data = json.loads(json.dumps(cached.get("data", {})))
+        record_load_event(
+            "Dropbox: cached listing_inputs.json",
+            started_at,
+            format_folder_detail(folder_path),
+        )
+        return cached_data
+
+    started_at = time.perf_counter()
+
+    if not path_exists(json_path):
+        cache[folder_path] = {
+            "json_path": json_path,
+            "data": {},
+            "missing": True,
+        }
+        record_load_event(
+            "Dropbox: missing listing_inputs.json",
+            started_at,
+            format_folder_detail(folder_path),
+        )
+        return {}
+
     content = download_text_file(json_path)
-    return json.loads(content)  
+    data = json.loads(content)
+
+    cache[folder_path] = {
+        "json_path": json_path,
+        "data": json.loads(json.dumps(data)),
+        "missing": False,
+    }
+
+    record_load_event(
+        "Dropbox: load listing_inputs.json",
+        started_at,
+        format_folder_detail(folder_path),
+    )
+
+    return data
 
 def initialize_listing_context_defaults(profile: dict[str, Any]) -> None:
-    variant_dimensions = profile.get("variant_dimensions", [])
-
-    if variant_dimensions:
-        for dim in variant_dimensions:
-            dim_name = str(dim.get("name", "")).strip()
-            dim_options = list(dim.get("options", []))
-            st.session_state[f"variant_{dim_name}"] = list(dim_options)
-    else:
-        default_colors = get_profile_color_options(profile)
-        st.session_state["selected_colours"] = list(default_colors)
-        st.session_state["selected_sizes"] = get_available_sizes_for_selected_colors(profile, default_colors)
-
+    normalize_selected_variants_session_state(profile, {}, force_defaults=True)
     st.session_state["parent_main_image_choice"] = "Automatic (recommended)"
+    sku_decoration_code = get_default_sku_decoration_code(profile)
+    st.session_state["sku_decoration_choice"] = sku_decoration_code if sku_decoration_code in SKU_DECORATION_OPTIONS else "Custom"
+    st.session_state["custom_sku_decoration_code"] = "" if sku_decoration_code in SKU_DECORATION_OPTIONS else sku_decoration_code
+    st.session_state["manual_sku_listing_code"] = ""
+    st.session_state["generated_sku_listing_code"] = f"D{generate_unique_sku(5)}"
 
 
 def apply_listing_memory_to_session(listing_memory: dict[str, Any], profile: dict[str, Any]) -> None:
@@ -457,65 +1559,21 @@ def apply_listing_memory_to_session(listing_memory: dict[str, Any], profile: dic
     st.session_state["product_description"] = listing_memory.get("product_description", "")
     st.session_state["generic_keywords"] = listing_memory.get("generic_keywords", "")
     st.session_state["use_same_price_for_all_sizes"] = listing_memory.get("use_same_price_for_all_sizes", False)
+    sku_decoration_code = get_default_sku_decoration_code(profile, listing_memory)
+    st.session_state["sku_decoration_choice"] = sku_decoration_code if sku_decoration_code in SKU_DECORATION_OPTIONS else "Custom"
+    st.session_state["custom_sku_decoration_code"] = "" if sku_decoration_code in SKU_DECORATION_OPTIONS else sku_decoration_code
+    st.session_state["manual_sku_listing_code"] = str(listing_memory.get("manual_sku_listing_code", "") or "")
+    st.session_state["generated_sku_listing_code"] = (
+        get_saved_generated_sku_listing_code(listing_memory)
+        or f"D{generate_unique_sku(5)}"
+    )
     st.session_state["variant_quantity"] = int(listing_memory.get("quantity", 100))
 
     saved_prices = listing_memory.get("size_price_map", {})
     for size, price in saved_prices.items():
         st.session_state[f"price_{size}"] = float(price)
 
-    saved_selected_variants = listing_memory.get("selected_variants", {})
-    variant_dimensions = profile.get("variant_dimensions", [])
-
-    saved_variants_normalized = {
-        str(key).strip().lower(): value
-        for key, value in dict(saved_selected_variants).items()
-    }
-
-    def get_saved_variant_values(dim_name: str, dim_options: list[str]) -> list[str]:
-        normalized_name = str(dim_name).strip().lower()
-        aliases = [normalized_name]
-
-        if normalized_name in {"colour", "colours", "colors"}:
-            aliases.extend(["color", "colour", "colours", "colors"])
-        elif normalized_name in {"size", "sizes"}:
-            aliases.extend(["size", "sizes"])
-        elif normalized_name in {"design", "style", "styles"}:
-            aliases.extend(["design", "style", "styles"])
-
-        saved_values: list[str] = []
-        for alias in aliases:
-            candidate = saved_variants_normalized.get(alias)
-            if candidate:
-                saved_values = list(candidate)
-                break
-
-        valid_values = [value for value in saved_values if value in dim_options]
-        return valid_values if valid_values else list(dim_options)
-
-    if variant_dimensions:
-        for dim in variant_dimensions:
-            dim_name = str(dim.get("name", "")).strip()
-            dim_options = list(dim.get("options", []))
-            st.session_state[f"variant_{dim_name}"] = get_saved_variant_values(dim_name, dim_options)
-    else:
-        color_options = get_profile_color_options(profile)
-        size_options = list(profile.get("sizes", []))
-
-        saved_colors = (
-            saved_variants_normalized.get("color")
-            or saved_variants_normalized.get("colour")
-            or saved_variants_normalized.get("colors")
-            or saved_variants_normalized.get("colours")
-            or color_options
-        )
-        saved_sizes = (
-            saved_variants_normalized.get("size")
-            or saved_variants_normalized.get("sizes")
-            or size_options
-        )
-
-        st.session_state["selected_colours"] = [color for color in saved_colors if color in color_options] or color_options
-        st.session_state["selected_sizes"] = [size for size in saved_sizes if size in size_options] or size_options
+    normalize_selected_variants_session_state(profile, listing_memory, force_saved_values=True)
 
 def finalize_staged_dropbox_folder(
     dropbox_cfg: dict[str, Any],
@@ -615,6 +1673,35 @@ def move_ready_dropbox_folder_to_approved(
         return moved_path
 
 
+def move_ready_dropbox_folder_to_denied_stage(
+    dropbox_cfg: dict[str, Any],
+    ready_folder_name: str,
+) -> str:
+    denied_folder_name = sanitize_sku(f"{ready_folder_name}_denied")
+    if not denied_folder_name:
+        raise ValueError("Denied folder name is required.")
+
+    stage_root = dropbox_cfg.get("stage_root", "").rstrip("/")
+    ready_path = build_ready_folder_path(dropbox_cfg, ready_folder_name)
+
+    create_folder_if_missing(stage_root)
+
+    final_denied_folder_name = denied_folder_name
+    counter = 1
+
+    while True:
+        denied_stage_folder_path = build_stage_folder_path(dropbox_cfg, final_denied_folder_name)
+        if path_exists(denied_stage_folder_path):
+            final_denied_folder_name = f"{denied_folder_name}-{counter}"
+            counter += 1
+            continue
+
+        moved_path = move_dropbox_folder(ready_path, denied_stage_folder_path)
+        if not moved_path:
+            raise RuntimeError("Dropbox returned an empty path after moving the folder back to staging.")
+        return moved_path
+
+
 def finalize_ready_dropbox_folder(
     dropbox_cfg: dict[str, Any],
     ready_folder_name: str,
@@ -686,6 +1773,33 @@ def finalize_approved_dropbox_folder(
     raise ValueError("Could not generate a unique finished folder SKU after multiple attempts.")
 
 
+def choose_finished_folder_target(
+    dropbox_cfg: dict[str, Any],
+    parent_sku: str,
+    reuse_finished_folder_name: str = "",
+) -> tuple[str, str]:
+    parent_sku = sanitize_sku(parent_sku)
+    if not parent_sku:
+        raise ValueError("Template parent_sku is missing.")
+
+    finished_root = dropbox_cfg.get("finished_root", "").rstrip("/")
+    create_folder_if_missing(finished_root)
+
+    reuse_finished_folder_name = sanitize_sku(reuse_finished_folder_name)
+    if reuse_finished_folder_name:
+        final_sku = reuse_finished_folder_name
+        return final_sku, build_finished_folder_path(dropbox_cfg, final_sku)
+
+    for _ in range(20):
+        unique_sku = generate_unique_sku()
+        final_sku = build_final_folder_sku(parent_sku, unique_sku)
+        final_folder_path = build_finished_folder_path(dropbox_cfg, final_sku)
+        if not path_exists(final_folder_path):
+            return final_sku, final_folder_path
+
+    raise ValueError("Could not generate a unique finished folder SKU after multiple attempts.")
+
+
 def split_folder_images(folder_path: str) -> tuple[str, list[str]]:
     files = [p for p in list_folder_files(folder_path) if is_image_file(p)]
     files = sorted(files, key=lambda p: Path(p).name.lower())
@@ -714,8 +1828,37 @@ def build_stage_preview_paths(dropbox_cfg: dict[str, Any], staged_folder_name: s
     stage_root = dropbox_cfg.get("stage_root", "").rstrip("/")
     stage_folder_path = f"{stage_root}/{staged_folder_name}"
 
-    files = [p for p in list_folder_files(stage_folder_path) if is_image_file(p)]
+    try:
+        files = [p for p in list_folder_files(stage_folder_path) if is_image_file(p)]
+    except Exception:
+        return []
     return sorted(files, key=lambda p: Path(p).name.lower())
+
+
+def build_stage_resource_folder_path(dropbox_cfg: dict[str, Any], staged_folder_name: str) -> str:
+    if not staged_folder_name:
+        return ""
+
+    stage_root = dropbox_cfg.get("stage_root", "").rstrip("/")
+    return f"{stage_root}/{staged_folder_name}/resources" if stage_root else ""
+
+
+def build_stage_resource_image_paths(dropbox_cfg: dict[str, Any], staged_folder_name: str) -> list[str]:
+    resource_folder_path = build_stage_resource_folder_path(dropbox_cfg, staged_folder_name)
+    return list_image_paths_in_dropbox_folder(resource_folder_path)
+
+
+def list_image_paths_in_dropbox_folder(folder_path: str) -> list[str]:
+    if not folder_path:
+        return []
+
+    try:
+        files = [p for p in list_folder_files(folder_path) if is_image_file(p)]
+    except Exception:
+        return []
+
+    return sorted(files, key=lambda p: Path(p).name.lower())
+
 
 def padded_list(values: list[str], target_len: int = 8) -> list[str]:
     trimmed = values[:target_len]
@@ -784,13 +1927,17 @@ def render_design_color_grid(
                 st.image(entry["direct_url"], width=image_width)
             else:
                 st.warning("Not found")
-                st.code(path, language=None)    
+                st.code(path, language=None)
 
 def render_variant_combinations_preview(
     profile: dict[str, Any],
     parent_sku: str,
     selected_variants: dict[str, list[str]],
+    base_title: str = "",
+    sku_decoration_code: str = "",
+    sku_listing_code: str = "",
 ) -> None:
+    profile = apply_sku_context_to_profile(profile, sku_decoration_code, sku_listing_code)
     combos = build_variant_combinations(profile, selected_variants)
 
     st.markdown("**Selected variant combinations**")
@@ -803,7 +1950,14 @@ def render_variant_combinations_preview(
     for idx, combo in enumerate(combos, start=1):
         row = {"#": idx}
         row.update(combo)
-        row["child_sku"] = build_child_sku(profile, parent_sku, combo)
+        row["child_title"] = build_child_item_name(base_title, combo)
+        sku_details = build_child_sku_details(profile, parent_sku, combo)
+        row["child_sku"] = sku_details["amazon_seller_sku"]
+        if has_stock_reference(profile):
+            row["supplier"] = sku_details.get("supplier", "")
+            row["supplier_stock_key"] = sku_details.get("supplier_stock_key", "")
+            row["supplier_stock_key_status"] = sku_details.get("supplier_stock_key_status", "")
+            row["supplier_stock_key_reason"] = sku_details.get("supplier_stock_key_reason", "")
         rows.append(row)
 
     st.dataframe(rows, width="stretch", hide_index=True)
@@ -822,6 +1976,140 @@ def get_profile_color_options(profile: dict[str, Any]) -> list[str]:
         return list(color_sku_map.keys())
 
     return []
+
+
+def normalize_saved_selected_variants(saved_selected_variants: dict[str, Any]) -> dict[str, list[str]]:
+    normalized: dict[str, list[str]] = {}
+    for key, value in dict(saved_selected_variants or {}).items():
+        normalized_key = str(key).strip().lower()
+        if isinstance(value, list):
+            normalized[normalized_key] = list(value)
+        elif value is None:
+            normalized[normalized_key] = []
+        else:
+            normalized[normalized_key] = [value]
+    return normalized
+
+
+def get_saved_variant_values(
+    saved_variants_normalized: dict[str, list[str]],
+    dim_name: str,
+) -> list[str]:
+    normalized_name = str(dim_name).strip().lower()
+    aliases = [normalized_name]
+
+    if normalized_name in {"color", "colour", "colors", "colours"}:
+        aliases.extend(["color", "colour", "colors", "colours"])
+    elif normalized_name in {"size", "sizes"}:
+        aliases.extend(["size", "sizes"])
+    elif normalized_name in {"design", "style", "styles"}:
+        aliases.extend(["design", "style", "styles"])
+
+    for alias in aliases:
+        candidate = saved_variants_normalized.get(alias)
+        if candidate is not None:
+            return list(candidate)
+
+    return []
+
+
+def normalize_multiselect_values(
+    current_values: list[str] | None,
+    valid_options: list[str],
+    fallback_values: list[str] | None,
+) -> tuple[list[str], bool]:
+    valid_options = list(valid_options)
+    current_list = list(current_values or [])
+    fallback_list = list(fallback_values or [])
+
+    valid_current = [value for value in current_list if value in valid_options]
+    valid_fallback = [value for value in fallback_list if value in valid_options]
+
+    if not valid_fallback:
+        valid_fallback = list(valid_options)
+
+    should_reset = (
+        not current_list
+        or not valid_current
+        or len(valid_current) != len(current_list)
+    )
+
+    if should_reset:
+        return valid_fallback, True
+
+    return valid_current, False
+
+
+def normalize_selected_variants_session_state(
+    profile: dict[str, Any],
+    listing_memory: dict[str, Any],
+    force_saved_values: bool = False,
+    force_defaults: bool = False,
+) -> dict[str, list[str]]:
+    saved_variants_normalized = normalize_saved_selected_variants(
+        listing_memory.get("selected_variants", {})
+    )
+    variant_dimensions = profile.get("variant_dimensions", [])
+
+    if variant_dimensions:
+        normalized_variants: dict[str, list[str]] = {}
+        for dim in variant_dimensions:
+            dim_name = str(dim.get("name", "")).strip()
+            dim_options = list(dim.get("options", []))
+            widget_key = f"variant_{dim_name}"
+            saved_values = [
+                value for value in get_saved_variant_values(saved_variants_normalized, dim_name)
+                if value in dim_options
+            ]
+            fallback_values = list(dim_options) if force_defaults else (saved_values or list(dim_options))
+            current_values = [] if force_saved_values or force_defaults else st.session_state.get(widget_key, [])
+            normalized_values, should_set = normalize_multiselect_values(
+                current_values,
+                dim_options,
+                fallback_values,
+            )
+            if should_set or widget_key not in st.session_state:
+                st.session_state[widget_key] = list(normalized_values)
+            normalized_variants[dim_name] = list(st.session_state.get(widget_key, normalized_values))
+
+        return normalized_variants
+
+    color_options = get_profile_color_options(profile)
+    saved_colors = [
+        color for color in get_saved_variant_values(saved_variants_normalized, "color")
+        if color in color_options
+    ]
+    color_fallback = list(color_options) if force_defaults else (saved_colors or list(color_options))
+    current_colors = [] if force_saved_values or force_defaults else st.session_state.get("selected_colours", [])
+    normalized_colors, should_set_colors = normalize_multiselect_values(
+        current_colors,
+        color_options,
+        color_fallback,
+    )
+    if should_set_colors or "selected_colours" not in st.session_state:
+        st.session_state["selected_colours"] = list(normalized_colors)
+    selected_colors = list(st.session_state.get("selected_colours", normalized_colors))
+
+    available_sizes = get_available_sizes_for_selected_colors(profile, selected_colors)
+    saved_sizes = [
+        size for size in get_saved_variant_values(saved_variants_normalized, "size")
+        if size in available_sizes
+    ]
+    size_fallback = list(available_sizes) if force_defaults else (saved_sizes or list(available_sizes))
+    current_sizes = [] if force_saved_values or force_defaults else st.session_state.get("selected_sizes", [])
+    normalized_sizes, should_set_sizes = normalize_multiselect_values(
+        current_sizes,
+        available_sizes,
+        size_fallback,
+    )
+    if should_set_sizes or "selected_sizes" not in st.session_state:
+        st.session_state["selected_sizes"] = list(normalized_sizes)
+    selected_sizes = list(st.session_state.get("selected_sizes", normalized_sizes))
+
+    return {
+        "color": selected_colors,
+        "size": selected_sizes,
+    }
 
 
 def get_available_sizes_for_selected_colors(
@@ -977,11 +2265,64 @@ def get_cached_dropbox_overview(
     return data
 
 
+def clear_runtime_caches() -> None:
+    for key in [
+        "dropbox_folder_list_cache",
+        "listing_memory_cache",
+        "dropbox_overview_cache",
+        "preview_image_cache",
+        "preview_image_mapping_cache",
+        "resolved_image_bundle_cache",
+        "ready_queue_items_cache",
+        "approved_queue_items_cache",
+        "load_image_mappings_now",
+        "current_run_image_resolution_debug",
+    ]:
+        st.session_state.pop(key, None)
+
+    for key in list(st.session_state.keys()):
+        if key.endswith("_load_image_review") or key.endswith("_run_full_quality"):
+            st.session_state.pop(key, None)
+
+
+def set_workflow_flash(level: str, message: str, detail: str = "") -> None:
+    st.session_state["workflow_flash"] = {
+        "level": level,
+        "message": message,
+        "detail": detail,
+    }
+
+
+def render_workflow_flash() -> None:
+    flash = st.session_state.pop("workflow_flash", None)
+    if not flash:
+        return
+
+    level = flash.get("level", "info")
+    message = flash.get("message", "")
+    detail = flash.get("detail", "")
+
+    if message:
+        if level == "success":
+            st.success(message)
+        elif level == "warning":
+            st.warning(message)
+        elif level == "error":
+            st.error(message)
+        else:
+            st.info(message)
+
+    if detail:
+        st.info(detail)
+
+
 def build_preview_image_cache_key(
     profile: dict[str, Any],
     dropbox_cfg: dict[str, Any],
     staged_folder_name: str,
     selected_variants: dict[str, list[str]],
+    include_mappings: bool = False,
+    resolve_preview_urls: bool = False,
 ) -> str:
     template_key = profile.get("template_key", "")
     cache_parts = {
@@ -991,8 +2332,94 @@ def build_preview_image_cache_key(
         "selected_designs": selected_variants.get("design", []),
         "template_cfg": dropbox_cfg.get("templates", {}).get(template_key, {}),
         "general_resource_images": dropbox_cfg.get("general_resource_images", []),
+        "include_mappings": include_mappings,
+        "resolve_preview_urls": resolve_preview_urls,
     }
     return json.dumps(cache_parts, sort_keys=True)
+
+
+def build_preview_image_mapping_cache_key(
+    profile: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+) -> str:
+    template_key = profile.get("template_key", "")
+    cache_parts = {
+        "template_key": template_key,
+        "template_slug": profile.get("_slug", ""),
+        "staged_folder_name": staged_folder_name,
+        "template_cfg": dropbox_cfg.get("templates", {}).get(template_key, {}),
+        "general_resource_images": dropbox_cfg.get("general_resource_images", []),
+        "resource_root": dropbox_cfg.get("resource_root", ""),
+    }
+    return json.dumps(cache_parts, sort_keys=True)
+
+
+def build_image_mapping_variants_for_cache(
+    profile: dict[str, Any],
+    selected_variants: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    # Heavy Dropbox image mapping should be cached at folder/template level,
+    # not invalidated by normal listing-content variant edits.
+    mapping_variants: dict[str, list[str]] = {}
+
+    colors = get_profile_color_options(profile)
+    if colors:
+        mapping_variants["color"] = list(colors)
+    elif selected_variants.get("color"):
+        mapping_variants["color"] = list(selected_variants.get("color", []))
+
+    for dim in profile.get("variant_dimensions", []):
+        dim_name = str(dim.get("name", "")).strip().lower()
+        if dim_name == "design":
+            options = list(dim.get("options", []))
+            if options:
+                mapping_variants["design"] = options
+            elif selected_variants.get("design"):
+                mapping_variants["design"] = list(selected_variants.get("design", []))
+
+    return mapping_variants or dict(selected_variants)
+
+
+def filter_preview_image_maps_for_selected_variants(
+    profile: dict[str, Any],
+    selected_variants: dict[str, list[str]],
+    full_color_image_map: dict[str, str],
+    full_design_color_image_url_map: dict[str, dict[str, str]],
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    selected_colors = get_selected_colors_for_image_resolution(profile, selected_variants)
+    selected_designs = list(selected_variants.get("design", []))
+
+    if selected_colors:
+        color_image_map = {
+            color: image_url
+            for color, image_url in full_color_image_map.items()
+            if color in selected_colors
+        }
+    else:
+        color_image_map = dict(full_color_image_map)
+
+    if selected_colors or selected_designs:
+        design_color_image_url_map: dict[str, dict[str, str]] = {}
+        for color, design_map in full_design_color_image_url_map.items():
+            if selected_colors and color not in selected_colors:
+                continue
+
+            filtered_design_map = {
+                design: image_url
+                for design, image_url in dict(design_map).items()
+                if not selected_designs or design in selected_designs
+            }
+
+            if filtered_design_map:
+                design_color_image_url_map[color] = filtered_design_map
+    else:
+        design_color_image_url_map = {
+            color: dict(design_map)
+            for color, design_map in full_design_color_image_url_map.items()
+        }
+
+    return color_image_map, design_color_image_url_map
 
 
 def get_cached_preview_image_data(
@@ -1001,12 +2428,16 @@ def get_cached_preview_image_data(
     staged_folder_name: str,
     selected_variants: dict[str, list[str]],
     dropbox_overview: dict[str, Any],
+    include_mappings: bool = False,
+    resolve_preview_urls: bool = False,
 ) -> dict[str, Any]:
     cache_key = build_preview_image_cache_key(
         profile,
         dropbox_cfg,
         staged_folder_name,
         selected_variants,
+        include_mappings,
+        resolve_preview_urls,
     )
     cache = st.session_state.get("preview_image_cache", {})
 
@@ -1014,6 +2445,7 @@ def get_cached_preview_image_data(
         return cache.get("data", {})
 
     staged_preview_paths = build_stage_preview_paths(dropbox_cfg, staged_folder_name) if staged_folder_name else []
+    staged_resource_paths = build_stage_resource_image_paths(dropbox_cfg, staged_folder_name) if staged_folder_name else []
     design_color_preview_rows = build_design_color_preview_paths(
         profile=profile,
         dropbox_cfg=dropbox_cfg,
@@ -1029,14 +2461,11 @@ def get_cached_preview_image_data(
         entries: list[dict[str, Any]] = []
         for label, path in items:
             if not path:
-                entries.append({
-                    "label": label,
-                    "path": path,
-                    "exists": False,
-                    "direct_url": "",
-                })
+                entries.append({"label": label, "path": path, "exists": False, "direct_url": ""})
                 continue
-
+            if not resolve_preview_urls:
+                entries.append({"label": label, "path": path, "exists": True, "direct_url": ""})
+                continue
             try:
                 result = resolve_one(path, label)
                 entries.append({
@@ -1046,23 +2475,54 @@ def get_cached_preview_image_data(
                     "direct_url": result.get("direct_url", ""),
                 })
             except Exception:
-                entries.append({
-                    "label": label,
-                    "path": path,
-                    "exists": False,
-                    "direct_url": "",
-                })
+                entries.append({"label": label, "path": path, "exists": False, "direct_url": ""})
         return entries
 
-    if staged_folder_name:
+    if staged_folder_name and include_mappings:
         try:
             preview_stage_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
-            _, _, preview_color_image_map, preview_design_color_image_url_map = resolve_folder_image_urls(
+            mapping_cache_key = build_preview_image_mapping_cache_key(
+                profile,
+                dropbox_cfg,
+                staged_folder_name,
+            )
+            mapping_cache = st.session_state.get("preview_image_mapping_cache", {})
+
+            if mapping_cache.get("key") == mapping_cache_key:
+                mapping_data = dict(mapping_cache.get("data", {}))
+                full_color_image_map = dict(mapping_data.get("color_image_map", {}))
+                full_design_color_image_url_map = {
+                    color: dict(design_map)
+                    for color, design_map in dict(mapping_data.get("design_color_image_url_map", {})).items()
+                }
+            else:
+                mapping_variants = build_image_mapping_variants_for_cache(profile, selected_variants)
+                mapping_colors = get_selected_colors_for_image_resolution(profile, mapping_variants)
+
+                _, _, full_color_image_map, full_design_color_image_url_map = resolve_folder_image_urls(
+                    profile,
+                    mapping_variants,
+                    mapping_colors,
+                    dropbox_overview,
+                    preview_stage_folder_path,
+                )
+
+                st.session_state["preview_image_mapping_cache"] = {
+                    "key": mapping_cache_key,
+                    "data": {
+                        "color_image_map": dict(full_color_image_map),
+                        "design_color_image_url_map": {
+                            color: dict(design_map)
+                            for color, design_map in dict(full_design_color_image_url_map).items()
+                        },
+                    },
+                }
+
+            preview_color_image_map, preview_design_color_image_url_map = filter_preview_image_maps_for_selected_variants(
                 profile,
                 selected_variants,
-                get_selected_colors_for_image_resolution(profile, selected_variants),
-                dropbox_overview,
-                preview_stage_folder_path,
+                full_color_image_map,
+                full_design_color_image_url_map,
             )
             parent_main_image_options = build_parent_main_image_options(
                 profile=profile,
@@ -1075,20 +2535,13 @@ def get_cached_preview_image_data(
             preview_design_color_image_url_map = {}
             parent_main_image_options = []
 
-    staged_preview_entries = resolve_display_entries([
-        (Path(path).name, path) for path in staged_preview_paths
-    ])
-    garment_resource_entries = resolve_display_entries([
-        (Path(path).name, path) for path in dropbox_overview.get("garment_resource_images", [])
-    ])
-    global_resource_entries = resolve_display_entries([
-        (Path(path).name, path) for path in dropbox_overview.get("shared_resource_images", [])
-    ])
+    staged_preview_entries = resolve_display_entries([(Path(path).name, path) for path in staged_preview_paths])
+    staged_resource_entries = resolve_display_entries([(Path(path).name, path) for path in staged_resource_paths])
+    garment_resource_entries = resolve_display_entries([(Path(path).name, path) for path in dropbox_overview.get("garment_resource_images", [])])
+    global_resource_entries = resolve_display_entries([(Path(path).name, path) for path in dropbox_overview.get("shared_resource_images", [])])
 
-    stage_folder_path_for_preview = (
-        build_stage_folder_path(dropbox_cfg, staged_folder_name)
-        if staged_folder_name else ""
-    )
+    stage_folder_path_for_preview = build_stage_folder_path(dropbox_cfg, staged_folder_name) if staged_folder_name else ""
+    color_preview_source = get_selected_colors_for_image_resolution(profile, selected_variants) or get_profile_color_options(profile)
     staged_variant_entries = resolve_display_entries([
         (
             color,
@@ -1096,7 +2549,7 @@ def get_cached_preview_image_data(
             if stage_folder_path_for_preview and dropbox_overview.get("main_image_map", {}).get(color, "")
             else "",
         )
-        for color in profile.get("colors", [])
+        for color in color_preview_source
     ])
     design_color_preview_entries = resolve_display_entries([
         (f"{row['color']} / {row['design']}", row.get("path", ""))
@@ -1106,6 +2559,8 @@ def get_cached_preview_image_data(
     data = {
         "staged_preview_paths": staged_preview_paths,
         "staged_preview_entries": staged_preview_entries,
+        "staged_resource_paths": staged_resource_paths,
+        "staged_resource_entries": staged_resource_entries,
         "design_color_preview_rows": design_color_preview_rows,
         "design_color_preview_entries": design_color_preview_entries,
         "color_image_map": preview_color_image_map,
@@ -1115,10 +2570,7 @@ def get_cached_preview_image_data(
         "global_resource_entries": global_resource_entries,
         "staged_variant_entries": staged_variant_entries,
     }
-    st.session_state["preview_image_cache"] = {
-        "key": cache_key,
-        "data": data,
-    }
+    st.session_state["preview_image_cache"] = {"key": cache_key, "data": data}
     return data
 
 def build_resolved_image_bundle_cache_key(
@@ -1127,6 +2579,7 @@ def build_resolved_image_bundle_cache_key(
     staged_folder_name: str,
     selected_variants: dict[str, list[str]],
     selected_parent_main_image_url: str = "",
+    use_resource_fallback_images: bool = False,
 ) -> str:
     template_key = profile.get("template_key", "")
     cache_parts = {
@@ -1138,6 +2591,7 @@ def build_resolved_image_bundle_cache_key(
         "template_cfg": dropbox_cfg.get("templates", {}).get(template_key, {}),
         "general_resource_images": dropbox_cfg.get("general_resource_images", []),
         "resource_root": dropbox_cfg.get("resource_root", ""),
+        "use_resource_fallback_images": use_resource_fallback_images,
     }
     return json.dumps(cache_parts, sort_keys=True)
 
@@ -1149,6 +2603,7 @@ def get_cached_resolved_image_bundle(
     selected_variants: dict[str, list[str]],
     dropbox_overview: dict[str, Any],
     selected_parent_main_image_url: str = "",
+    use_resource_fallback_images: bool = False,
 ) -> dict[str, Any]:
     if not staged_folder_name:
         return {
@@ -1164,6 +2619,7 @@ def get_cached_resolved_image_bundle(
         staged_folder_name,
         selected_variants,
         selected_parent_main_image_url,
+        use_resource_fallback_images,
     )
     cache = st.session_state.get("resolved_image_bundle_cache", {})
 
@@ -1178,6 +2634,7 @@ def get_cached_resolved_image_bundle(
         dropbox_overview,
         stage_folder_path,
         selected_parent_main_image_url=selected_parent_main_image_url,
+        use_resource_fallback_images=use_resource_fallback_images,
     )
 
     data = {
@@ -1200,11 +2657,13 @@ def resolve_folder_image_urls(
     dropbox_overview: dict[str, Any],
     folder_path: str,
     selected_parent_main_image_url: str = "",
+    use_resource_fallback_images: bool = False,
 ) -> tuple[str, list[str], dict[str, str], dict[str, dict[str, str]]]:
     main_image_map = dropbox_overview.get("main_image_map", {})
     design_color_image_map = dropbox_overview.get("design_color_image_map", {})
     garment_resource_images = dropbox_overview.get("garment_resource_images", [])
     shared_resource_images = dropbox_overview.get("shared_resource_images", [])
+    staged_resource_images = list_image_paths_in_dropbox_folder(f"{folder_path.rstrip('/')}/resources")
     variant_combos = build_variant_combinations(profile, selected_variants)
 
     color_image_map: dict[str, str] = {}
@@ -1266,25 +2725,26 @@ def resolve_folder_image_urls(
     if not parent_main_image_url:
         raise ValueError("No staged mapped image exists for the selected variants.")
 
-    garment_resource_urls: list[str] = []
-    for path in garment_resource_images:
+    staged_resource_urls: list[str] = []
+    for path in staged_resource_images:
         try:
             url = dropbox_preview_url(path)
         except Exception:
             continue
         if url:
-            garment_resource_urls.append(url)
+            staged_resource_urls.append(url)
 
-    shared_resource_urls: list[str] = []
-    for path in shared_resource_images:
-        try:
-            url = dropbox_preview_url(path)
-        except Exception:
-            continue
-        if url:
-            shared_resource_urls.append(url)
+    fallback_resource_urls: list[str] = []
+    if use_resource_fallback_images and not staged_resource_urls:
+        for path in list(garment_resource_images) + list(shared_resource_images):
+            try:
+                url = dropbox_preview_url(path)
+            except Exception:
+                continue
+            if url:
+                fallback_resource_urls.append(url)
 
-    other_images = list(dict.fromkeys(garment_resource_urls + shared_resource_urls))
+    other_images = list(dict.fromkeys(staged_resource_urls or fallback_resource_urls))
 
     return (
         parent_main_image_url,
@@ -1340,7 +2800,7 @@ def render_color_grid(
                 st.image(entry["direct_url"], width=image_width)
             else:
                 st.warning("Not found")
-                st.code(path, language=None)    
+                st.code(path, language=None)
 
 
 def render_active_product_context(
@@ -1351,6 +2811,8 @@ def render_active_product_context(
     preview_color_image_map: dict[str, str],
     preview_design_color_image_url_map: dict[str, dict[str, str]],
     preview_other_images: list[str],
+    image_mapping_status: str = "not_loaded",
+    image_mapping_detail: str = "",
 ) -> None:
     st.subheader("Active product context")
     col1, col2 = st.columns(2)
@@ -1359,14 +2821,22 @@ def render_active_product_context(
         st.write(f"Template: `{active_template_label or '-'}`")
         st.write(f"Parent main image choice: `{selected_parent_main_label or 'Automatic (recommended)'}`")
     with col2:
-        parent_status = "Resolved" if preview_parent_main_image_url else "Not resolved"
-        support_count = len(preview_other_images)
-        child_count = len(preview_color_image_map) + sum(
-            len(design_map) for design_map in preview_design_color_image_url_map.values()
-        )
-        st.write(f"Parent main image: `{parent_status}`")
-        st.write(f"Child image mappings: `{child_count}`")
-        st.write(f"Support images: `{support_count}`")
+        if image_mapping_status == "loaded":
+            parent_status = "Resolved" if preview_parent_main_image_url else "Loaded but unresolved"
+            support_count = len(preview_other_images)
+            child_count = len(preview_color_image_map) + sum(
+                len(design_map) for design_map in preview_design_color_image_url_map.values()
+            )
+            st.write("Image mappings: `Loaded`")
+            st.write(f"Parent main image: `{parent_status}`")
+            st.write(f"Child image mappings: `{child_count}`")
+            st.write(f"Support images: `{support_count}`")
+        elif image_mapping_status == "error":
+            st.write("Image mappings: `Missing/errors`")
+            st.caption(image_mapping_detail or "Image mappings could not be resolved.")
+        else:
+            st.write("Image mappings: `Not loaded yet`")
+            st.caption(image_mapping_detail or "Load image mappings to resolve parent, child, and support image URLs.")
 
 
 def trim_search_terms(value: str, max_bytes: int = 249) -> str:
@@ -1397,6 +2867,7 @@ def trim_search_terms(value: str, max_bytes: int = 249) -> str:
 def build_size_price_inputs(
     sizes: list[str],
     saved_prices: dict[str, float] | None = None,
+    profile: dict[str, Any] | None = None,
 ) -> dict[str, float]:
     st.markdown("**Price by size**")
     if not sizes:
@@ -1404,6 +2875,7 @@ def build_size_price_inputs(
         return {}
 
     saved_prices = saved_prices or {}
+    profile = profile or {}
 
     default_same_price = False
     if sizes:
@@ -1423,7 +2895,7 @@ def build_size_price_inputs(
     size_price_map: dict[str, float] = {}
 
     if use_same_price:
-        fallback_price = 29.99
+        fallback_price = get_default_price_for_size(profile, sizes[0], saved_prices) if sizes else 29.99
         if default_same_price and sizes:
             fallback_price = float(saved_prices.get(sizes[0], 29.99))
 
@@ -1448,7 +2920,7 @@ def build_size_price_inputs(
     for idx, size in enumerate(sizes):
         with cols[idx % cols_per_row]:
             if f"price_{size}" not in st.session_state:
-                st.session_state[f"price_{size}"] = float(saved_prices.get(size, 29.99))
+                st.session_state[f"price_{size}"] = get_default_price_for_size(profile, size, saved_prices)
 
             size_price_map[size] = st.number_input(
                 f"{size} price",
@@ -1458,6 +2930,62 @@ def build_size_price_inputs(
             )
 
     return size_price_map
+
+
+def is_child_size_label(size: str) -> bool:
+    normalized = str(size or "").strip().lower()
+    return "year" in normalized or "yrs" in normalized or normalized.startswith("child ")
+
+
+def has_mixed_adult_child_sizes(sizes: list[str]) -> bool:
+    return any(is_child_size_label(size) for size in sizes) and any(
+        not is_child_size_label(size) for size in sizes
+    )
+
+
+def get_configured_price(profile: dict[str, Any], size: str) -> float | None:
+    exact_map = profile.get("default_size_price_map", {})
+    if isinstance(exact_map, dict) and size in exact_map:
+        try:
+            return float(exact_map[size])
+        except (TypeError, ValueError):
+            return None
+
+    child_price = profile.get("child_default_price", profile.get("kids_default_price"))
+    adult_price = profile.get("adult_default_price")
+
+    try:
+        if is_child_size_label(size) and child_price is not None:
+            return float(child_price)
+        if not is_child_size_label(size) and adult_price is not None:
+            return float(adult_price)
+    except (TypeError, ValueError):
+        return None
+
+    return None
+
+
+def get_default_price_for_size(
+    profile: dict[str, Any],
+    size: str,
+    saved_prices: dict[str, float] | None = None,
+) -> float:
+    saved_prices = saved_prices or {}
+    if size in saved_prices:
+        try:
+            return float(saved_prices[size])
+        except (TypeError, ValueError):
+            pass
+
+    configured_price = get_configured_price(profile, size)
+    if configured_price is not None:
+        return configured_price
+
+    profile_sizes = list(profile.get("sizes", []) or [])
+    if has_mixed_adult_child_sizes(profile_sizes):
+        return 8.99 if is_child_size_label(size) else 12.99
+
+    return 29.99
 
 def resolve_template_path(profile: dict[str, Any]) -> Path:
     family_folder = profile.get("_family_folder")
@@ -1470,6 +2998,29 @@ def resolve_template_path(profile: dict[str, Any]) -> Path:
         return (Path(profile_folder) / template_file).resolve()
     return (BASE_DIR / "templates" / template_file).resolve()
 
+
+def sku_contains_code(value: str, code: str) -> bool:
+    value_parts = [
+        part.lower()
+        for part in sanitize_sku(str(value or "")).split("-")
+        if part
+    ]
+    code = sanitize_sku(str(code or "")).lower()
+    return bool(code and code in value_parts)
+
+
+def build_output_workbook_name(profile: dict[str, Any], parent_sku: str) -> str:
+    parent_sku = sanitize_sku(str(parent_sku or "listing"))
+    profile_slug = sanitize_sku(str(profile.get("_slug", "") or profile.get("template_key", "")))
+    template_key = sanitize_sku(str(profile.get("template_key", "") or ""))
+
+    if profile_slug and not sku_contains_code(parent_sku, profile_slug):
+        return f"{parent_sku}_{profile_slug}_amazon_listing.xlsm"
+    if template_key and not sku_contains_code(parent_sku, template_key):
+        return f"{parent_sku}_{template_key}_amazon_listing.xlsm"
+    return f"{parent_sku}_amazon_listing.xlsm"
+
+
 def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> None:
     clear_row_values(ws, PARENT_ROW)
     other_images = padded_list(data.get("other_images", []), 14)
@@ -1478,6 +3029,9 @@ def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> No
     product_category = data.get("product_category", "apparel")
     is_apparel = product_category == "apparel"
     has_size = "Size" in variation_theme
+    parent_starting_price = ""
+    if data.get("write_parent_starting_price", False):
+        parent_starting_price = get_lowest_variant_price(data.get("size_price_map", {}))
 
     values = {
         "item_sku": data["parent_sku"],
@@ -1485,6 +3039,9 @@ def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> No
         "item_name": data["title"],
         "brand_name": data["brand_name"],
         "manufacturer": data["manufacturer"],
+        "model_name": get_product_model_name({}, data),
+        "model": get_garment_model_number({}, data),
+        "part_number": data["parent_sku"],
         "product_description": data["product_description"],
         "generic_keywords": data["generic_keywords"],
         "bullet_point1": data["bullet_points"][0],
@@ -1509,16 +3066,24 @@ def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> No
 
         "style_name": data["style_name"],
         "care_instructions": data["care_instructions"],
+        "collar_style": data.get("collar_style", "Crew Neck"),
+        "neck_style": data.get("neck_style", data.get("collar_style", "Crew Neck")),
         "theme": data["theme"],
 
         "color_name": "",
         "size_name": "",
 
-        "apparel_size_system": "UK" if has_size and is_apparel else "",
-        "apparel_size_class": "Alpha" if has_size and is_apparel else "",
-        "apparel_size": "One Size",
-        "apparel_body_type": "Regular" if is_apparel else "",
-        "apparel_height_type": "Regular" if is_apparel else "",
+        "apparel_size_system": "",
+        "apparel_size_class": "",
+        "apparel_size": "",
+        "apparel_body_type": "",
+        "apparel_height_type": "",
+        "shirt_size_system": "",
+        "shirt_size_class": "",
+        "shirt_size": "",
+        "shirt_size_to": "",
+        "shirt_body_type": "",
+        "shirt_height_type": "",
 
         "item_type_name": data["item_type_name"],
         "country_of_origin": data.get("country_of_origin", "United Kingdom"),
@@ -1527,8 +3092,8 @@ def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> No
         "fulfillment_availability#1.fulfillment_channel_code": "",
         "fulfillment_availability#1.quantity": "",
         "fulfillment_availability#1.lead_time_to_ship_max_days": "",
-        "purchasable_offer[marketplace_id=A1F83G8C2ARO7P]#1.our_price#1.schedule#1.value_with_tax": "",
-        "list_price_with_tax": "",
+        "purchasable_offer[marketplace_id=A1F83G8C2ARO7P]#1.our_price#1.schedule#1.value_with_tax": parent_starting_price,
+        "list_price_with_tax": parent_starting_price,
 
         "main_image_url": data.get("parent_main_image_url", ""),
 
@@ -1556,6 +3121,28 @@ def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> No
 
     extra_parent_fields = data.get("extra_parent_fields", {})
     values = prepare_row_values(values, field_aliases, extra_parent_fields)
+    values["item_sku"] = data["parent_sku"]
+    values["parent_sku"] = ""
+    values["part_number"] = data["parent_sku"]
+    values["model_name"] = get_product_model_name({}, data)
+    values["model"] = get_garment_model_number({}, data)
+    values["parent_child"] = "parent"
+    values["relationship_type"] = ""
+    values["variation_theme"] = variation_theme
+    for parent_size_field in [
+        "apparel_size_system",
+        "apparel_size_class",
+        "apparel_size",
+        "apparel_body_type",
+        "apparel_height_type",
+        "shirt_size_system",
+        "shirt_size_class",
+        "shirt_size",
+        "shirt_size_to",
+        "shirt_body_type",
+        "shirt_height_type",
+    ]:
+        values[parent_size_field] = ""
 
     if "dangerous_goods_regulation" in header_map:
         values["dangerous_goods_regulation"] = "Not Applicable"
@@ -1570,6 +3157,11 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
     template_row = FIRST_CHILD_ROW
     variants_written = 0
     other_images = padded_list(data.get("other_images", []), 14)
+    sku_profile = apply_sku_context_to_profile(
+        profile,
+        data.get("sku_decoration_code", ""),
+        data.get("sku_listing_code", ""),
+    )
 
     variation_theme = data.get("variation_theme", "")
     product_category = data.get("product_category", "apparel")
@@ -1577,6 +3169,7 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
 
     selected_variants = data.get("selected_variants", {})
     variant_combos = build_variant_combinations(profile, selected_variants)
+    variant_combos = sort_variant_combinations_by_price(variant_combos, data.get("size_price_map", {}))
 
     for variant_values in variant_combos:
         if row_idx != template_row and st.session_state.get("copy_row_styles", True):
@@ -1584,11 +3177,14 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
         clear_row_values(ws, row_idx)
 
         variant_field_values = build_variant_field_values(profile, variant_values)
+        sku_details = build_child_sku_details(sku_profile, data["parent_sku"], variant_values)
+        item_sku = sku_details["amazon_seller_sku"]
 
         size_value = variant_values.get("size", "")
         normalized_size = normalize_size(size_value) if size_value else ""
         design_value = variant_values.get("design", "")
         color_value = variant_values.get("color", "")
+        child_item_name = build_child_item_name(data["title"], variant_values)
 
         price_key = size_value if size_value else "default"
         price = data["size_price_map"].get(price_key, 0)
@@ -1597,14 +3193,17 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
             variant_values=variant_values,
             color_image_map=data.get("color_image_map", {}),
             design_color_image_url_map=data.get("design_color_image_url_map", {}),
-        )        
+        )
 
         values = {
-            "item_sku": build_child_sku(profile, data["parent_sku"], variant_values),
+            "item_sku": item_sku,
             "parent_sku": data["parent_sku"],
-            "item_name": data["title"],
+            "item_name": child_item_name,
             "brand_name": data["brand_name"],
             "manufacturer": data["manufacturer"],
+            "model_name": get_product_model_name(profile, data),
+            "model": get_child_model_number(profile, data, sku_details),
+            "part_number": item_sku,
             "product_description": data["product_description"],
             "generic_keywords": data["generic_keywords"],
 
@@ -1625,10 +3224,10 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
             "size_name": normalized_size,
             "apparel_size": normalized_size if is_apparel else "",
 
-            "department_name": data["department_name"],
+            "department_name": get_row_department_name(profile, data, normalized_size),
             "feed_product_type": data["feed_product_type"],
             "target_gender": data["target_gender"],
-            "age_range_description": data["age_range_description"],
+            "age_range_description": get_row_age_range_description(profile, data, normalized_size),
 
             "outer_material_type": data["material_type"],
             "material_type1": data["material_type"],
@@ -1636,19 +3235,21 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
 
             "style_name": design_value or data["style_name"],
             "care_instructions": data["care_instructions"],
+            "collar_style": data.get("collar_style", "Crew Neck"),
+            "neck_style": data.get("neck_style", data.get("collar_style", "Crew Neck")),
             "theme": data["theme"],
 
             "apparel_size_system": "UK" if normalized_size and is_apparel else "",
             "apparel_size_class": "Alpha" if normalized_size and is_apparel else "",
             "apparel_body_type": "Regular" if is_apparel else "",
-            "apparel_height_type": "Regular" if is_apparel else "",
+            "apparel_height_type": "",
 
             "item_type_name": data["item_type_name"],
             "country_of_origin": data.get("country_of_origin", "United Kingdom"),
 
             "fulfillment_availability#1.fulfillment_channel_code": "DEFAULT",
             "fulfillment_availability#1.quantity": data["quantity"],
-            "fulfillment_availability#1.lead_time_to_ship_max_days": 5,
+            "fulfillment_availability#1.lead_time_to_ship_max_days": DEFAULT_HANDLING_TIME_DAYS,
             "purchasable_offer[marketplace_id=A1F83G8C2ARO7P]#1.our_price#1.schedule#1.value_with_tax": price,
             "list_price_with_tax": price,
 
@@ -1679,6 +3280,18 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
         field_aliases = data.get("field_aliases", {})
         extra_child_fields = data.get("extra_child_fields", {})
         values = prepare_row_values(values, field_aliases, extra_child_fields)
+        values = apply_apparel_size_fields(values, normalized_size, is_apparel=is_apparel)
+        values["item_sku"] = item_sku
+        values["parent_sku"] = data["parent_sku"]
+        values["item_name"] = child_item_name
+        values["part_number"] = item_sku
+        values["model_name"] = get_product_model_name(profile, data)
+        values["model"] = get_child_model_number(profile, data, sku_details)
+        values["department_name"] = get_row_department_name(profile, data, normalized_size)
+        values["age_range_description"] = get_row_age_range_description(profile, data, normalized_size)
+        values["parent_child"] = "child"
+        values["relationship_type"] = "variation"
+        values["variation_theme"] = variation_theme
 
         if st.session_state.get("show_header_debug", False) and row_idx == FIRST_CHILD_ROW:
             st.write("First child size values snapshot")
@@ -1688,7 +3301,7 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
                 "apparel_body_type": values.get("apparel_body_type"),
                 "apparel_height_type": values.get("apparel_height_type"),
                 "field_aliases": field_aliases,
-            })        
+            })
 
         if "dangerous_goods_regulation" in header_map:
             values["dangerous_goods_regulation"] = "Not Applicable"
@@ -1718,8 +3331,43 @@ def get_extra_parent_fields(profile: dict[str, Any]) -> dict[str, Any]:
 def get_extra_child_fields(profile: dict[str, Any]) -> dict[str, Any]:
     return profile.get("extra_child_fields", profile.get("extra_fields", {}))
 
+DEFAULT_FIELD_ALIASES = {
+    "apparel_size_system": [
+        "shirt_size_system",
+        "tops_size_system",
+        "outerwear_size_system",
+    ],
+    "apparel_size_class": [
+        "shirt_size_class",
+        "tops_size_class",
+        "outerwear_size_class",
+    ],
+    "apparel_size": [
+        "shirt_size",
+        "tops_size_value",
+        "outerwear_size_value",
+    ],
+    "apparel_body_type": [
+        "shirt_body_type",
+        "tops_body_type",
+        "outerwear_body_type",
+    ],
+    "apparel_height_type": [
+        "shirt_height_type",
+        "tops_height_type",
+        "outerwear_height_type",
+    ],
+}
+
+
 def get_field_aliases(profile: dict[str, Any]) -> dict[str, list[str]]:
-    return profile.get("field_aliases", {})
+    aliases = {field: list(values) for field, values in DEFAULT_FIELD_ALIASES.items()}
+    for source_field, configured_aliases in profile.get("field_aliases", {}).items():
+        merged_aliases = aliases.setdefault(source_field, [])
+        for alias in configured_aliases:
+            if alias not in merged_aliases:
+                merged_aliases.append(alias)
+    return aliases
 
 def debug_find_headers(header_map: dict[str, int], patterns: list[str]) -> None:
     st.write("Header matches:")
@@ -1742,9 +3390,9 @@ def prepare_row_values(
     field_aliases: dict[str, list[str]],
     extra_fields: dict[str, Any],
 ) -> dict[str, Any]:
-    values = expand_field_aliases(values, field_aliases)
-    values.update(extra_fields)
-    return values
+    prepared = dict(values)
+    prepared.update(extra_fields)
+    return expand_field_aliases(prepared, field_aliases)
 
 
 def validate_profile_schema(profile: dict[str, Any]) -> list[str]:
@@ -1825,13 +3473,17 @@ def validate_template_file(profile: dict[str, Any]) -> list[str]:
 
     return errors
 
-    
+
 def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Path, dict[str, float]]:
 
     template_path = resolve_template_path(profile)
 
     if not template_path.exists():
         raise FileNotFoundError(f"Template not found: {template_path}")
+
+    stock_ready_report = validate_stock_ready_payload(profile, payload)
+    if stock_ready_report.get("errors"):
+        raise ValueError("Stock-ready SKU validation failed: " + "; ".join(stock_ready_report["errors"]))
 
     t0 = time.perf_counter()
     wb = load_workbook(template_path, keep_vba=True)
@@ -1884,7 +3536,7 @@ def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Pa
     t3 = time.perf_counter()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_name = f"{payload['parent_sku']}_{profile['_slug']}_amazon_listing.xlsm"
+    output_name = build_output_workbook_name(profile, payload["parent_sku"])
     output_path = OUTPUT_DIR / output_name
     wb.save(output_path)
     wb.close()
@@ -1982,6 +3634,51 @@ def validate_parent_child_structure(payload: dict[str, Any]) -> list[str]:
 
     return errors
 
+
+def validate_stock_ready_payload(profile: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    profile = apply_sku_context_to_profile(
+        profile,
+        payload.get("sku_decoration_code", ""),
+        payload.get("sku_listing_code", ""),
+    )
+    selected_variants = dict(payload.get("selected_variants", {}))
+    parent_sku = str(payload.get("parent_sku", "") or "").strip()
+    variant_combos = build_variant_combinations(profile, selected_variants)
+    return validate_stock_ready_skus(profile, parent_sku or "PARENT", variant_combos)
+
+
+def validate_variant_image_count(
+    profile: dict[str, Any],
+    payload: dict[str, Any],
+    expected_total: int = 6,
+) -> list[str]:
+    selected_variants = dict(payload.get("selected_variants", {}))
+    variant_combos = build_variant_combinations(profile, selected_variants)
+    color_image_map = dict(payload.get("color_image_map", {}) or {})
+    design_color_image_url_map = dict(payload.get("design_color_image_url_map", {}) or {})
+    secondary_images = [
+        image_url
+        for image_url in list(payload.get("other_images", []) or [])
+        if str(image_url or "").strip()
+    ]
+
+    errors: list[str] = []
+    for variant_values in variant_combos:
+        main_image_url = resolve_child_variant_image_url(
+            variant_values=variant_values,
+            color_image_map=color_image_map,
+            design_color_image_url_map=design_color_image_url_map,
+        )
+        total_images = (1 if main_image_url else 0) + len(secondary_images)
+        if total_images != expected_total:
+            label = " / ".join([str(v) for v in variant_values.values() if v]) or "Unnamed variant"
+            errors.append(
+                f"Variant '{label}' has {total_images} image(s); exactly {expected_total} are required before review."
+            )
+
+    return errors
+
+
 def build_preflight_report(
     profile: dict[str, Any],
     dropbox_cfg: dict[str, Any],
@@ -1998,8 +3695,14 @@ def build_preflight_report(
     resolved_other_images: list[str] | None = None,
     resolved_color_image_map: dict[str, str] | None = None,
     resolved_design_color_image_url_map: dict[str, dict[str, str]] | None = None,
+    sku_decoration_code: str = "",
+    sku_listing_code: str = "",
+    allow_image_resolution_fallback: bool = True,
+    use_resource_fallback_images: bool = False,
+    has_staged_resource_images: bool = False,
 ) -> dict[str, Any]:
-    preview_parent_sku = str(get_default(profile, "parent_sku", "")).strip()
+    preview_parent_sku = build_parent_sku_from_context(profile, sku_decoration_code, sku_listing_code)
+    sku_profile = apply_sku_context_to_profile(profile, sku_decoration_code, sku_listing_code)
     preview_selected_colors = get_selected_colors_for_image_resolution(profile, selected_variants)
     preview_selected_sizes = selected_variants.get("size", [])
     profile_schema_errors = validate_profile_schema(profile)
@@ -2012,6 +3715,9 @@ def build_preflight_report(
         "manufacturer": profile.get("manufacturer", ""),
         "recommended_browse_nodes": profile.get("recommended_browse_nodes", ""),
         "size_price_map": size_price_map,
+        "sku_decoration_code": sku_decoration_code,
+        "sku_listing_code": sku_listing_code,
+        "write_parent_starting_price": profile.get("write_parent_starting_price", False),
         "quantity": quantity,
         "department_name": profile.get("department_name", ""),
         "target_gender": profile.get("target_gender", ""),
@@ -2044,11 +3750,20 @@ def build_preflight_report(
     if resolved_parent_main_image_url:
         preview_payload["parent_main_image_url"] = resolved_parent_main_image_url
 
+    needs_main_or_variant_images = (
+        not preview_payload.get("parent_main_image_url")
+        or (
+            not preview_payload.get("color_image_map")
+            and not preview_payload.get("design_color_image_url_map")
+        )
+    )
+    needs_secondary_images = (
+        not preview_payload.get("other_images")
+        and (has_staged_resource_images or use_resource_fallback_images)
+    )
     if (
-        not resolved_parent_main_image_url
-        and not resolved_other_images
-        and not resolved_color_image_map
-        and not resolved_design_color_image_url_map
+        allow_image_resolution_fallback
+        and (needs_main_or_variant_images or needs_secondary_images)
         and staged_folder_name
         and preview_selected_colors
     ):
@@ -2065,6 +3780,7 @@ def build_preflight_report(
                 preview_selected_colors,
                 dropbox_overview,
                 stage_folder_path,
+                use_resource_fallback_images=use_resource_fallback_images,
             )
         except Exception:
             pass
@@ -2085,7 +3801,7 @@ def build_preflight_report(
         else:
             preview_payload["dynamic_profile_fields"] = {}
     except Exception:
-        preview_payload["dynamic_profile_fields"] = {}  
+        preview_payload["dynamic_profile_fields"] = {}
 
     preview_payload_errors = validate_payload(preview_payload)
     preview_variant_errors = validate_variants(
@@ -2096,6 +3812,8 @@ def build_preflight_report(
     preview_structure_errors = validate_parent_child_structure(preview_payload)
 
     template_errors = validate_template_file(profile)
+    stock_ready_report = validate_stock_ready_payload(sku_profile, preview_payload)
+    variant_image_count_errors = validate_variant_image_count(sku_profile, preview_payload, expected_total=6)
 
     all_preview_errors = [
         *profile_schema_errors,
@@ -2103,14 +3821,31 @@ def build_preflight_report(
         *preview_variant_errors,
         *preview_structure_errors,
         *template_errors,
+        *stock_ready_report.get("errors", []),
+        *variant_image_count_errors,
     ]
 
-    quality_report = validate_listing_quality(profile, preview_payload)
+    sku_profile = apply_sku_context_to_profile(
+        profile,
+        preview_payload.get("sku_decoration_code", ""),
+        preview_payload.get("sku_listing_code", ""),
+    )
+    quality_report = validate_listing_quality(sku_profile, preview_payload)
+    stock_ready_warnings = list(stock_ready_report.get("warnings", []))
+    if stock_ready_warnings:
+        quality_report["warnings"] = list(quality_report.get("warnings", [])) + stock_ready_warnings
+    quality_report["stock_ready"] = {
+        "missing_supplier_stock_key_count": stock_ready_report.get("missing_supplier_stock_key_count", 0),
+        "duplicate_skus": stock_ready_report.get("duplicate_skus", []),
+        "strict_stock_ready": is_strict_stock_ready(profile),
+        "stock_reference_key": profile.get("stock_reference_key", ""),
+    }
 
     return {
         "preview_payload": preview_payload,
         "all_preview_errors": all_preview_errors,
         "quality_report": quality_report,
+        "stock_ready_report": stock_ready_report,
     }
 
 
@@ -2122,18 +3857,38 @@ def prepare_generation_payload(
     generic_keywords: str,
     selected_variants: dict[str, list[str]],
     size_price_map: dict[str, float],
+    sku_decoration_code: str,
+    sku_listing_code: str,
+    manual_sku_listing_code: str,
+    generated_sku_listing_code: str,
     quantity: int,
     staged_folder_name: str,
 ) -> dict[str, Any]:
-    parent_sku = str(get_default(profile, "parent_sku", "")).strip()
+    base_parent_sku = str(get_default(profile, "parent_sku", "")).strip()
+    manual_sku_listing_code = sanitize_sku(str(manual_sku_listing_code or "")).upper()
+    generated_sku_listing_code = sanitize_sku(str(generated_sku_listing_code or "")).upper()
+    sku_listing_code = sanitize_sku(str(sku_listing_code or manual_sku_listing_code or generated_sku_listing_code or "")).upper()
+    if not sku_listing_code:
+        generated_sku_listing_code = f"D{generate_unique_sku(5)}"
+        sku_listing_code = generated_sku_listing_code
+    elif not manual_sku_listing_code and not generated_sku_listing_code:
+        generated_sku_listing_code = sku_listing_code
+    parent_sku = build_parent_sku_from_context(profile, sku_decoration_code, sku_listing_code)
 
     payload = {
         "parent_sku": parent_sku,
+        "base_parent_sku": base_parent_sku,
+        "model_name": profile.get("model_name", parent_sku),
         "title": title.strip(),
         "brand_name": GLOBAL_BRAND_NAME,
         "manufacturer": profile.get("manufacturer", ""),
         "recommended_browse_nodes": profile.get("recommended_browse_nodes", ""),
         "size_price_map": size_price_map,
+        "sku_decoration_code": sku_decoration_code,
+        "manual_sku_listing_code": manual_sku_listing_code,
+        "generated_sku_listing_code": generated_sku_listing_code,
+        "sku_listing_code": sku_listing_code,
+        "write_parent_starting_price": profile.get("write_parent_starting_price", False),
         "use_same_price_for_all_sizes": st.session_state.get("use_same_price_for_all_sizes", False),
         "quantity": quantity,
         "department_name": profile.get("department_name", ""),
@@ -2148,6 +3903,8 @@ def prepare_generation_payload(
         "material_type": profile.get("material_type", ""),
         "style_name": profile.get("style_name", ""),
         "care_instructions": profile.get("care_instructions", ""),
+        "collar_style": profile.get("collar_style", "Crew Neck"),
+        "neck_style": profile.get("neck_style", profile.get("collar_style", "Crew Neck")),
         "theme": profile.get("theme", ""),
         "field_aliases": get_field_aliases(profile),
         "extra_parent_fields": get_extra_parent_fields(profile),
@@ -2185,18 +3942,41 @@ def prepare_generation_payload(
     if not parent_sku:
         errors.append("This template is missing parent_sku in its config.")
 
+    if not sku_decoration_code.strip():
+        errors.append("SKU decoration code is required.")
+
+    if not sku_listing_code.strip():
+        errors.append("SKU listing/design code is required.")
+
     errors.extend(validate_variant_dimensions(selected_variants))
     errors.extend(validate_payload(payload))
     errors.extend(validate_variants(selected_variants, size_price_map, quantity))
     errors.extend(validate_parent_child_structure(payload))
     errors.extend(validate_template_file(profile))
 
-    quality_report = validate_listing_quality(profile, payload)
+    sku_profile = apply_sku_context_to_profile(
+        profile,
+        payload.get("sku_decoration_code", ""),
+        payload.get("sku_listing_code", ""),
+    )
+    quality_report = validate_listing_quality(sku_profile, payload)
+    stock_ready_report = validate_stock_ready_payload(profile, payload)
+    errors.extend(stock_ready_report.get("errors", []))
+    stock_ready_warnings = list(stock_ready_report.get("warnings", []))
+    if stock_ready_warnings:
+        quality_report["warnings"] = list(quality_report.get("warnings", [])) + stock_ready_warnings
+    quality_report["stock_ready"] = {
+        "missing_supplier_stock_key_count": stock_ready_report.get("missing_supplier_stock_key_count", 0),
+        "duplicate_skus": stock_ready_report.get("duplicate_skus", []),
+        "strict_stock_ready": is_strict_stock_ready(profile),
+        "stock_reference_key": profile.get("stock_reference_key", ""),
+    }
 
     return {
         "payload": payload,
         "errors": errors,
         "quality_report": quality_report,
+        "stock_ready_report": stock_ready_report,
     }
 
 
@@ -2431,10 +4211,11 @@ def scan_staged_folder_readiness(
         })
         return result
 
+    staged_resource_images = build_stage_resource_image_paths(dropbox_cfg, staged_folder_name)
     garment_support_images = dropbox_overview.get("garment_resource_images", [])
     garment_warning = dropbox_overview.get("garment_resource_warning", "")
 
-    if garment_support_images:
+    if staged_resource_images or garment_support_images:
         result.update({
             "staged_image_readiness": "Ready",
             "garment_support_readiness": "Ready",
@@ -2494,12 +4275,268 @@ def build_price_summary(size_price_map: dict[str, float]) -> str:
     return f"{len(prices)} variant(s) from {min(prices):.2f} to {max(prices):.2f}"
 
 
+def safe_widget_key_part(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "")).strip("_") or "value"
+
+
+def get_review_edit_state_keys(review_key_prefix: str) -> dict[str, str]:
+    return {
+        "context": f"{review_key_prefix}_edit_context",
+        "sku_decoration_choice": f"{review_key_prefix}_sku_decoration_choice",
+        "custom_sku_decoration_code": f"{review_key_prefix}_custom_sku_decoration_code",
+        "manual_sku_listing_code": f"{review_key_prefix}_manual_sku_listing_code",
+        "generated_sku_listing_code": f"{review_key_prefix}_generated_sku_listing_code",
+    }
+
+
+def initialize_review_edit_state(
+    review_key_prefix: str,
+    listing_memory: dict[str, Any],
+    profile: dict[str, Any],
+) -> None:
+    keys = get_review_edit_state_keys(review_key_prefix)
+    context = json.dumps(
+        {
+            "template": profile.get("template_key", profile.get("_slug", "")),
+            "sku_decoration_code": listing_memory.get("sku_decoration_code", ""),
+            "manual_sku_listing_code": listing_memory.get("manual_sku_listing_code", ""),
+            "generated_sku_listing_code": listing_memory.get("generated_sku_listing_code", ""),
+            "sku_listing_code": listing_memory.get("sku_listing_code", ""),
+            "size_price_map": listing_memory.get("size_price_map", {}),
+        },
+        sort_keys=True,
+    )
+    if st.session_state.get(keys["context"]) == context:
+        return
+
+    sku_decoration_code = get_default_sku_decoration_code(profile, listing_memory)
+    st.session_state[keys["sku_decoration_choice"]] = (
+        sku_decoration_code if sku_decoration_code in SKU_DECORATION_OPTIONS else "Custom"
+    )
+    st.session_state[keys["custom_sku_decoration_code"]] = (
+        "" if sku_decoration_code in SKU_DECORATION_OPTIONS else sku_decoration_code
+    )
+    st.session_state[keys["manual_sku_listing_code"]] = str(listing_memory.get("manual_sku_listing_code", "") or "")
+    st.session_state[keys["generated_sku_listing_code"]] = (
+        get_saved_generated_sku_listing_code(listing_memory)
+        or f"D{generate_unique_sku(5)}"
+    )
+
+    for size, price in dict(listing_memory.get("size_price_map", {})).items():
+        price_key = f"{review_key_prefix}_price_{safe_widget_key_part(size)}"
+        st.session_state[price_key] = float(price)
+
+    st.session_state[keys["context"]] = context
+
+
+def get_review_sku_and_price_edits(
+    review_key_prefix: str,
+    listing_memory: dict[str, Any],
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    keys = get_review_edit_state_keys(review_key_prefix)
+    sku_decoration_choice = st.session_state.get(keys["sku_decoration_choice"], "")
+    if sku_decoration_choice == "Custom":
+        sku_decoration_code = sanitize_sku(str(st.session_state.get(keys["custom_sku_decoration_code"], ""))).upper()
+    else:
+        sku_decoration_code = sanitize_sku(str(sku_decoration_choice)).upper()
+
+    generated_sku_listing_code = sanitize_sku(str(st.session_state.get(keys["generated_sku_listing_code"], ""))).upper()
+    if not generated_sku_listing_code:
+        generated_sku_listing_code = f"D{generate_unique_sku(5)}"
+        st.session_state[keys["generated_sku_listing_code"]] = generated_sku_listing_code
+
+    manual_sku_listing_code = sanitize_sku(str(st.session_state.get(keys["manual_sku_listing_code"], ""))).upper()
+    sku_listing_code = manual_sku_listing_code or generated_sku_listing_code
+    parent_sku = build_parent_sku_from_context(profile, sku_decoration_code, sku_listing_code)
+
+    selected_variants = dict(listing_memory.get("selected_variants", {}))
+    price_sizes = list(selected_variants.get("size", [])) or list(dict(listing_memory.get("size_price_map", {})).keys()) or ["default"]
+    size_price_map: dict[str, float] = {}
+    for size in price_sizes:
+        price_key = f"{review_key_prefix}_price_{safe_widget_key_part(size)}"
+        fallback_price = float(dict(listing_memory.get("size_price_map", {})).get(size, 0) or 0)
+        size_price_map[str(size)] = float(st.session_state.get(price_key, fallback_price))
+
+    return {
+        "sku_decoration_code": sku_decoration_code,
+        "manual_sku_listing_code": manual_sku_listing_code,
+        "generated_sku_listing_code": generated_sku_listing_code,
+        "sku_listing_code": sku_listing_code,
+        "parent_sku": parent_sku,
+        "size_price_map": size_price_map,
+    }
+
+
+def apply_review_sku_and_price_edits(
+    payload: dict[str, Any],
+    edits: dict[str, Any],
+) -> dict[str, Any]:
+    payload = dict(payload)
+    for field_name in [
+        "sku_decoration_code",
+        "manual_sku_listing_code",
+        "generated_sku_listing_code",
+        "sku_listing_code",
+        "parent_sku",
+        "size_price_map",
+    ]:
+        payload[field_name] = edits.get(field_name, payload.get(field_name, ""))
+    return payload
+
+
+def render_review_sku_price_editor(
+    review_key_prefix: str,
+    profile: dict[str, Any],
+    listing_memory: dict[str, Any],
+) -> dict[str, Any]:
+    initialize_review_edit_state(review_key_prefix, listing_memory, profile)
+    keys = get_review_edit_state_keys(review_key_prefix)
+
+    sku_col1, sku_col2 = st.columns(2)
+    with sku_col1:
+        sku_decoration_choice = st.selectbox(
+            "Decoration code",
+            SKU_DECORATION_OPTIONS,
+            key=keys["sku_decoration_choice"],
+        )
+        if sku_decoration_choice == "Custom":
+            st.text_input(
+                "Custom decoration code",
+                key=keys["custom_sku_decoration_code"],
+            )
+    with sku_col2:
+        generated_code = str(st.session_state.get(keys["generated_sku_listing_code"], ""))
+        st.text_input(
+            "Listing/design code (optional)",
+            key=keys["manual_sku_listing_code"],
+            placeholder=generated_code,
+            help="Leave blank to use the generated unique design identifier.",
+        )
+        st.caption(f"Generated code: `{generated_code or '-'}`")
+
+    edits = get_review_sku_and_price_edits(review_key_prefix, listing_memory, profile)
+    st.caption(f"Parent SKU: `{edits['parent_sku']}`")
+
+    selected_variants = dict(listing_memory.get("selected_variants", {}))
+    price_sizes = list(selected_variants.get("size", [])) or list(edits["size_price_map"].keys()) or ["default"]
+    st.markdown("**Price by size**")
+    price_cols = st.columns(min(4, max(1, len(price_sizes))))
+    for idx, size in enumerate(price_sizes):
+        price_key = f"{review_key_prefix}_price_{safe_widget_key_part(size)}"
+        if price_key not in st.session_state:
+            st.session_state[price_key] = float(edits["size_price_map"].get(str(size), 0) or 0)
+        with price_cols[idx % len(price_cols)]:
+            st.number_input(
+                str(size),
+                min_value=0.0,
+                step=0.5,
+                format="%.2f",
+                key=price_key,
+            )
+
+    edits = get_review_sku_and_price_edits(review_key_prefix, listing_memory, profile)
+    render_variant_combinations_preview(
+        profile=profile,
+        parent_sku=edits["parent_sku"],
+        selected_variants=selected_variants,
+        base_title=str(listing_memory.get("title", "")),
+        sku_decoration_code=edits["sku_decoration_code"],
+        sku_listing_code=edits["sku_listing_code"],
+    )
+    return edits
+
+
+def append_workflow_event(
+    payload: dict[str, Any],
+    action: str,
+    actor: str = "",
+    from_state: str = "",
+    to_state: str = "",
+    folder_path: str = "",
+    details: dict[str, Any] | None = None,
+) -> None:
+    events = list(payload.get("workflow_events", []))
+
+    event = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "action": action,
+        "actor": str(actor or ""),
+        "from_state": str(from_state or ""),
+        "to_state": str(to_state or ""),
+        "folder_path": str(folder_path or ""),
+    }
+
+    if details:
+        event["details"] = dict(details)
+
+    events.append(event)
+    payload["workflow_events"] = events[-100:]
+
+
+def build_review_snapshot(
+    profile: dict[str, Any],
+    payload: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+    folder_path: str,
+    quality_report: dict[str, Any] | None = None,
+    preview_errors: list[str] | None = None,
+) -> dict[str, Any]:
+    selected_variants = dict(payload.get("selected_variants", {}))
+    size_price_map = dict(payload.get("size_price_map", {}))
+    quality_report = dict(quality_report or {})
+    preview_errors = list(preview_errors or [])
+
+    try:
+        dropbox_overview = get_cached_dropbox_overview(profile, dropbox_cfg)
+    except Exception:
+        dropbox_overview = {}
+
+    try:
+        variant_combos = build_variant_combinations(profile, selected_variants)
+    except Exception:
+        variant_combos = []
+
+    blockers = list(quality_report.get("blockers", []))
+    warnings = list(quality_report.get("warnings", []))
+
+    return {
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "listing_folder_path": str(folder_path or ""),
+        "template": profile.get("label", profile.get("_slug", "")) if profile else "",
+        "template_key": profile.get("template_key", "") if profile else "",
+        "resource_root": str(dropbox_overview.get("resource_root", "") or ""),
+        "garment_resource_root": str(dropbox_overview.get("garment_resource_root", "") or ""),
+        "variants_summary": build_variants_summary(selected_variants),
+        "price_summary": build_price_summary(size_price_map),
+        "quantity": int(payload.get("quantity", 0) or 0),
+        "image_summary": {
+            "selected_color_count": len(get_selected_colors_for_image_resolution(profile, selected_variants)) if profile else 0,
+            "selected_size_count": len(selected_variants.get("size", [])),
+            "expected_child_variants": len(variant_combos),
+            "support_images_configured": len(dropbox_overview.get("garment_resource_images", [])) + len(dropbox_overview.get("shared_resource_images", [])),
+            "preview_error_count": len(preview_errors),
+        },
+        "quality_summary": {
+            "score": quality_report.get("score", 0),
+            "blocker_count": len(blockers),
+            "warning_count": len(warnings),
+        },
+        "prepared_by": {
+            "assets_prepared_by": str(payload.get("assets_prepared_by", "") or ""),
+            "content_prepared_by": str(payload.get("content_prepared_by", "") or ""),
+        },
+    }
+
+
 def build_ready_review_data(
     profile: dict[str, Any] | None,
     listing_memory: dict[str, Any],
     ready_folder_name: str,
     dropbox_cfg: dict[str, Any],
     source_folder_path: str | None = None,
+    include_images: bool = False,
+    include_quality: bool = False,
 ) -> dict[str, Any]:
     review_data = {
         "folder_name": ready_folder_name,
@@ -2519,8 +4556,12 @@ def build_ready_review_data(
         "parent_main_image_url": "",
         "support_images": [],
         "child_image_rows": [],
-        "quality_report": {"blockers": [], "warnings": []},
+        "quality_report": {"blockers": [], "warnings": [], "score": 0, "breakdown": {}},
         "errors": [],
+        "image_review_loaded": include_images or include_quality,
+        "quality_check_loaded": include_quality,
+        "review_snapshot": dict(listing_memory.get("review_snapshot", {})) if isinstance(listing_memory.get("review_snapshot"), dict) else {},
+        "workflow_events": list(listing_memory.get("workflow_events", [])) if isinstance(listing_memory.get("workflow_events"), list) else [],
     }
 
     if not profile:
@@ -2544,12 +4585,19 @@ def build_ready_review_data(
         generic_keywords=str(listing_memory.get("generic_keywords", "")),
         selected_variants=selected_variants,
         size_price_map=size_price_map,
+        sku_decoration_code=get_default_sku_decoration_code(profile, listing_memory),
+        sku_listing_code=str(listing_memory.get("sku_listing_code", "") or get_saved_generated_sku_listing_code(listing_memory)),
+        manual_sku_listing_code=str(listing_memory.get("manual_sku_listing_code", "") or ""),
+        generated_sku_listing_code=get_saved_generated_sku_listing_code(listing_memory),
         quantity=review_data["quantity"],
         staged_folder_name=ready_folder_name,
     )
 
     review_data["errors"].extend(generation_prep["errors"])
     payload = dict(generation_prep["payload"])
+
+    if not (include_images or include_quality):
+        return review_data
 
     dropbox_overview = get_cached_dropbox_overview(profile, dropbox_cfg)
     ready_folder_path = source_folder_path or build_ready_folder_path(dropbox_cfg, ready_folder_name)
@@ -2571,7 +4619,6 @@ def build_ready_review_data(
     except Exception as exc:
         review_data["errors"].append(str(exc))
 
-    review_data["quality_report"] = validate_listing_quality(profile, payload)
     review_data["parent_main_image_url"] = payload.get("parent_main_image_url", "")
     review_data["support_images"] = [
         {
@@ -2603,6 +4650,10 @@ def build_ready_review_data(
             })
 
     review_data["child_image_rows"] = child_image_rows
+
+    if include_quality:
+        review_data["quality_report"] = validate_listing_quality(profile, payload)
+
     return review_data
 
 
@@ -2614,6 +4665,8 @@ def render_ready_review_panel(
 ) -> None:
     folder_key = str(item.get("folder_name", "listing")).replace("/", "_").replace("\\", "_").replace(" ", "_")
     review_key_prefix = f"{key_prefix}_{folder_key}"
+    image_review_loaded = bool(st.session_state.get(f"{review_key_prefix}_load_image_review", False))
+    quality_check_loaded = bool(st.session_state.get(f"{review_key_prefix}_run_full_quality", False))
 
     review_data = build_ready_review_data(
         profile=item.get("profile"),
@@ -2621,13 +4674,20 @@ def render_ready_review_panel(
         ready_folder_name=item.get("folder_name", ""),
         dropbox_cfg=dropbox_cfg,
         source_folder_path=source_folder_path,
+        include_images=image_review_loaded or quality_check_loaded,
+        include_quality=quality_check_loaded,
     )
 
-    overview_tab, content_tab, images_tab, quality_tab = st.tabs(
-        ["Overview", "Content", "Images", "Quality"]
+    review_sections = ["Overview", "Content", "SKU & Price", "Images", "Quality"]
+    active_review_section = st.radio(
+        "Review section",
+        review_sections,
+        key=f"{review_key_prefix}_active_section",
+        horizontal=True,
+        label_visibility="collapsed",
     )
 
-    with overview_tab:
+    if active_review_section == "Overview":
         col1, col2 = st.columns(2)
         with col1:
             st.write(f"Folder: `{review_data['folder_name']}`")
@@ -2642,7 +4702,25 @@ def render_ready_review_panel(
             st.write(f"Quantity: {review_data['quantity']}")
             st.write(f"Pricing: {review_data['price_summary']}")
 
-    with content_tab:
+        snapshot = review_data.get("review_snapshot", {}) or {}
+        if snapshot:
+            st.markdown("**Review snapshot**")
+            image_summary = snapshot.get("image_summary", {}) or {}
+            quality_summary = snapshot.get("quality_summary", {}) or {}
+            st.caption(
+                f"Snapshot: {snapshot.get('created_at', '-')} | "
+                f"Expected child variants: {image_summary.get('expected_child_variants', '-')} | "
+                f"Support images configured: {image_summary.get('support_images_configured', '-')} | "
+                f"Quality blockers: {quality_summary.get('blocker_count', 0)} | "
+                f"Warnings: {quality_summary.get('warning_count', 0)}"
+            )
+
+        workflow_events = review_data.get("workflow_events", []) or []
+        if workflow_events:
+            with st.expander("Workflow history", expanded=False):
+                st.dataframe(workflow_events[-20:], hide_index=True, width="stretch")
+
+    if active_review_section == "Content":
         st.markdown("**Title**")
         st.write(review_data["title"] or "-")
         st.markdown("**Bullets**")
@@ -2653,30 +4731,69 @@ def render_ready_review_panel(
         st.markdown("**Keywords**")
         st.text_area("Keywords preview", value=review_data["generic_keywords"], height=100, disabled=True)
 
-    with images_tab:
-        show_image_previews = st.checkbox(
-            "Show image previews",
-            value=False,
-            key=f"{review_key_prefix}_show_image_previews",
-        )
+    if active_review_section == "SKU & Price":
+        profile = item.get("profile")
+        listing_memory = item.get("listing_memory", {})
+        if not profile or not listing_memory:
+            st.warning("This listing could not be loaded for SKU and price review.")
+        else:
+            st.caption("Reviewer edits here are saved when the listing is approved or denied.")
+            review_edits = render_review_sku_price_editor(
+                review_key_prefix=review_key_prefix,
+                profile=profile,
+                listing_memory=listing_memory,
+            )
+            if source_folder_path and st.button(
+                "Save SKU and price edits",
+                key=f"{review_key_prefix}_save_sku_price_edits",
+                width="content",
+            ):
+                payload = apply_review_sku_and_price_edits(listing_memory, review_edits)
+                try:
+                    save_listing_inputs_json_to_dropbox(
+                        profile=profile,
+                        payload=payload,
+                        folder_path=source_folder_path,
+                    )
+                    clear_cached_listing_memory()
+                    item["listing_memory"] = payload
+                    st.success("Saved SKU and price edits.")
+                except Exception as exc:
+                    st.error(f"Could not save SKU and price edits: {exc}")
 
-        st.markdown("**Parent main image**")
-        support_images = review_data.get("support_images", [])
-        child_image_rows = review_data.get("child_image_rows", [])
+    if active_review_section == "Images":
+        dropbox_overview = get_cached_dropbox_overview(item.get("profile", {}), dropbox_cfg)
+        render_dropbox_folder_links(source_folder_path, dropbox_overview)
 
-        if show_image_previews:
+        if not review_data["image_review_loaded"]:
+            st.info("Image mappings are not loaded for this review yet. Use the Dropbox folder links above for normal review.")
+            if st.button("Load image review", key=f"{review_key_prefix}_load_image_review_btn", width="content"):
+                st.session_state["active_perf_action_label"] = "load image review"
+                st.session_state[f"{review_key_prefix}_load_image_review"] = True
+                review_data = build_ready_review_data(
+                    profile=item.get("profile"),
+                    listing_memory=item.get("listing_memory", {}),
+                    ready_folder_name=item.get("folder_name", ""),
+                    dropbox_cfg=dropbox_cfg,
+                    source_folder_path=source_folder_path,
+                    include_images=True,
+                    include_quality=quality_check_loaded,
+                )
+
+        if review_data["image_review_loaded"]:
+            support_images = review_data.get("support_images", [])
+            child_image_rows = review_data.get("child_image_rows", [])
+
+            st.success("Image review data loaded.")
+
+            st.markdown("**Parent main image**")
             if review_data["parent_main_image_url"]:
                 st.image(review_data["parent_main_image_url"], width=240)
                 st.caption(Path(review_data["parent_main_image_url"]).name)
             else:
                 st.caption("No resolved parent main image.")
-        elif review_data["parent_main_image_url"]:
-            st.code(review_data["parent_main_image_url"], language=None)
-        else:
-            st.caption("No resolved parent main image.")
 
-        st.markdown("**Support image order**")
-        if show_image_previews:
+            st.markdown("**Support image order**")
             if support_images:
                 cols = st.columns(min(4, len(support_images)))
                 for idx, image_entry in enumerate(support_images):
@@ -2685,14 +4802,8 @@ def render_ready_review_panel(
                         st.caption(image_entry["label"])
             else:
                 st.caption("No support images found.")
-        elif support_images:
-            for image_entry in support_images:
-                st.write(image_entry["label"])
-        else:
-            st.caption("No support images found.")
 
-        st.markdown("**Child variant image mapping**")
-        if show_image_previews:
+            st.markdown("**Child variant image mapping**")
             if child_image_rows:
                 cols_per_row = 3
                 cols = st.columns(cols_per_row)
@@ -2706,56 +4817,96 @@ def render_ready_review_panel(
                             st.caption("No resolved image URL.")
             else:
                 st.caption("No child image mappings found.")
-        elif child_image_rows:
-            st.dataframe(child_image_rows, width="stretch", hide_index=True)
-        else:
-            st.caption("No child image mappings found.")
 
-        with st.expander("Image URLs and filenames", expanded=False):
-            st.markdown("**Parent main image URL**")
-            if review_data["parent_main_image_url"]:
-                st.code(review_data["parent_main_image_url"], language=None)
+            with st.expander("Technical image URLs and filenames", expanded=False):
+                st.markdown("**Parent main image URL**")
+                if review_data["parent_main_image_url"]:
+                    st.code(review_data["parent_main_image_url"], language=None)
+                else:
+                    st.caption("No resolved parent main image.")
+
+                st.markdown("**Support image order**")
+                if support_images:
+                    for image_entry in support_images:
+                        st.write(image_entry["label"])
+                        st.code(image_entry["url"], language=None)
+                else:
+                    st.caption("No support images found.")
+
+                st.markdown("**Child variant image mapping**")
+                if child_image_rows:
+                    st.dataframe(child_image_rows, width="stretch", hide_index=True)
+                else:
+                    st.caption("No child image mappings found.")
+
+    if active_review_section == "Quality":
+        if not review_data["quality_check_loaded"]:
+            snapshot = review_data.get("review_snapshot", {}) or {}
+            quality_summary = snapshot.get("quality_summary", {}) or {}
+            image_summary = snapshot.get("image_summary", {}) or {}
+
+            if snapshot:
+                st.markdown("**Saved review snapshot**")
+                q_col1, q_col2, q_col3, q_col4 = st.columns(4)
+                q_col1.metric("Score", quality_summary.get("score", 0))
+                q_col2.metric("Blockers", quality_summary.get("blocker_count", 0))
+                q_col3.metric("Warnings", quality_summary.get("warning_count", 0))
+                q_col4.metric("Expected variants", image_summary.get("expected_child_variants", 0))
+
+                st.caption(
+                    f"Snapshot created: {snapshot.get('created_at', '-')} | "
+                    f"Support images configured: {image_summary.get('support_images_configured', 0)} | "
+                    f"Preview errors at submit: {image_summary.get('preview_error_count', 0)}"
+                )
+
+                if int(quality_summary.get("blocker_count", 0) or 0) == 0:
+                    st.success("Saved submit-time quality snapshot has no blockers.")
+                else:
+                    st.error("Saved submit-time quality snapshot had blockers.")
             else:
-                st.caption("No resolved parent main image.")
+                st.info("No saved review snapshot found for this older listing.")
 
-            st.markdown("**Support image order**")
-            if support_images:
-                for image_entry in support_images:
-                    st.write(image_entry["label"])
-                    st.code(image_entry["url"], language=None)
+            st.caption(
+                "Full image quality check is optional. It loads current Dropbox image mappings again "
+                "only when you need a deeper live verification."
+            )
+            if st.button("Run full live image quality check", key=f"{review_key_prefix}_run_full_quality_btn", width="content"):
+                st.session_state["active_perf_action_label"] = "run full live image quality check"
+                st.session_state[f"{review_key_prefix}_run_full_quality"] = True
+                review_data = build_ready_review_data(
+                    profile=item.get("profile"),
+                    listing_memory=item.get("listing_memory", {}),
+                    ready_folder_name=item.get("folder_name", ""),
+                    dropbox_cfg=dropbox_cfg,
+                    source_folder_path=source_folder_path,
+                    include_images=True,
+                    include_quality=True,
+                )
+
+        if review_data["quality_check_loaded"]:
+            if review_data["errors"]:
+                st.error("Preflight issues found")
+                for error in review_data["errors"]:
+                    st.write(f"- {error}")
             else:
-                st.caption("No support images found.")
+                st.success("No preflight issues found.")
 
-            st.markdown("**Child variant image mapping**")
-            if child_image_rows:
-                st.dataframe(child_image_rows, width="stretch", hide_index=True)
+            blockers = review_data["quality_report"].get("blockers", [])
+            warnings = review_data["quality_report"].get("warnings", [])
+
+            st.markdown("**Quality blockers**")
+            if blockers:
+                for blocker in blockers:
+                    st.write(f"- {blocker}")
             else:
-                st.caption("No child image mappings found.")
+                st.write("None")
 
-    with quality_tab:
-        if review_data["errors"]:
-            st.error("Preflight issues found")
-            for error in review_data["errors"]:
-                st.write(f"- {error}")
-        else:
-            st.success("No preflight issues found.")
-
-        blockers = review_data["quality_report"].get("blockers", [])
-        warnings = review_data["quality_report"].get("warnings", [])
-
-        st.markdown("**Quality blockers**")
-        if blockers:
-            for blocker in blockers:
-                st.write(f"- {blocker}")
-        else:
-            st.write("None")
-
-        st.markdown("**Quality warnings**")
-        if warnings:
-            for warning in warnings:
-                st.write(f"- {warning}")
-        else:
-            st.write("None")
+            st.markdown("**Quality warnings**")
+            if warnings:
+                for warning in warnings:
+                    st.write(f"- {warning}")
+            else:
+                st.write("None")
 
 
 def build_queue_items(
@@ -2827,6 +4978,125 @@ def build_approved_queue_items(
     )
 
 
+
+def build_sku_manifest(
+    profile: dict[str, Any],
+    payload: dict[str, Any],
+    finished_folder_path: str,
+    output_path: Path | None = None,
+) -> dict[str, Any]:
+    selected_variants = dict(payload.get("selected_variants", {}))
+    size_price_map = dict(payload.get("size_price_map", {}))
+    parent_sku = str(payload.get("parent_sku", "") or "").strip()
+    variant_combos = build_variant_combinations(profile, selected_variants)
+    variant_combos = sort_variant_combinations_by_price(variant_combos, size_price_map)
+    effective_profile = apply_sku_context_to_profile(
+        profile,
+        payload.get("sku_decoration_code", ""),
+        payload.get("sku_listing_code", ""),
+    )
+
+    children: list[dict[str, Any]] = []
+
+    for variant_values in variant_combos:
+        sku_details = build_child_sku_details(effective_profile, parent_sku, variant_values)
+        seller_sku = sku_details["amazon_seller_sku"]
+        size_value = str(variant_values.get("size", "") or "")
+        price_value = size_price_map.get(size_value, size_price_map.get("default", ""))
+
+        child_row: dict[str, Any] = {
+            "amazon_seller_sku": seller_sku,
+            "canonical_sku": sku_details.get("canonical_sku", seller_sku),
+            "parent_sku": parent_sku,
+            "supplier": sku_details.get("supplier", ""),
+            "supplier_stock_key": sku_details.get("supplier_stock_key", ""),
+            "supplier_stock_key_status": sku_details.get("supplier_stock_key_status", ""),
+            "supplier_stock_key_reason": sku_details.get("supplier_stock_key_reason", ""),
+            "design_or_listing_code": sku_details.get("design_or_listing_code", ""),
+            "variant_values": dict(variant_values),
+            "quantity": int(payload.get("quantity", 0) or 0),
+            "price": price_value,
+        }
+
+        for variant_key, variant_value in variant_values.items():
+            child_row[str(variant_key)] = variant_value
+
+        children.append(child_row)
+
+    suppliers = sorted({
+        str(child.get("supplier", "") or "")
+        for child in children
+        if str(child.get("supplier", "") or "")
+    })
+    missing_supplier_stock_key_count = sum(
+        1
+        for child in children
+        if child.get("supplier_stock_key_status") == "missing"
+    )
+
+    return {
+        "schema_version": 2,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "marketplace": "amazon",
+        "template_label": profile.get("label", profile.get("_slug", "")),
+        "template_slug": profile.get("_slug", ""),
+        "template_key": profile.get("template_key", ""),
+        "stock_reference_key": profile.get("stock_reference_key", ""),
+        "sku_decoration_code": payload.get("sku_decoration_code", ""),
+        "strict_stock_ready": is_strict_stock_ready(profile),
+        "suppliers": suppliers,
+        "parent_sku": parent_sku,
+        "finished_folder_path": str(finished_folder_path or ""),
+        "output_workbook_name": output_path.name if output_path else "",
+        "child_sku_count": len(children),
+        "missing_supplier_stock_key_count": missing_supplier_stock_key_count,
+        "children": children,
+    }
+
+
+def save_generated_artifacts_to_dropbox(
+    profile: dict[str, Any],
+    payload: dict[str, Any],
+    finished_folder_path: str,
+    output_path: Path,
+) -> dict[str, Any]:
+    finished_folder_path = str(finished_folder_path or "").rstrip("/")
+    if not finished_folder_path:
+        raise ValueError("Finished folder path is required before saving generated artifacts.")
+
+    workbook_dropbox_path = f"{finished_folder_path}/{output_path.name}"
+    with output_path.open("rb") as workbook_file:
+        upload_binary_file(workbook_dropbox_path, workbook_file.read())
+
+    sku_manifest = build_sku_manifest(
+        profile=profile,
+        payload=payload,
+        finished_folder_path=finished_folder_path,
+        output_path=output_path,
+    )
+
+    sku_manifest_path = f"{finished_folder_path}/sku_manifest.json"
+    upload_text_file(
+        sku_manifest_path,
+        json.dumps(sku_manifest, indent=2, ensure_ascii=False),
+    )
+
+    artifact = {
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "workbook_name": output_path.name,
+        "workbook_dropbox_path": workbook_dropbox_path,
+        "sku_manifest_dropbox_path": sku_manifest_path,
+        "child_sku_count": sku_manifest.get("child_sku_count", 0),
+        "missing_supplier_stock_key_count": sku_manifest.get("missing_supplier_stock_key_count", 0),
+    }
+
+    payload["sku_manifest"] = sku_manifest
+    generated_outputs = list(payload.get("generated_outputs", []))
+    generated_outputs.append(artifact)
+    payload["generated_outputs"] = generated_outputs[-50:]
+
+    return artifact
+
 def generate_approved_listing(
     profile: dict[str, Any],
     listing_memory: dict[str, Any],
@@ -2856,6 +5126,10 @@ def generate_approved_listing(
         generic_keywords=generic_keywords,
         selected_variants=selected_variants,
         size_price_map=size_price_map,
+        sku_decoration_code=get_default_sku_decoration_code(profile, listing_memory),
+        sku_listing_code=str(listing_memory.get("sku_listing_code", "") or get_saved_generated_sku_listing_code(listing_memory)),
+        manual_sku_listing_code=str(listing_memory.get("manual_sku_listing_code", "") or ""),
+        generated_sku_listing_code=get_saved_generated_sku_listing_code(listing_memory),
         quantity=quantity,
         staged_folder_name=approved_folder_name,
     )
@@ -2868,6 +5142,10 @@ def generate_approved_listing(
     generation_payload["reviewed_by"] = listing_memory.get("reviewed_by", "")
     generation_payload["prepared_at"] = listing_memory.get("prepared_at", "")
     generation_payload["reviewed_at"] = listing_memory.get("reviewed_at", "") or format_workflow_timestamp()
+    if isinstance(listing_memory.get("review_snapshot"), dict):
+        generation_payload["review_snapshot"] = dict(listing_memory.get("review_snapshot", {}))
+    if isinstance(listing_memory.get("workflow_events"), list):
+        generation_payload["workflow_events"] = list(listing_memory.get("workflow_events", []))
     generation_errors = generation_prep["errors"]
     if generation_errors:
         raise ValueError("; ".join(generation_errors))
@@ -2876,10 +5154,15 @@ def generate_approved_listing(
     approved_folder_path = build_approved_folder_path(dropbox_cfg, approved_folder_name)
     selected_colors = generation_payload["colors"]
 
+    generation_timings: dict[str, float] = {}
+
+    step_started_at = time.perf_counter()
     template_path = resolve_template_path(profile)
     wb = load_workbook(template_path, keep_vba=True, read_only=True)
     wb.close()
+    generation_timings["template_check"] = round(time.perf_counter() - step_started_at, 4)
 
+    step_started_at = time.perf_counter()
     resolve_folder_image_urls(
         profile,
         selected_variants,
@@ -2887,17 +5170,30 @@ def generate_approved_listing(
         dropbox_overview,
         approved_folder_path,
     )
+    generation_timings["pre_move_image_check"] = round(time.perf_counter() - step_started_at, 4)
 
+    final_sku = ""
     finished_folder_path = ""
+    moved_to_finished = False
 
     try:
-        final_sku, finished_folder_path = finalize_approved_dropbox_folder(
+        step_started_at = time.perf_counter()
+        final_sku, finished_folder_path = choose_finished_folder_target(
             dropbox_cfg=dropbox_cfg,
-            approved_folder_name=approved_folder_name,
             parent_sku=generation_payload["parent_sku"],
             reuse_finished_folder_name=original_finished_folder_name,
         )
+        generation_timings["choose_finished_target"] = round(time.perf_counter() - step_started_at, 4)
 
+        step_started_at = time.perf_counter()
+        moved_folder_path = move_dropbox_folder(approved_folder_path, finished_folder_path)
+        if not moved_folder_path:
+            raise RuntimeError("Dropbox returned an empty path after moving the folder to finished.")
+        finished_folder_path = moved_folder_path
+        moved_to_finished = True
+        generation_timings["move_approved_to_finished"] = round(time.perf_counter() - step_started_at, 4)
+
+        step_started_at = time.perf_counter()
         parent_main_image_url, other_images, color_image_map, design_color_image_url_map = resolve_folder_image_urls(
             profile,
             selected_variants,
@@ -2905,16 +5201,52 @@ def generate_approved_listing(
             dropbox_overview,
             finished_folder_path,
         )
+        generation_timings["final_image_resolve"] = round(time.perf_counter() - step_started_at, 4)
 
         payload = dict(generation_payload)
-        payload["parent_sku"] = final_sku
+        payload["finished_folder_sku"] = final_sku
         payload["parent_main_image_url"] = parent_main_image_url
         payload["other_images"] = other_images
         payload["color_image_map"] = color_image_map
         payload["design_color_image_url_map"] = design_color_image_url_map
 
-        output_path, _ = build_workbook(profile, payload)
+        step_started_at = time.perf_counter()
+        output_path, workbook_timings = build_workbook(profile, payload)
+        generation_timings["build_workbook_total"] = round(time.perf_counter() - step_started_at, 4)
+        for workbook_step, workbook_seconds in workbook_timings.items():
+            generation_timings[f"workbook_{workbook_step}"] = round(float(workbook_seconds), 4)
+
+        if not output_path.exists() or output_path.stat().st_size <= 0:
+            raise ValueError(f"Workbook was not created correctly: {output_path.name}")
+
+        step_started_at = time.perf_counter()
+        generated_artifact = save_generated_artifacts_to_dropbox(
+            profile=profile,
+            payload=payload,
+            finished_folder_path=finished_folder_path,
+            output_path=output_path,
+        )
+        generation_timings["save_generated_artifacts"] = round(time.perf_counter() - step_started_at, 4)
+
+        append_workflow_event(
+            payload,
+            action="generate_approved_listing",
+            actor=str(payload.get("reviewed_by", "") or ""),
+            from_state="approved",
+            to_state="finished",
+            folder_path=finished_folder_path,
+            details={
+                "output_name": output_path.name,
+                "workbook_dropbox_path": generated_artifact.get("workbook_dropbox_path", ""),
+                "sku_manifest_dropbox_path": generated_artifact.get("sku_manifest_dropbox_path", ""),
+                "child_sku_count": generated_artifact.get("child_sku_count", 0),
+                "missing_supplier_stock_key_count": generated_artifact.get("missing_supplier_stock_key_count", 0),
+            },
+        )
+
+        step_started_at = time.perf_counter()
         save_listing_inputs_json_to_dropbox(profile=profile, payload=payload, folder_path=finished_folder_path)
+        generation_timings["save_finished_listing_inputs"] = round(time.perf_counter() - step_started_at, 4)
 
         return {
             "folder_name": approved_folder_name,
@@ -2923,13 +5255,17 @@ def generate_approved_listing(
             "output_path": str(output_path),
             "output_name": output_path.name,
             "finished_folder_path": finished_folder_path,
+            "generated_artifact": generated_artifact,
+            "timings": generation_timings,
         }
-    except Exception:
-        if finished_folder_path and path_exists(finished_folder_path):
+    except Exception as exc:
+        if moved_to_finished and finished_folder_path and path_exists(finished_folder_path):
             try:
                 move_dropbox_folder(finished_folder_path, approved_folder_path)
-            except Exception:
-                pass
+            except Exception as rollback_exc:
+                raise RuntimeError(
+                    f"{exc} The folder was already moved to finished and rollback to approved failed: {rollback_exc}"
+                ) from exc
         raise
 
 
@@ -2971,13 +5307,81 @@ def render_generation_results(results: list[dict[str, Any]], download_key_prefix
             )
 
 
+def process_ready_review_decision(
+    review_item: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+    reviewed_by: str,
+    *,
+    approve: bool,
+    review_edit_prefix: str = "",
+) -> dict[str, Any]:
+    folder_name = str(review_item.get("folder_name", "") or "")
+    profile = review_item.get("profile")
+    listing_memory = dict(review_item.get("listing_memory", {}) or {})
+    if not folder_name or not profile or not listing_memory:
+        raise ValueError("This ready listing could not be loaded for review.")
+
+    ready_folder_path = build_ready_folder_path(dropbox_cfg, folder_name)
+    payload = dict(listing_memory)
+
+    if review_edit_prefix:
+        review_edits = get_review_sku_and_price_edits(
+            review_edit_prefix,
+            payload,
+            profile,
+        )
+        payload = apply_review_sku_and_price_edits(payload, review_edits)
+
+    payload["reviewed_by"] = reviewed_by
+    payload["reviewed_at"] = format_workflow_timestamp()
+    append_workflow_event(
+        payload,
+        action="approve_ready_listing" if approve else "deny_ready_listing",
+        actor=reviewed_by,
+        from_state="ready",
+        to_state="approved" if approve else "_stage",
+        folder_path=ready_folder_path,
+        details={"review_folder": folder_name},
+    )
+
+    save_listing_inputs_json_to_dropbox(
+        profile=profile,
+        payload=payload,
+        folder_path=ready_folder_path,
+    )
+
+    if approve:
+        target_path = move_ready_dropbox_folder_to_approved(
+            dropbox_cfg=dropbox_cfg,
+            ready_folder_name=folder_name,
+            approved_folder_name=folder_name,
+        )
+        return {
+            "folder_name": folder_name,
+            "status": "Success",
+            "action": "approved",
+            "message": f"Approved successfully: {Path(target_path).name}",
+            "target_path": target_path,
+        }
+
+    target_path = move_ready_dropbox_folder_to_denied_stage(
+        dropbox_cfg=dropbox_cfg,
+        ready_folder_name=folder_name,
+    )
+    return {
+        "folder_name": folder_name,
+        "status": "Success",
+        "action": "denied",
+        "message": f"Denied and returned to staging: {Path(target_path).name}",
+        "target_path": target_path,
+    }
+
+
 def render_review_queue_view(
     ready_folder_names: list[str],
     profiles: list[dict[str, Any]],
     dropbox_cfg: dict[str, Any],
 ) -> None:
-    st.subheader("Review queue")
-
     queue_items = build_ready_queue_items(ready_folder_names, profiles, dropbox_cfg)
     summary_rows = [
         {
@@ -2999,6 +5403,77 @@ def render_review_queue_view(
     ready_lookup = {item["folder_name"]: item for item in queue_items}
     review_folder_options = [item["folder_name"] for item in queue_items if item["listing_memory"]]
 
+    st.markdown("### Bulk approve ready listings")
+    with st.container(border=True):
+        existing_bulk_selection = list(st.session_state.get("review_queue_bulk_approve_folders", []))
+        valid_bulk_selection = [
+            folder_name for folder_name in existing_bulk_selection
+            if folder_name in review_folder_options
+        ]
+        if valid_bulk_selection != existing_bulk_selection:
+            st.session_state["review_queue_bulk_approve_folders"] = valid_bulk_selection
+
+        with st.form("review_queue_bulk_approve_form"):
+            selected_bulk_folders = st.multiselect(
+                "Ready listings to approve",
+                review_folder_options,
+                key="review_queue_bulk_approve_folders",
+            )
+            bulk_reviewed_by = st.selectbox(
+                "Reviewed by",
+                WORKFLOW_ASSIGNEES,
+                key="review_queue_bulk_reviewed_by",
+            )
+            bulk_approve_clicked = st.form_submit_button(
+                "Approve selected for generation",
+                width="stretch",
+                disabled=not bool(review_folder_options),
+            )
+
+        if bulk_approve_clicked:
+            if not selected_bulk_folders:
+                st.warning("Select at least one ready listing to approve.")
+            elif not bulk_reviewed_by:
+                st.warning("Select who reviewed these listings before approving them.")
+            else:
+                st.session_state["pending_perf_action_label"] = "bulk approve ready listings"
+                results: list[dict[str, Any]] = []
+                for folder_name in selected_bulk_folders:
+                    review_item = ready_lookup.get(folder_name)
+                    try:
+                        result = process_ready_review_decision(
+                            review_item or {},
+                            dropbox_cfg,
+                            bulk_reviewed_by,
+                            approve=True,
+                        )
+                    except Exception as exc:
+                        result = {
+                            "folder_name": folder_name,
+                            "status": "Failed",
+                            "action": "approved",
+                            "message": str(exc),
+                        }
+                    results.append(result)
+
+                st.session_state["review_queue_bulk_approve_results"] = results
+                success_results = [row for row in results if row.get("status") == "Success"]
+                failed_results = [row for row in results if row.get("status") == "Failed"]
+                if len(success_results) == 1:
+                    st.session_state["last_approved_folder_path"] = success_results[0].get("target_path", "")
+                st.session_state.pop("review_queue_bulk_approve_folders", None)
+                clear_runtime_caches()
+                set_workflow_flash(
+                    "success" if not failed_results else "warning",
+                    f"Approved {len(success_results)} of {len(selected_bulk_folders)} selected listing(s).",
+                    f"{len(failed_results)} failed." if failed_results else "",
+                )
+                st.rerun()
+
+        bulk_results = list(st.session_state.get("review_queue_bulk_approve_results", []))
+        if bulk_results:
+            st.dataframe(bulk_results, width="stretch", hide_index=True)
+
     st.markdown("### Review ready listing")
     with st.container(border=True):
         if not review_folder_options:
@@ -3011,18 +5486,43 @@ def render_review_queue_view(
             st.session_state["ready_queue_review_folder"] = current_review_folder
 
         selected_review_folder = st.selectbox(
-            "Review ready listing",
+            "Listing folder",
             review_folder_options,
             key="ready_queue_review_folder",
         )
         review_item = ready_lookup.get(selected_review_folder)
         if review_item:
-            with st.expander("Review panel", expanded=True):
-                render_ready_review_panel(
-                    review_item,
-                    dropbox_cfg,
-                    key_prefix="review_queue",
-                    source_folder_path=build_ready_folder_path(dropbox_cfg, review_item["folder_name"]),
+            review_panel_key_suffix = selected_review_folder.replace("/", "_").replace("\\", "_").replace(" ", "_")
+            review_panel_open_key = f"review_queue_panel_open_{review_panel_key_suffix}"
+
+            panel_col1, panel_col2 = st.columns([1, 3])
+            with panel_col1:
+                if st.button("Open review panel", key=f"{review_panel_open_key}_open_btn", width="stretch"):
+                    st.session_state["active_perf_action_label"] = "open ready review panel"
+                    st.session_state[review_panel_open_key] = True
+            with panel_col2:
+                if st.session_state.get(review_panel_open_key, False):
+                    if st.button("Hide review panel", key=f"{review_panel_open_key}_hide_btn"):
+                        st.session_state["active_perf_action_label"] = "hide ready review panel"
+                        st.session_state[review_panel_open_key] = False
+                else:
+                    st.info("Review panel is not loaded yet. Open it only when you need detailed content/image/quality review.")
+
+            if st.session_state.get(review_panel_open_key, False):
+                with st.expander("Review panel", expanded=True):
+                    render_ready_review_panel(
+                        review_item,
+                        dropbox_cfg,
+                        key_prefix="review_queue",
+                        source_folder_path=build_ready_folder_path(dropbox_cfg, review_item["folder_name"]),
+                    )
+
+            review_edit_prefix = f"review_queue_{review_panel_key_suffix}"
+            if review_item.get("profile") and review_item.get("listing_memory"):
+                initialize_review_edit_state(
+                    review_edit_prefix,
+                    review_item["listing_memory"],
+                    review_item["profile"],
                 )
 
             default_reviewer = review_item.get("listing_memory", {}).get("reviewed_by", "")
@@ -3031,41 +5531,68 @@ def render_review_queue_view(
             if review_reviewer_key != reviewer_context_key:
                 st.session_state["review_queue_reviewed_by"] = default_reviewer if default_reviewer in WORKFLOW_ASSIGNEES else ""
                 st.session_state["review_queue_review_folder_reviewer_key"] = reviewer_context_key
-            st.selectbox(
-                "Reviewed by",
-                WORKFLOW_ASSIGNEES,
-                key="review_queue_reviewed_by",
-            )
-            if st.button("Approve for generation", key="approve_ready_listing_btn", width="stretch"):
+
+            with st.form("review_queue_decision_form"):
+                st.selectbox(
+                    "Reviewed by",
+                    WORKFLOW_ASSIGNEES,
+                    key="review_queue_reviewed_by",
+                )
+                action_col1, action_col2 = st.columns(2)
+                with action_col1:
+                    approve_clicked = st.form_submit_button(
+                        "Approve for generation",
+                        width="stretch",
+                    )
+                with action_col2:
+                    deny_clicked = st.form_submit_button(
+                        "Deny and return to staging",
+                        width="stretch",
+                    )
+
+            if approve_clicked or deny_clicked:
+                st.session_state["pending_perf_action_label"] = (
+                    "approve ready listing" if approve_clicked else "deny ready listing"
+                )
                 reviewed_by = st.session_state.get("review_queue_reviewed_by", "")
                 if not reviewed_by:
-                    st.warning("Select who reviewed this listing before approving it.")
+                    st.warning("Select who reviewed this listing before approving or denying it.")
                     return
                 if not review_item.get("profile") or not review_item.get("listing_memory"):
-                    st.error("This ready listing could not be loaded for approval.")
+                    st.error("This ready listing could not be loaded for review.")
                     return
 
-                ready_folder_path = build_ready_folder_path(dropbox_cfg, selected_review_folder)
-                payload = dict(review_item["listing_memory"])
-                payload["reviewed_by"] = reviewed_by
-                payload["reviewed_at"] = format_workflow_timestamp()
-
                 try:
-                    save_listing_inputs_json_to_dropbox(
-                        profile=review_item["profile"],
-                        payload=payload,
-                        folder_path=ready_folder_path,
+                    result = process_ready_review_decision(
+                        review_item,
+                        dropbox_cfg,
+                        reviewed_by,
+                        approve=approve_clicked,
+                        review_edit_prefix=review_edit_prefix,
                     )
-                    approved_folder_path = move_ready_dropbox_folder_to_approved(
-                        dropbox_cfg=dropbox_cfg,
-                        ready_folder_name=selected_review_folder,
-                        approved_folder_name=selected_review_folder,
-                    )
-                    st.session_state["last_approved_folder_path"] = approved_folder_path
-                    st.success(f"Approved successfully: {Path(approved_folder_path).name}")
+                    if approve_clicked:
+                        st.session_state["last_approved_folder_path"] = result.get("target_path", "")
+                        clear_runtime_caches()
+                        set_workflow_flash(
+                            "success",
+                            result.get("message", "Approved successfully."),
+                        )
+                    else:
+                        target_path = result.get("target_path", "")
+                        if target_path:
+                            st.session_state["pending_staged_folder_selection_on_rerun"] = Path(target_path).name
+                        st.session_state["auto_switch_to_staged"] = True
+                        clear_runtime_caches()
+                        set_workflow_flash(
+                            "warning",
+                            result.get("message", "Denied and returned to staging."),
+                        )
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"Could not approve the listing: {exc}")
+                    if approve_clicked:
+                        st.error(f"Could not approve the listing: {exc}")
+                    else:
+                        st.error(f"Could not deny the listing: {exc}")
 
 
 def render_approved_queue_view(
@@ -3113,29 +5640,52 @@ def render_approved_queue_view(
             )
             review_item = approved_lookup.get(selected_review_folder)
             if review_item:
-                with st.expander("Review panel", expanded=True):
-                    render_ready_review_panel(
-                        review_item,
-                        dropbox_cfg,
-                        key_prefix="approved_output",
-                        source_folder_path=build_approved_folder_path(dropbox_cfg, review_item["folder_name"]),
-                    )
+                approved_panel_key_suffix = selected_review_folder.replace("/", "_").replace("\\", "_").replace(" ", "_")
+                approved_panel_open_key = f"approved_output_panel_open_{approved_panel_key_suffix}"
+
+                panel_col1, panel_col2 = st.columns([1, 3])
+                with panel_col1:
+                    if st.button("Open approved review panel", key=f"{approved_panel_open_key}_open_btn", width="stretch"):
+                        st.session_state["active_perf_action_label"] = "open approved review panel"
+                        st.session_state[approved_panel_open_key] = True
+                with panel_col2:
+                    if st.session_state.get(approved_panel_open_key, False):
+                        if st.button("Hide approved review panel", key=f"{approved_panel_open_key}_hide_btn"):
+                            st.session_state["active_perf_action_label"] = "hide approved review panel"
+                            st.session_state[approved_panel_open_key] = False
+                    else:
+                        st.info("Approved review panel is not loaded yet. Open it only when you need detailed review.")
+
+                if st.session_state.get(approved_panel_open_key, False):
+                    with st.expander("Review panel", expanded=True):
+                        render_ready_review_panel(
+                            review_item,
+                            dropbox_cfg,
+                            key_prefix="approved_output",
+                            source_folder_path=build_approved_folder_path(dropbox_cfg, review_item["folder_name"]),
+                        )
         else:
             st.caption("No approved listings available to review yet.")
 
     st.markdown("### Generate output")
     with st.container(border=True):
-        selected_approved_folders = st.multiselect(
-            "Select approved folders to generate",
-            [item["folder_name"] for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"]],
-            key="approved_queue_selected_folders",
-        )
+        with st.form("approved_output_generation_form"):
+            selected_approved_folders = st.multiselect(
+                "Select approved folders to generate",
+                [item["folder_name"] for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"]],
+                key="approved_queue_selected_folders",
+            )
 
-        col1, col2 = st.columns(2)
-        with col1:
-            generate_selected = st.button("Generate selected", width="stretch")
-        with col2:
-            generate_all = st.button("Generate all approved", width="stretch")
+            col1, col2 = st.columns(2)
+            with col1:
+                generate_selected = st.form_submit_button("Generate selected", width="stretch")
+            with col2:
+                generate_all = st.form_submit_button("Generate all approved", width="stretch")
+
+    if generate_selected:
+        st.session_state["pending_perf_action_label"] = "generate selected approved"
+    elif generate_all:
+        st.session_state["pending_perf_action_label"] = "generate all approved"
 
     target_folders = selected_approved_folders if generate_selected else [
         item["folder_name"] for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"]
@@ -3143,6 +5693,9 @@ def render_approved_queue_view(
     if not target_folders:
         render_generation_results(stored_results, "approved_download")
         return
+
+    approved_generation_started_at = time.perf_counter()
+    approved_generation_target_count = len(target_folders)
 
     results: list[dict[str, Any]] = []
     for folder_name in target_folders:
@@ -3170,8 +5723,67 @@ def render_approved_queue_view(
                 "message": str(exc),
             })
 
+    approved_generation_elapsed_ms = round(
+        (time.perf_counter() - approved_generation_started_at) * 1000,
+        1,
+    )
+    approved_generation_failures = sum(
+        1 for result in results if result.get("status") == "Failed"
+    )
+
+    generation_step_rows: list[dict[str, Any]] = []
+    for result in results:
+        timings = result.get("timings", {}) if isinstance(result, dict) else {}
+        for step_name, seconds in dict(timings).items():
+            try:
+                generation_step_rows.append({
+                    "folder_name": result.get("folder_name", ""),
+                    "step": step_name,
+                    "ms": round(float(seconds) * 1000, 1),
+                })
+            except Exception:
+                pass
+
+    if generation_step_rows:
+        slowest_generation_step = max(generation_step_rows, key=lambda row: row["ms"])
+        slowest_generation_event = (
+            f"Approved generation: {slowest_generation_step['step']} "
+            f"({slowest_generation_step['folder_name']})"
+        )
+        slowest_generation_ms = slowest_generation_step["ms"]
+    else:
+        slowest_generation_event = f"Approved generation: {approved_generation_target_count} folder(s)"
+        slowest_generation_ms = approved_generation_elapsed_ms
+
+    st.session_state["approved_generation_step_rows"] = generation_step_rows
+
+    perf_history = st.session_state.setdefault("perf_history", [])
+    perf_history.append({
+        "run": len(perf_history) + 1,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "action": (
+            "generate selected approved actual"
+            if generate_selected
+            else "generate all approved actual"
+        ),
+        "full_rerun_ms": approved_generation_elapsed_ms,
+        "recorded_load_ms": approved_generation_elapsed_ms,
+        "estimated_ui_build_ms": 0,
+        "slowest_event": slowest_generation_event,
+        "slowest_ms": slowest_generation_ms,
+        "event_count": approved_generation_target_count,
+    })
+
+    if len(perf_history) > 300:
+        st.session_state["perf_history"] = perf_history[-300:]
+
+    # Prevent the next display rerun from inheriting the generation label.
+    st.session_state.pop("pending_perf_action_label", None)
+    st.session_state.pop("active_perf_action_label", None)
+
     st.session_state["approved_queue_generation_results"] = results
     st.session_state.pop("approved_queue_selected_folders", None)
+    clear_runtime_caches()
     st.rerun()
 
 def debug_size_headers(header_map: dict[str, int]) -> None:
@@ -3196,9 +5808,18 @@ def main() -> None:
     st.set_page_config(page_title="Amazon Listing Generator", layout="wide")
     st.title("Amazon Listing Generator")
     st.caption("Template-based Amazon flat file generator.")
+    render_workflow_flash()
+    reset_load_events()
+    consume_pending_perf_action_label()
+    capture_rerun_cause()
 
+    started_at = time.perf_counter()
     profiles = list_template_profiles()
+    record_load_event("Template profiles", started_at)
+
+    started_at = time.perf_counter()
     dropbox_cfg = load_dropbox_templates_config()
+    record_load_event("Dropbox template config", started_at)
 
     stage_root = dropbox_cfg.get("stage_root", "")
     ready_root = dropbox_cfg.get("ready_root", "")
@@ -3210,13 +5831,27 @@ def main() -> None:
         st.stop()
 
     try:
-        staged_folder_names = list_folder_names(stage_root)
-        ready_folder_names = list_folder_names(ready_root)
-        approved_folder_names = list_folder_names(approved_root)
-        finished_folder_names = list_folder_names(finished_root)
+        staged_folder_names = get_cached_folder_names("stage", stage_root, "_stage folders")
+        ready_folder_names = get_cached_folder_names("ready", ready_root, "ready folders")
+        approved_folder_names = get_cached_folder_names("approved", approved_root, "approved folders")
+        finished_folder_names = get_cached_folder_names("finished", finished_root, "finished folders")
     except Exception as exc:
         st.error(f"Could not read Dropbox folders: {exc}")
         st.stop()
+
+    dropbox_folder_load_errors = dict(st.session_state.get("dropbox_folder_load_errors", {}))
+    if dropbox_folder_load_errors:
+        st.warning(
+            "Dropbox did not respond for some folder lists. "
+            "The app is using cached lists where possible; empty sections can be retried."
+        )
+        with st.expander("Dropbox folder load errors", expanded=False):
+            for message in dropbox_folder_load_errors.values():
+                st.write(message)
+            if st.button("Retry Dropbox folder lists", key="retry_dropbox_folder_lists_btn"):
+                st.session_state["pending_perf_action_label"] = "retry Dropbox folder lists"
+                refresh_cached_folder_names("stage", "ready", "approved", "finished")
+                st.rerun()
 
     if not profiles:
         st.error("No template profiles found. Create family folders under templates/ with schema.json, a shared workbook, and garment subfolders containing config.json.")
@@ -3235,6 +5870,21 @@ def main() -> None:
 
     if st.session_state.pop("auto_switch_to_staged", False):
         st.session_state["folder_source_mode"] = "Use staged folder"
+
+    pending_staged_folder_selection = st.session_state.pop("pending_staged_folder_selection_on_rerun", None)
+    if pending_staged_folder_selection:
+        st.session_state["staged_folder_select"] = pending_staged_folder_selection
+        st.session_state.pop("last_detected_template_folder", None)
+        st.session_state.pop("applied_listing_memory_key_v2", None)
+        st.session_state.pop("initialized_listing_context_key", None)
+        st.session_state.pop("last_loaded_listing_memory_signature", None)
+
+    if st.session_state.pop("clear_staged_folder_selection_on_rerun", False):
+        st.session_state["staged_folder_select"] = None
+        st.session_state.pop("last_detected_template_folder", None)
+        st.session_state.pop("applied_listing_memory_key_v2", None)
+        st.session_state.pop("initialized_listing_context_key", None)
+        st.session_state.pop("last_loaded_listing_memory_signature", None)
 
     folder_source = st.session_state.get("folder_source_mode", "Use staged folder")
     initial_staged_folder_name = st.session_state.get("staged_folder_select", "") if folder_source == "Use staged folder" else ""
@@ -3330,6 +5980,12 @@ def main() -> None:
     st.sidebar.write(f"Variation theme: `{active_profile.get('variation_theme', '')}`")
     st.sidebar.checkbox("Show troubleshooting debug", key="show_header_debug", value=False)
     st.sidebar.checkbox("Copy row styles", key="copy_row_styles", value=True)
+    st.sidebar.checkbox("Auto-load image mappings", key="auto_load_image_mappings", value=False)
+    if st.sidebar.button("Refresh Dropbox queues", key="refresh_dropbox_queues_btn", width="stretch"):
+        st.session_state["pending_perf_action_label"] = "refresh Dropbox queues"
+        refresh_cached_folder_names("stage", "ready", "approved", "finished")
+        clear_cached_listing_memory()
+        st.rerun()
 
     colors_available = get_profile_color_options(active_profile)
     sizes_available = active_profile.get("sizes", [])
@@ -3372,13 +6028,23 @@ def main() -> None:
             )
 
             if folder_source == "Use staged folder":
-                staged_folder_name = st.selectbox(
-                    "Dropbox folder",
-                    staged_folder_names,
-                    index=None,
-                    placeholder="Select a staged folder",
-                    key="staged_folder_select",
-                )
+                staged_select_col, staged_refresh_col = st.columns([4, 1])
+                with staged_select_col:
+                    staged_folder_name = st.selectbox(
+                        "Dropbox folder",
+                        staged_folder_names,
+                        index=None,
+                        placeholder="Select a staged folder",
+                        key="staged_folder_select",
+                    )
+                with staged_refresh_col:
+                    st.write("")
+                    if st.button("Refresh", key="refresh_staged_folders_btn", width="stretch"):
+                        st.session_state["pending_perf_action_label"] = "refresh staged folders"
+                        refresh_cached_folder_names("stage")
+                        clear_cached_listing_memory()
+                        clear_runtime_caches()
+                        st.rerun()
             else:
                 selected_finished_folder = st.selectbox(
                     "Dropbox folder",
@@ -3397,35 +6063,29 @@ def main() -> None:
                         st.warning("Select a finished folder first.")
                         st.stop()
 
+                    st.session_state["pending_perf_action_label"] = "restage finished folder"
                     try:
-                        moved_path = restage_finished_dropbox_folder(
+                        result = restage_finished_listing_for_review(
                             dropbox_cfg=dropbox_cfg,
+                            profiles=profiles,
+                            fallback_profile=profile,
                             finished_folder_name=selected_finished_folder,
                         )
 
-                        try:
-                            restaged_listing_memory = load_listing_memory_from_dropbox(moved_path)
-                        except Exception:
-                            restaged_listing_memory = {}
+                        if result.get("status") != "Success":
+                            raise RuntimeError(result.get("error") or "Restage failed.")
 
-                        restaged_listing_memory["original_finished_folder_name"] = selected_finished_folder
-                        restaged_profile = find_profile_for_listing_memory(profiles, restaged_listing_memory) or profile
-                        save_listing_inputs_json_to_dropbox(
-                            profile=restaged_profile,
-                            payload=restaged_listing_memory,
-                            folder_path=moved_path,
+                        clear_runtime_caches()
+                        set_workflow_flash(
+                            "success",
+                            f"Restaged successfully: {result.get('new_staged_folder_name', '')}",
+                            result.get("warning", ""),
                         )
 
-                        st.success(f"Restaged successfully: {Path(moved_path).name}")
-
-                        st.session_state["last_loaded_listing_memory_folder"] = ""
-                        st.session_state.pop("finalized_stage_folder", None)
-                        st.session_state.pop("finalized_finished_folder_path", None)
-                        st.session_state.pop("finalized_sku", None)
-                        restaged_folder_name = Path(moved_path).name
-                        st.session_state["staged_folder_select"] = restaged_folder_name
+                        reset_restaged_selection_state()
+                        st.session_state["staged_folder_select"] = result.get("new_staged_folder_name", "")
                         st.session_state["auto_switch_to_staged"] = True
-                        st.session_state.pop("last_detected_template_folder", None)
+                        st.session_state["finished_restage_results"] = [result]
 
                         st.rerun()
                     except Exception as exc:
@@ -3511,6 +6171,10 @@ def main() -> None:
                 "generic_keywords": listing_memory.get("generic_keywords", ""),
                 "selected_variants": listing_memory.get("selected_variants", {}),
                 "size_price_map": listing_memory.get("size_price_map", {}),
+                "sku_decoration_code": listing_memory.get("sku_decoration_code", ""),
+                "manual_sku_listing_code": listing_memory.get("manual_sku_listing_code", ""),
+                "generated_sku_listing_code": listing_memory.get("generated_sku_listing_code", ""),
+                "sku_listing_code": listing_memory.get("sku_listing_code", ""),
                 "quantity": listing_memory.get("quantity", 100),
             },
             sort_keys=True,
@@ -3564,50 +6228,71 @@ def main() -> None:
 
     profile = active_profile
     variant_dimensions = active_profile.get("variant_dimensions", [])
-    selected_variants: dict[str, list[str]] = {}
     saved_selected_variants = listing_memory.get("selected_variants", {})
+    selected_variants = normalize_selected_variants_session_state(active_profile, listing_memory)
 
-    if variant_dimensions:
-        for dim in variant_dimensions:
-            dim_name = dim.get("name", "")
-            dim_options = dim.get("options", [])
-            default_options = saved_selected_variants.get(dim_name, dim_options)
-            valid_default_options = [option for option in default_options if option in dim_options]
-            current_values = st.session_state.get(
-                f"variant_{dim_name}",
-                valid_default_options if valid_default_options else dim_options,
-            )
-            selected_variants[dim_name] = [option for option in current_values if option in dim_options]
+    auto_load_image_mappings = bool(st.session_state.get("auto_load_image_mappings", False))
+    load_image_mappings_now = bool(st.session_state.pop("load_image_mappings_now", False))
+    manual_image_load_requested = bool(load_image_mappings_now and staged_folder_name)
+
+    # Image mappings should persist while editing listing content.
+    # Treat mappings as loaded for the staged folder + template, not for every selected colour/size change.
+    image_mapping_context_key = json.dumps(
+        {
+            "folder": staged_folder_name or "",
+            "template_slug": active_profile.get("_slug", ""),
+            "template_key": active_profile.get("template_key", ""),
+        },
+        sort_keys=True,
+    )
+
+    persisted_image_mappings_loaded = bool(
+        staged_folder_name
+        and st.session_state.get("image_mappings_loaded_folder") == staged_folder_name
+        and st.session_state.get("image_mappings_loaded_context") == image_mapping_context_key
+    )
+
+    image_mappings_stale = bool(
+        staged_folder_name
+        and st.session_state.get("image_mappings_loaded_folder") == staged_folder_name
+        and st.session_state.get("image_mappings_loaded_context") != image_mapping_context_key
+    )
+
+    if manual_image_load_requested:
+        st.session_state["image_mappings_loaded_folder"] = staged_folder_name
+        st.session_state["image_mappings_loaded_context"] = image_mapping_context_key
+        st.session_state.pop("preview_image_cache", None)
+        st.session_state.pop("preview_image_mapping_cache", None)
+        st.session_state.pop("resolved_image_bundle_cache", None)
+        persisted_image_mappings_loaded = True
+        image_mappings_stale = False
+
+    # Only explicit load/auto-load may build image mappings.
+    # Previously-loaded mappings are included only when the current folder/template/variant context matches.
+    should_load_image_mappings = bool(staged_folder_name) and (
+        auto_load_image_mappings
+        or manual_image_load_requested
+        or persisted_image_mappings_loaded
+    )
+
+    if auto_load_image_mappings and staged_folder_name:
+        image_resolution_reason = "auto_load"
+    elif manual_image_load_requested:
+        image_resolution_reason = "manual_load"
+    elif persisted_image_mappings_loaded and staged_folder_name:
+        image_resolution_reason = "cache_reuse"
+    elif image_mappings_stale:
+        image_resolution_reason = "stale_context"
     else:
-        saved_colors = saved_selected_variants.get("color", colors_available)
-        saved_sizes = saved_selected_variants.get("size", sizes_available)
+        image_resolution_reason = ""
 
-        valid_saved_colors = [color for color in saved_colors if color in colors_available]
-        current_colors = st.session_state.get(
-            "selected_colours",
-            valid_saved_colors if valid_saved_colors else colors_available,
+    image_preview_variants = selected_variants
+    if manual_image_load_requested:
+        st.session_state["image_mappings_loaded_variants"] = dict(selected_variants)
+    elif persisted_image_mappings_loaded and not auto_load_image_mappings:
+        image_preview_variants = dict(
+            st.session_state.get("image_mappings_loaded_variants", selected_variants)
         )
-        selected_colors = [color for color in current_colors if color in colors_available]
-
-        available_sizes_for_selected_colors = get_available_sizes_for_selected_colors(
-            profile,
-            selected_colors,
-        )
-
-        valid_saved_sizes = [
-            size for size in saved_sizes
-            if size in available_sizes_for_selected_colors
-        ]
-        current_sizes = st.session_state.get(
-            "selected_sizes",
-            valid_saved_sizes if valid_saved_sizes else available_sizes_for_selected_colors,
-        )
-        selected_sizes = [size for size in current_sizes if size in available_sizes_for_selected_colors]
-
-        selected_variants = {
-            "color": selected_colors,
-            "size": selected_sizes,
-        }
 
     preview_image_cache_hit = (
         st.session_state.get("preview_image_cache", {}).get("key")
@@ -3615,7 +6300,9 @@ def main() -> None:
             profile,
             dropbox_cfg,
             staged_folder_name or "",
-            selected_variants,
+            image_preview_variants,
+            should_load_image_mappings,
+            should_load_image_mappings,
         )
     )
     t_preview_image_start = time.perf_counter()
@@ -3623,11 +6310,21 @@ def main() -> None:
         profile=profile,
         dropbox_cfg=dropbox_cfg,
         staged_folder_name=staged_folder_name or "",
-        selected_variants=selected_variants,
+        selected_variants=image_preview_variants,
         dropbox_overview=dropbox_overview,
+        include_mappings=should_load_image_mappings,
+        resolve_preview_urls=should_load_image_mappings,
     )
     t_preview_image_end = time.perf_counter()
+    record_load_event(
+        "Images: preview/mapping data",
+        t_preview_image_start,
+        "with mappings" if should_load_image_mappings else "paths only",
+    )
+    staged_preview_paths = preview_image_data.get("staged_preview_paths", [])
     staged_preview_entries = preview_image_data.get("staged_preview_entries", [])
+    staged_resource_paths = preview_image_data.get("staged_resource_paths", [])
+    staged_resource_entries = preview_image_data.get("staged_resource_entries", [])
     design_color_preview_entries = preview_image_data.get("design_color_preview_entries", [])
     parent_main_image_options = preview_image_data.get("parent_main_image_options", [])
     garment_resource_entries = preview_image_data.get("garment_resource_entries", [])
@@ -3644,12 +6341,23 @@ def main() -> None:
     use_same_price = st.session_state.get("use_same_price_for_all_sizes", default_same_price)
 
     if use_same_price:
-        fallback_price = float(saved_prices.get(price_dimension_values[0], 29.99)) if default_same_price and price_dimension_values else 29.99
+        fallback_price = (
+            float(saved_prices.get(price_dimension_values[0], 29.99))
+            if default_same_price and price_dimension_values
+            else get_default_price_for_size(profile, price_dimension_values[0], saved_prices)
+            if price_dimension_values
+            else 29.99
+        )
         shared_price = float(st.session_state.get("shared_price_all_sizes", fallback_price))
         size_price_map = {size: shared_price for size in price_dimension_values}
     else:
         size_price_map = {
-            size: float(st.session_state.get(f"price_{size}", saved_prices.get(size, 29.99)))
+            size: float(
+                st.session_state.get(
+                    f"price_{size}",
+                    get_default_price_for_size(profile, size, saved_prices),
+                )
+            )
             for size in price_dimension_values
         }
 
@@ -3659,6 +6367,8 @@ def main() -> None:
         (url for label, url in parent_main_image_options if label == selected_parent_main_label),
         "",
     )
+    st.session_state.setdefault("use_resource_fallback_images", False)
+    use_resource_fallback_images = bool(st.session_state.get("use_resource_fallback_images", False))
     preview_parent_main_image_url = (
         selected_parent_main_image_url
         or (parent_main_image_options[0][1] if parent_main_image_options else "")
@@ -3669,29 +6379,37 @@ def main() -> None:
         "color_image_map": preview_color_image_map,
         "design_color_image_url_map": preview_design_color_image_url_map,
     }
-    resolved_image_bundle_cache_hit = False
-    t_resolved_image_start = time.perf_counter()
+    resolved_image_error = ""
+    image_mappings_loaded_this_run = False
+    current_resolved_image_cache_key = ""
     if staged_folder_name:
-        resolved_image_bundle_cache_hit = (
-            st.session_state.get("resolved_image_bundle_cache", {}).get("key")
-            == build_resolved_image_bundle_cache_key(
-                profile,
-                dropbox_cfg,
-                staged_folder_name,
-                selected_variants,
-                selected_parent_main_image_url,
-            )
+        current_resolved_image_cache_key = build_resolved_image_bundle_cache_key(
+            profile,
+            dropbox_cfg,
+            staged_folder_name,
+            image_preview_variants,
+            selected_parent_main_image_url,
+            use_resource_fallback_images,
         )
+    resolved_image_bundle_cache_hit = bool(
+        current_resolved_image_cache_key
+        and st.session_state.get("resolved_image_bundle_cache", {}).get("key") == current_resolved_image_cache_key
+    )
+    t_resolved_image_start = time.perf_counter()
+    if staged_folder_name and (should_load_image_mappings or resolved_image_bundle_cache_hit):
         try:
             resolved_image_bundle = get_cached_resolved_image_bundle(
                 profile=profile,
                 dropbox_cfg=dropbox_cfg,
                 staged_folder_name=staged_folder_name,
-                selected_variants=selected_variants,
+                selected_variants=image_preview_variants,
                 dropbox_overview=dropbox_overview,
                 selected_parent_main_image_url=selected_parent_main_image_url,
+                use_resource_fallback_images=use_resource_fallback_images,
             )
-        except Exception:
+            image_mappings_loaded_this_run = should_load_image_mappings and not resolved_image_bundle_cache_hit
+        except Exception as exc:
+            resolved_image_error = str(exc)
             resolved_image_bundle = {
                 "parent_main_image_url": preview_parent_main_image_url if preview_parent_main_image_url else "",
                 "other_images": [],
@@ -3699,12 +6417,36 @@ def main() -> None:
                 "design_color_image_url_map": preview_design_color_image_url_map,
             }
     t_resolved_image_end = time.perf_counter()
+    record_load_event(
+        "Images: resolved image bundle",
+        t_resolved_image_start,
+        image_resolution_reason or "cache/no-load",
+    )
     preview_parent_main_image_url = resolved_image_bundle.get("parent_main_image_url", preview_parent_main_image_url)
     preview_other_images = list(resolved_image_bundle.get("other_images", []))
     preview_color_image_map = dict(resolved_image_bundle.get("color_image_map", preview_color_image_map))
     preview_design_color_image_url_map = dict(
         resolved_image_bundle.get("design_color_image_url_map", preview_design_color_image_url_map)
     )
+    image_mappings_loaded = bool(
+        current_resolved_image_cache_key
+        and st.session_state.get("resolved_image_bundle_cache", {}).get("key") == current_resolved_image_cache_key
+    )
+    if not staged_folder_name:
+        image_mapping_status = "not_loaded"
+        image_mapping_detail = "Select a staged folder to load image mappings."
+    elif resolved_image_error:
+        image_mapping_status = "error"
+        image_mapping_detail = resolved_image_error
+    elif image_mappings_loaded:
+        image_mapping_status = "loaded"
+        image_mapping_detail = "Image mappings loaded."
+    elif image_mappings_stale:
+        image_mapping_status = "not_loaded"
+        image_mapping_detail = "Image mappings need refresh because the folder or template changed. Click Load / refresh image mappings to update them."
+    else:
+        image_mapping_status = "not_loaded"
+        image_mapping_detail = "Image mappings not loaded yet. Use Load / refresh image mappings when you need image review or full checks."
 
     with tab_setup:
         render_active_product_context(
@@ -3715,11 +6457,27 @@ def main() -> None:
             preview_color_image_map=preview_color_image_map,
             preview_design_color_image_url_map=preview_design_color_image_url_map,
             preview_other_images=preview_other_images,
+            image_mapping_status=image_mapping_status,
+            image_mapping_detail=image_mapping_detail,
         )
-        if st.button("Reload images", key="reload_images_setup"):
-            st.session_state.pop("dropbox_overview_cache", None)
-            st.session_state.pop("preview_image_cache", None)
-            st.session_state.pop("resolved_image_bundle_cache", None)
+        load_images_disabled = not bool(staged_folder_name)
+        if st.button(
+            "Load / refresh image mappings",
+            key="load_image_mappings_setup",
+            width="stretch",
+            disabled=load_images_disabled,
+        ):
+            st.session_state["pending_perf_action_label"] = "load/refresh image mappings"
+
+            st.session_state["load_image_mappings_now"] = True
+            if staged_folder_name:
+                st.session_state["image_mappings_loaded_folder"] = staged_folder_name
+                st.session_state["image_mappings_loaded_context"] = image_mapping_context_key
+
+            st.rerun()
+
+        if load_images_disabled:
+            st.caption("Select a staged folder before loading image mappings.")
 
         st.subheader("Image review")
 
@@ -3729,69 +6487,88 @@ def main() -> None:
             else:
                 st.write(f"Resource root: `{dropbox_overview['resource_root']}`")
                 st.write(f"Variant folder: `{dropbox_overview['variant_folder']}`")
-                if dropbox_overview.get("garment_resource_warning"):
+                if dropbox_overview.get("garment_resource_warning") and not staged_resource_paths:
                     st.warning(dropbox_overview["garment_resource_warning"])
 
-                tab_names = ["Staged variant images", "Shared resources", "Variant combinations"]
-                colours_tab, resources_tab, combos_tab = st.tabs(tab_names)
+                st.write(f"Staged image files found: `{len(staged_preview_paths)}`")
+                st.write(f"Staged resources folder files found: `{len(staged_resource_paths)}`")
+                st.write(f"Selected variants: `{build_variants_summary(selected_variants)}`")
+                st.write(f"Fallback garment support files configured: `{len(dropbox_overview.get('garment_resource_images', []))}`")
+                st.write(f"Fallback shared support files configured: `{len(dropbox_overview.get('shared_resource_images', []))}`")
+                st.checkbox(
+                    "Use fallback resource images when listing resources is empty",
+                    key="use_resource_fallback_images",
+                    help="When this is off, only images inside the staged folder's resources folder are used as secondary images.",
+                )
 
-                with st.expander("Raw staged folder contents", expanded=False):
-                    if not staged_folder_name:
-                        st.caption("Select a staged Dropbox folder to preview its images.")
-                    else:
-                        st.write(f"Stage folder: `{staged_folder_name}`")
+                if st.session_state.get("show_header_debug", False):
+                    with st.expander("Raw staged folder contents", expanded=False):
+                        if not staged_folder_name:
+                            st.caption("Select a staged Dropbox folder to preview its images.")
+                        elif staged_preview_paths:
+                            for preview_path in staged_preview_paths:
+                                st.code(preview_path, language=None)
+                        else:
+                            st.caption("No staged image files found.")
+
+                if image_mapping_status != "loaded":
+                    st.info("Image mappings are not loaded yet. Use Load image mappings when you need parent/child/support image resolution.")
+                else:
+                    tab_names = ["Staged variant images", "Secondary images", "Variant combinations"]
+                    colours_tab, resources_tab, combos_tab = st.tabs(tab_names)
+
+                    with resources_tab:
+                        st.caption("Images in the staged folder's resources folder are used first. Shared resources are used only when that folder has no images.")
                         render_path_grid(
-                            "Selected staged images",
-                            staged_preview_entries,
+                            "Listing resources folder",
+                            staged_resource_entries,
+                            cols_per_row=5,
+                            image_width=150,
+                        )
+                        render_path_grid(
+                            "Fallback garment support images",
+                            garment_resource_entries,
+                            cols_per_row=5,
+                            image_width=150,
+                        )
+                        render_path_grid(
+                            "Fallback global resource images",
+                            global_resource_entries,
                             cols_per_row=5,
                             image_width=150,
                         )
 
-                with resources_tab:
-                    render_path_grid(
-                        "Garment support images",
-                        garment_resource_entries,
-                        cols_per_row=5,
-                        image_width=150,
-                    )
-                    render_path_grid(
-                        "Global resource images",
-                        global_resource_entries,
-                        cols_per_row=5,
-                        image_width=150,
-                    )
+                    with colours_tab:
+                        st.caption("These are the staged mapped variant images expected from the selected staged folder.")
+                        parent_main_option_labels = ["Automatic (recommended)"] + [
+                            label for label, _ in parent_main_image_options
+                        ]
+                        current_parent_main_label = st.session_state.get("parent_main_image_choice", "Automatic (recommended)")
+                        if current_parent_main_label not in parent_main_option_labels:
+                            current_parent_main_label = "Automatic (recommended)"
+                        st.selectbox(
+                            "Parent main image",
+                            parent_main_option_labels,
+                            index=parent_main_option_labels.index(current_parent_main_label),
+                            key="parent_main_image_choice",
+                        )
+                        render_color_grid(
+                            staged_variant_entries,
+                            cols_per_row=5,
+                            image_width=150,
+                        )
 
-                with colours_tab:
-                    st.caption("These are the staged mapped variant images expected from the selected staged folder.")
-                    parent_main_option_labels = ["Automatic (recommended)"] + [
-                        label for label, _ in parent_main_image_options
-                    ]
-                    current_parent_main_label = st.session_state.get("parent_main_image_choice", "Automatic (recommended)")
-                    if current_parent_main_label not in parent_main_option_labels:
-                        current_parent_main_label = "Automatic (recommended)"
-                    st.selectbox(
-                        "Parent main image",
-                        parent_main_option_labels,
-                        index=parent_main_option_labels.index(current_parent_main_label),
-                        key="parent_main_image_choice",
-                    )
-                    render_color_grid(
-                        staged_variant_entries,
-                        cols_per_row=5,
-                        image_width=150,
-                    )
-
-                with combos_tab:
-                    render_design_color_grid(
-                        design_color_preview_entries,
-                        cols_per_row=5,
-                        image_width=150,
-                    )
+                    with combos_tab:
+                        render_design_color_grid(
+                            design_color_preview_entries,
+                            cols_per_row=5,
+                            image_width=150,
+                        )
 
         st.subheader("Product template details")
         col1, col2 = st.columns(2)
         with col1:
-            st.text_input("Parent SKU", value=parent_sku_from_config, disabled=True)
+            st.text_input("Garment code", value=parent_sku_from_config, disabled=True)
             st.text_input("Brand", value=GLOBAL_BRAND_NAME, disabled=True)
             st.text_input("Manufacturer", value=str(get_default(profile, "manufacturer", "Generic")), disabled=True)
             st.text_input("Product type", value=str(get_default(profile, "feed_product_type", "")), disabled=True)
@@ -3806,6 +6583,20 @@ def main() -> None:
                 value=str(get_default(profile, "recommended_browse_nodes", "")),
                 disabled=True,
             )
+        stock_reference_key = str(active_profile.get("stock_reference_key", "") or "").strip()
+        if stock_reference_key:
+            stock_reference = get_stock_reference(active_profile)
+            st.subheader("Stock reference")
+            stock_col1, stock_col2, stock_col3 = st.columns(3)
+            stock_col1.text_input("Reference key", value=stock_reference_key, disabled=True)
+            stock_col2.text_input("Supplier", value=str(stock_reference.get("supplier", "") or ""), disabled=True)
+            stock_col3.text_input(
+                "Stock-ready mode",
+                value="Strict" if is_strict_stock_ready(active_profile) else "Warning only",
+                disabled=True,
+            )
+            if not stock_reference:
+                st.warning("This template has a stock_reference_key, but no matching config/stock_references.json entry was found.")
 
     with tab_content:
         render_active_product_context(
@@ -3816,6 +6607,8 @@ def main() -> None:
             preview_color_image_map=preview_color_image_map,
             preview_design_color_image_url_map=preview_design_color_image_url_map,
             preview_other_images=preview_other_images,
+            image_mapping_status=image_mapping_status,
+            image_mapping_detail=image_mapping_detail,
         )
 
         title = st.text_input(
@@ -3828,6 +6621,12 @@ def main() -> None:
             st.caption(f"Title: {title_chars} chars - target 150 chars")
         else:
             st.caption(f"Title: {title_chars} chars - good")
+        repeated_title_words = words_repeated_at_least(title, 3)
+        if repeated_title_words:
+            st.error(
+                "Amazon may reject titles where one word appears 3+ times: "
+                + ", ".join(repeated_title_words[:8])
+            )
 
         st.subheader("Bullets")
         bullets = [
@@ -3889,19 +6688,13 @@ def main() -> None:
                 dim_name = dim.get("name", "")
                 dim_label = dim.get("label", dim_name.title())
                 dim_options = dim.get("options", [])
-                default_options = saved_selected_variants.get(dim_name, dim_options)
-                valid_default_options = [option for option in default_options if option in dim_options]
                 widget_key = f"variant_{dim_name}"
-                if widget_key not in st.session_state:
-                    st.session_state[widget_key] = valid_default_options if valid_default_options else dim_options
                 selected_variants[dim_name] = st.multiselect(
                     dim_label,
                     dim_options,
                     key=widget_key,
                 )
         else:
-            if "selected_colours" not in st.session_state:
-                st.session_state["selected_colours"] = selected_variants.get("color", colors_available)
             selected_colors = st.multiselect(
                 "Colours",
                 colors_available,
@@ -3915,9 +6708,13 @@ def main() -> None:
                 profile,
                 selected_colors,
             )
-
-            if "selected_sizes" not in st.session_state:
-                st.session_state["selected_sizes"] = [size for size in selected_variants.get("size", available_sizes_for_selected_colors) if size in available_sizes_for_selected_colors]
+            normalized_sizes, should_set_sizes = normalize_multiselect_values(
+                st.session_state.get("selected_sizes", []),
+                available_sizes_for_selected_colors,
+                selected_variants.get("size", available_sizes_for_selected_colors),
+            )
+            if should_set_sizes or "selected_sizes" not in st.session_state:
+                st.session_state["selected_sizes"] = list(normalized_sizes)
             selected_sizes = st.multiselect(
                 "Sizes",
                 available_sizes_for_selected_colors,
@@ -3929,17 +6726,73 @@ def main() -> None:
                 "size": selected_sizes,
             }
 
+        st.subheader("SKU setup")
+        default_sku_decoration_code = get_default_sku_decoration_code(profile, listing_memory)
+        if "sku_decoration_choice" not in st.session_state:
+            st.session_state["sku_decoration_choice"] = (
+                default_sku_decoration_code
+                if default_sku_decoration_code in SKU_DECORATION_OPTIONS
+                else "Custom"
+            )
+        if "custom_sku_decoration_code" not in st.session_state:
+            st.session_state["custom_sku_decoration_code"] = (
+                ""
+                if default_sku_decoration_code in SKU_DECORATION_OPTIONS
+                else default_sku_decoration_code
+            )
+
+        sku_decoration_choice = st.selectbox(
+            "Decoration code",
+            SKU_DECORATION_OPTIONS,
+            key="sku_decoration_choice",
+        )
+        if sku_decoration_choice == "Custom":
+            custom_sku_decoration_code = st.text_input(
+                "Custom decoration code",
+                key="custom_sku_decoration_code",
+            )
+            sku_decoration_code = sanitize_sku(custom_sku_decoration_code).upper()
+            if not sku_decoration_code:
+                st.warning("Enter a custom SKU decoration code.")
+        else:
+            sku_decoration_code = sku_decoration_choice
+
+        generated_sku_listing_code = get_or_create_generated_sku_listing_code(listing_memory)
+        manual_sku_listing_code = st.text_input(
+            "Listing/design code (optional)",
+            key="manual_sku_listing_code",
+            placeholder=generated_sku_listing_code,
+            help="Leave blank to use the generated unique design identifier.",
+        )
+        manual_sku_listing_code = sanitize_sku(manual_sku_listing_code).upper()
+        generated_sku_listing_code = sanitize_sku(generated_sku_listing_code).upper()
+        sku_listing_code = manual_sku_listing_code or generated_sku_listing_code
+        parent_sku_for_listing = build_parent_sku_from_context(
+            profile,
+            sku_decoration_code,
+            sku_listing_code,
+        )
+        if manual_sku_listing_code:
+            st.caption(f"Parent SKU: `{parent_sku_for_listing}`")
+        else:
+            st.caption(f"Generated listing code: `{generated_sku_listing_code}`")
+            st.caption(f"Parent SKU: `{parent_sku_for_listing}`")
+
         with st.expander("Selected combinations preview", expanded=False):
             render_variant_combinations_preview(
                 profile=profile,
-                parent_sku=parent_sku_from_config,
+                parent_sku=parent_sku_for_listing,
                 selected_variants=selected_variants,
+                base_title=title,
+                sku_decoration_code=sku_decoration_code,
+                sku_listing_code=sku_listing_code,
             )
 
         price_dimension_values = selected_variants.get("size", ["default"])
         size_price_map = build_size_price_inputs(
             price_dimension_values,
             saved_prices=listing_memory.get("size_price_map", {}),
+            profile=profile,
         )
 
         st.subheader("Inventory setup")
@@ -3971,22 +6824,239 @@ def main() -> None:
 
     with tab_review_queue:
         st.caption("Review ready listings and approve them for generation.")
-        render_review_queue_view(
-            ready_folder_names=ready_folder_names,
-            profiles=profiles,
-            dropbox_cfg=dropbox_cfg,
-        )
+
+        review_col1, review_col2 = st.columns([1, 3])
+        with review_col1:
+            if st.button("Load / refresh review queue", key="load_review_queue_tab_btn", width="stretch"):
+                st.session_state["active_perf_action_label"] = "load review queue"
+                st.session_state["review_queue_tab_loaded"] = True
+        with review_col2:
+            if not st.session_state.get("review_queue_tab_loaded", False):
+                st.info("Review queue is not loaded yet. Click Load / refresh review queue when you need admin review.")
+
+        if st.session_state.get("review_queue_tab_loaded", False):
+            render_review_queue_view(
+                ready_folder_names=ready_folder_names,
+                profiles=profiles,
+                dropbox_cfg=dropbox_cfg,
+            )
 
     with tab_approved_output:
         st.caption("Generate selected or all approved folders and download completed workbooks.")
-        render_approved_queue_view(
-            approved_folder_names=approved_folder_names,
-            profiles=profiles,
-            dropbox_cfg=dropbox_cfg,
-        )
+
+        with st.expander("Restage finished folders", expanded=bool(st.session_state.get("finished_restage_results", []))):
+            existing_finished_restage_selection = list(st.session_state.get("finished_output_restage_selected", []))
+            valid_finished_restage_selection = [
+                folder_name for folder_name in existing_finished_restage_selection
+                if folder_name in finished_folder_names
+            ]
+            if valid_finished_restage_selection != existing_finished_restage_selection:
+                st.session_state["finished_output_restage_selected"] = valid_finished_restage_selection
+
+            with st.form("finished_output_restaging_form"):
+                selected_finished_folders_to_restage = st.multiselect(
+                    "Select finished folders to restage",
+                    finished_folder_names,
+                    key="finished_output_restage_selected",
+                )
+                restage_selected_finished = st.form_submit_button(
+                    "Restage selected finished folders",
+                    width="stretch",
+                    disabled=not bool(finished_folder_names),
+                )
+
+            if restage_selected_finished:
+                if not selected_finished_folders_to_restage:
+                    st.warning("Select at least one finished folder to restage.")
+                else:
+                    restage_action_label = (
+                        "restage finished folder"
+                        if len(selected_finished_folders_to_restage) == 1
+                        else "bulk restage finished folders"
+                    )
+                    st.session_state["active_perf_action_label"] = restage_action_label
+                    st.session_state["pending_perf_action_label"] = restage_action_label
+
+                    restage_results = [
+                        restage_finished_listing_for_review(
+                            dropbox_cfg=dropbox_cfg,
+                            profiles=profiles,
+                            fallback_profile=profile,
+                            finished_folder_name=finished_folder_name,
+                            target_state="approved",
+                        )
+                        for finished_folder_name in selected_finished_folders_to_restage
+                    ]
+                    success_results = [
+                        row for row in restage_results
+                        if row.get("status") == "Success"
+                    ]
+                    failed_results = [
+                        row for row in restage_results
+                        if row.get("status") == "Failed"
+                    ]
+
+                    st.session_state["finished_restage_results"] = restage_results
+
+                    if len(selected_finished_folders_to_restage) == 1 and len(success_results) == 1:
+                        flash_title = f"Moved back to approved: {success_results[0].get('new_approved_folder_name', '')}"
+                        flash_detail = success_results[0].get("warning", "")
+                    else:
+                        flash_title = f"Moved {len(success_results)} of {len(selected_finished_folders_to_restage)} selected finished folders back to approved."
+                        flash_detail = "Use the approved queue below to generate them again."
+                        if failed_results:
+                            flash_detail = f"{len(failed_results)} folder(s) failed. " + flash_detail
+
+                    clear_runtime_caches()
+                    set_workflow_flash(
+                        "success" if not failed_results else "warning",
+                        flash_title,
+                        flash_detail,
+                    )
+                    st.rerun()
+
+            finished_restage_results = list(st.session_state.get("finished_restage_results", []))
+            if finished_restage_results:
+                success_count = sum(1 for row in finished_restage_results if row.get("status") == "Success")
+                failed_count = sum(1 for row in finished_restage_results if row.get("status") == "Failed")
+                col_a, col_b, col_c = st.columns(3)
+                col_a.metric("Selected", len(finished_restage_results))
+                col_b.metric("Success", success_count)
+                col_c.metric("Failed", failed_count)
+                st.dataframe(finished_restage_results, width="stretch", hide_index=True)
+
+            st.divider()
+            st.markdown("**Ignore bad generation**")
+            st.caption("Marks a finished workbook as ignored without deleting or moving the Dropbox folder.")
+
+            existing_finished_ignore_selection = list(st.session_state.get("finished_output_ignore_selected", []))
+            valid_finished_ignore_selection = [
+                folder_name for folder_name in existing_finished_ignore_selection
+                if folder_name in finished_folder_names
+            ]
+            if valid_finished_ignore_selection != existing_finished_ignore_selection:
+                st.session_state["finished_output_ignore_selected"] = valid_finished_ignore_selection
+
+            with st.form("finished_output_ignore_form"):
+                selected_finished_folders_to_ignore = st.multiselect(
+                    "Select finished generations to ignore",
+                    finished_folder_names,
+                    key="finished_output_ignore_selected",
+                )
+                ignore_reason = st.text_input(
+                    "Reason",
+                    value="Manual Amazon upload used instead",
+                    key="finished_output_ignore_reason",
+                )
+                ignored_by = st.selectbox(
+                    "Marked by",
+                    WORKFLOW_ASSIGNEES,
+                    key="finished_output_ignore_by",
+                )
+                ignore_selected_finished = st.form_submit_button(
+                    "Mark selected generation(s) ignored",
+                    width="stretch",
+                    disabled=not bool(finished_folder_names),
+                )
+
+            if ignore_selected_finished:
+                if not selected_finished_folders_to_ignore:
+                    st.warning("Select at least one finished generation to ignore.")
+                else:
+                    st.session_state["active_perf_action_label"] = "ignore finished generation"
+                    st.session_state["pending_perf_action_label"] = "ignore finished generation"
+
+                    ignore_results = [
+                        mark_finished_generation_ignored(
+                            dropbox_cfg=dropbox_cfg,
+                            profiles=profiles,
+                            fallback_profile=profile,
+                            finished_folder_name=finished_folder_name,
+                            reason=ignore_reason.strip(),
+                            actor=ignored_by,
+                        )
+                        for finished_folder_name in selected_finished_folders_to_ignore
+                    ]
+                    success_results = [
+                        row for row in ignore_results
+                        if row.get("status") == "Success"
+                    ]
+                    failed_results = [
+                        row for row in ignore_results
+                        if row.get("status") == "Failed"
+                    ]
+
+                    st.session_state["finished_ignore_results"] = ignore_results
+                    clear_runtime_caches()
+                    set_workflow_flash(
+                        "success" if not failed_results else "warning",
+                        f"Ignored {len(success_results)} of {len(selected_finished_folders_to_ignore)} selected generation(s).",
+                        "No files were deleted or moved.",
+                    )
+                    st.rerun()
+
+            finished_ignore_results = list(st.session_state.get("finished_ignore_results", []))
+            if finished_ignore_results:
+                success_count = sum(1 for row in finished_ignore_results if row.get("status") == "Success")
+                failed_count = sum(1 for row in finished_ignore_results if row.get("status") == "Failed")
+                col_a, col_b, col_c = st.columns(3)
+                col_a.metric("Selected", len(finished_ignore_results))
+                col_b.metric("Ignored", success_count)
+                col_c.metric("Failed", failed_count)
+                st.dataframe(finished_ignore_results, width="stretch", hide_index=True)
+
+        approved_col1, approved_col2 = st.columns([1, 3])
+        with approved_col1:
+            if st.button("Load / refresh approved output", key="load_approved_output_tab_btn", width="stretch"):
+                st.session_state["active_perf_action_label"] = "load approved output"
+                st.session_state["approved_output_tab_loaded"] = True
+        with approved_col2:
+            if not st.session_state.get("approved_output_tab_loaded", False):
+                st.info("Approved output is not loaded yet. Click Load / refresh approved output when you need generation.")
+
+        if st.session_state.get("approved_output_tab_loaded", False):
+            render_approved_queue_view(
+                approved_folder_names=approved_folder_names,
+                profiles=profiles,
+                dropbox_cfg=dropbox_cfg,
+            )
+
+    render_inline_loading_debug()
+    render_rerun_cause_debug()
+    save_debug_state_snapshot()
 
     if not score_clicked and not ready_clicked:
         return
+
+    if staged_folder_name and not image_mappings_loaded:
+        image_resolution_reason = "submit_review" if ready_clicked else "score_check"
+        with st.spinner("Loading image mappings for quality checks..."):
+            try:
+                resolved_image_bundle = get_cached_resolved_image_bundle(
+                    profile=profile,
+                    dropbox_cfg=dropbox_cfg,
+                    staged_folder_name=staged_folder_name,
+                    selected_variants=selected_variants,
+                    dropbox_overview=dropbox_overview,
+                    selected_parent_main_image_url=selected_parent_main_image_url,
+                    use_resource_fallback_images=use_resource_fallback_images,
+                )
+                image_mappings_loaded_this_run = True
+                resolved_image_bundle_cache_hit = False
+                resolved_image_error = ""
+                preview_parent_main_image_url = resolved_image_bundle.get("parent_main_image_url", preview_parent_main_image_url)
+                preview_other_images = list(resolved_image_bundle.get("other_images", []))
+                preview_color_image_map = dict(resolved_image_bundle.get("color_image_map", preview_color_image_map))
+                preview_design_color_image_url_map = dict(
+                    resolved_image_bundle.get("design_color_image_url_map", preview_design_color_image_url_map)
+                )
+                image_mappings_loaded = True
+                image_mapping_status = "loaded"
+                image_mapping_detail = "Image mappings loaded."
+            except Exception as exc:
+                resolved_image_error = str(exc)
+                image_mapping_status = "error"
+                image_mapping_detail = resolved_image_error
 
     preflight = build_preflight_report(
         profile=profile,
@@ -4000,10 +7070,15 @@ def main() -> None:
         selected_variants=selected_variants,
         size_price_map=size_price_map,
         quantity=quantity,
+        sku_decoration_code=sku_decoration_code,
+        sku_listing_code=sku_listing_code,
         resolved_parent_main_image_url=preview_parent_main_image_url,
         resolved_other_images=preview_other_images,
         resolved_color_image_map=preview_color_image_map,
         resolved_design_color_image_url_map=preview_design_color_image_url_map,
+        allow_image_resolution_fallback=True,
+        use_resource_fallback_images=use_resource_fallback_images,
+        has_staged_resource_images=bool(staged_resource_paths),
     )
 
     preview_payload = preflight["preview_payload"]
@@ -4027,6 +7102,9 @@ def main() -> None:
                         "resolved_image_bundle": {
                             "cache_hit": resolved_image_bundle_cache_hit,
                             "seconds": round(t_resolved_image_end - t_resolved_image_start, 4),
+                            "loaded_this_run": image_mappings_loaded_this_run,
+                            "reason": image_resolution_reason,
+                            "status": image_mapping_status,
                         },
                     },
                 )
@@ -4069,6 +7147,10 @@ def main() -> None:
         generic_keywords=generic_keywords,
         selected_variants=selected_variants,
         size_price_map=size_price_map,
+        sku_decoration_code=sku_decoration_code,
+        sku_listing_code=sku_listing_code,
+        manual_sku_listing_code=manual_sku_listing_code,
+        generated_sku_listing_code=generated_sku_listing_code,
         quantity=quantity,
         staged_folder_name=staged_folder_name or "",
     )
@@ -4101,6 +7183,27 @@ def main() -> None:
             generation_payload["prepared_at"] = format_workflow_timestamp()
             st.session_state["prepared_at"] = generation_payload["prepared_at"]
 
+            generation_payload["review_snapshot"] = build_review_snapshot(
+                profile=profile,
+                payload=generation_payload,
+                dropbox_cfg=dropbox_cfg,
+                folder_path=stage_folder_path,
+                quality_report=quality_report,
+                preview_errors=all_preview_errors,
+            )
+            append_workflow_event(
+                generation_payload,
+                action="submit_for_review",
+                actor=st.session_state.get("content_prepared_by", "") or st.session_state.get("assets_prepared_by", ""),
+                from_state="_stage",
+                to_state="ready",
+                folder_path=stage_folder_path,
+                details={
+                    "assets_prepared_by": st.session_state.get("assets_prepared_by", ""),
+                    "content_prepared_by": st.session_state.get("content_prepared_by", ""),
+                },
+            )
+
             listing_memory_path = save_listing_inputs_json_to_dropbox(
                 profile=profile,
                 payload=generation_payload,
@@ -4113,13 +7216,14 @@ def main() -> None:
             )
 
             st.session_state["last_ready_folder_path"] = ready_folder_path
-
-            target_container = content_action_result_container or st.container()
-            with target_container:
-                st.success(f"Submitted for review: {Path(ready_folder_path).name}")
-                st.info(f"Saved listing inputs to {listing_memory_path} and moved the folder to ready for admin review.")
-
-            st.stop()
+            st.session_state["clear_staged_folder_selection_on_rerun"] = True
+            clear_runtime_caches()
+            set_workflow_flash(
+                "success",
+                f"Submitted for review: {Path(ready_folder_path).name}",
+                f"Saved listing inputs to {listing_memory_path} and moved the folder to ready for admin review.",
+            )
+            st.rerun()
         except Exception as exc:
             target_container = content_action_result_container or st.container()
             with target_container:
@@ -4205,6 +7309,28 @@ def main() -> None:
 
         output_path, workbook_timings = build_workbook(profile, payload)
 
+        generated_artifact = save_generated_artifacts_to_dropbox(
+            profile=profile,
+            payload=payload,
+            finished_folder_path=finished_folder_path,
+            output_path=output_path,
+        )
+        append_workflow_event(
+            payload,
+            action="generate_staged_listing",
+            actor=st.session_state.get("content_prepared_by", "") or st.session_state.get("assets_prepared_by", ""),
+            from_state="_stage",
+            to_state="finished",
+            folder_path=finished_folder_path,
+            details={
+                "output_name": output_path.name,
+                "workbook_dropbox_path": generated_artifact.get("workbook_dropbox_path", ""),
+                "sku_manifest_dropbox_path": generated_artifact.get("sku_manifest_dropbox_path", ""),
+                "child_sku_count": generated_artifact.get("child_sku_count", 0),
+                "missing_supplier_stock_key_count": generated_artifact.get("missing_supplier_stock_key_count", 0),
+            },
+        )
+
         listing_memory_path = save_listing_memory_to_dropbox(
             profile=profile,
             payload=payload,
@@ -4259,5 +7385,21 @@ def main() -> None:
             st.write(f"Finalized SKU: `{final_sku}`")
         st.exception(exc)
 
+
+
+
+    record_load_event(
+        "Total: reached end of main",
+        st.session_state.get("current_rerun_started_at", time.perf_counter()),
+    )
+    save_completed_load_events()
+
+
 if __name__ == "__main__":
     main()
+
+
+
+
+
+

@@ -118,13 +118,13 @@
 "UC604": {
   "variant_folder": "UC604",
   "main_image_map": {
-    "Bottle Green": "UC604BG.jpg",
-    "Black": "UC604BK.jpg",
-    "Charcoal": "UC604CH.jpg",
-    "Maroon": "UC604MR.jpg",
-    "Navy": "UC604NY.jpg",
-    "Red": "UC604RD.jpg",
-    "Royal": "UC604RY.jpg"
+    "Bottle Green": "UC604BG.png",
+    "Black": "UC604BK.png",
+    "Charcoal": "UC604CH.png",
+    "Maroon": "UC604MR.png",
+    "Navy": "UC604NY.png",
+    "Red": "UC604RD.png",
+    "Royal": "UC604RY.png"
   }
 },
 "UC620": {
@@ -336,7 +336,81 @@
     "Navy/Red": "R238XNYRD.jpg",
     "Navy/Yellow": "R238XNYYE.jpg"
   }
+},
+"UC301": {
+  "variant_folder": "UC301",
+  "main_image_map": {
+    "Royal": "1.png",
+    "Military Green": "2.png",
+    "Brown": "3.png",
+    "Black": "4.png",
+    "Bottle Green": "5.png",
+    "Beige": "6.png",
+    "Yellow": "7.png",
+    "Sapphire Blue": "8.png",
+    "White": "9.png",
+    "Sky": "10.png",
+    "Red": "11.png",
+    "Purple": "12.png",
+    "Orange": "13.png",
+    "French Navy": "14.png",
+    "Kelly Green": "15.png",
+    "Maroon": "16.png",
+    "Hot Pink": "17.png",
+    "Heather Grey": "18.png",
+    "Navy": "19.png",
+    "Charcoal": "20.png"
+  }
+},
+"B657": {
+  "variant_folder": "B657",
+  "main_image_map": {
+    "Vintage Black": "B657VBK.png",
+    "Vintage Bottle Green": "B657VBG.png",
+    "Vintage Brown": "B657VBR.png",
+    "Vintage Denim": "B657VDN.png",
+    "Vintage Stone": "B657VST.png"
+  }
+},
+"JH001": {
+  "variant_folder": "JH001",
+  "main_image_map": {
+    "Arctic White": "JH001AWHI.png",
+    "Bottle Green": "JH001BOTT.png",
+    "Burgundy": "JH001BURG.png",
+    "Charcoal": "JH001CHAR.png",
+    "Chocolate Fudge Brownie": "JH001CHFB.png",
+    "Deep Black": "JH001DPBK.png",
+    "Desert Sand": "JH001DSAN.png",
+    "Oxford Navy": "JH001OXNY.png"
+  }
+},
+"SS168": {
+  "variant_folder": "SS168",
+  "main_image_map": {
+    "Black/White": "SS168BKWH.png",
+    "Navy/White": "SS168NYWH.png",
+    "Red/White": "SS168RDWH.png",
+    "Royal Blue/White": "SS168RBWH.png",
+    "Sunflower/Kelly Green": "SS168SUKG.png",
+    "White/Black": "SS168WHBK.png",
+    "White/Navy": "SS168WHNY.png",
+    "White/Red": "SS168WHRD.png",
+    "White/Royal Blue": "SS168WHRB.png"
+  }
+},
+"JH030": {
+  "variant_folder": "JH030",
+  "main_image_map": {
+    "Arctic White": "JH030AWHI.png",
+    "Bottle Green": "JH030BOTT.png",
+    "Burgundy": "JH030BURG.png",
+    "Charcoal": "JH030CHAR.png",
+    "Chocolate Fudge Brownie": "JH030CHFB.png",
+    "Deep Black": "JH030DPBK.png",
+    "Desert Sand": "JH030DSAN.png",
+    "Oxford Navy": "JH030OXNY.png"
+  }
 }
 }
   }
-  

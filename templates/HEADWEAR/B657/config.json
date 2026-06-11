@@ -1,0 +1,66 @@
+{
+  "label": "B657 Relaxed 5 Panel Vintage Cap",
+  "template_key": "B657",
+  "template_file": "HAT.xlsm",
+  "parent_sku": "B657",
+  "feed_product_type": "hat",
+  "recommended_browse_nodes": "1730956031",
+  "product_category": "accessory",
+  "brand_name": "Generic",
+  "manufacturer": "Generic",
+  "department_name": "Unisex",
+  "target_gender": "Unisex",
+  "age_range_description": "Adult",
+  "material_type": "Cotton",
+  "style_name": "Relaxed 5 Panel Vintage Cap",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "Baseball Cap",
+  "care_instructions": "Sponge Clean Only",
+  "fit_type": "Adjustable",
+  "weave_type": "Woven",
+  "theme": "Custom Embroidered Workwear",
+  "country_of_origin": "China",
+
+  "colors": [
+    "Vintage Black",
+    "Vintage Bottle Green",
+    "Vintage Brown",
+    "Vintage Denim",
+    "Vintage Stone"
+  ],
+
+  "sizes": [
+    "One Size"
+  ],
+
+  "size_code_map": {
+    "One Size": "ONE"
+  },
+
+  "color_sku_map": {
+    "Vintage Black": "VBK",
+    "Vintage Bottle Green": "VBG",
+    "Vintage Brown": "VBR",
+    "Vintage Denim": "VDN",
+    "Vintage Stone": "VST"
+  },
+
+  "extra_parent_fields": {
+    "headwear_size_system": "UK",
+    "headwear_size_class": "Alpha",
+    "headwear_size": "One Size",
+    "fabric_type": "100% Heavy Washed Cotton",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+
+  "extra_child_fields": {
+    "headwear_size_system": "UK",
+    "headwear_size_class": "Alpha",
+    "headwear_size": "One Size",
+    "fabric_type": "100% Heavy Washed Cotton",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  }
+}

@@ -176,6 +176,20 @@ def upload_text_file(path: str, content: str) -> str:
         raise ValueError(f"Dropbox text upload failed for {path}: {exc}") from exc
 
 
+
+def upload_binary_file(path: str, content: bytes) -> str:
+    dbx = get_dropbox_client()
+    try:
+        result = dbx.files_upload(
+            content,
+            path,
+            mode=WriteMode("overwrite"),
+        )
+        return result.path_display
+    except ApiError as exc:
+        raise ValueError(f"Dropbox binary upload failed for {path}: {exc}") from exc
+
+
 def download_text_file(path: str) -> str:
     dbx = get_dropbox_client()
     try:

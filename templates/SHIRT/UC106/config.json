@@ -3,6 +3,7 @@
   "template_key": "UC106",
   "template_file": "SHIRT.xlsm",
   "parent_sku": "UC106",
+  "stock_reference_key": "UC106",
   "feed_product_type": "shirt",
   "recommended_browse_nodes": "1731501031",
   "product_category": "apparel",

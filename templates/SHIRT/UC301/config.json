@@ -1,17 +1,17 @@
-    {
-  "label": "UC301 Front Back Embroidery T Shirt",
-  "template_key": "UC301_FB",
+{
+  "label": "UC301",
+  "template_key": "UC301",
   "template_file": "SHIRT.xlsx",
-  "parent_sku": "UC301FB",
+  "parent_sku": "UC301",
+  "stock_reference_key": "UC301",
   "feed_product_type": "shirt",
-  "recommended_browse_nodes": "1731011031",
+  "recommended_browse_nodes": "1731028031",
   "product_category": "apparel",
-  "brand_name": "Generic",
+  "brand_name": "sloganitto",
   "manufacturer": "Generic",
   "department_name": "unisex-adult",
   "target_gender": "unisex",
   "age_range_description": "Adult",
-
   "material_type": "Cotton",
   "style_name": "Front & Back Embroidered T Shirt",
   "variation_theme": "SizeColor",
@@ -21,7 +21,6 @@
   "fit_type": "Regular",
   "theme": "Custom Front and Back Embroidered Workwear",
   "country_of_origin": "Great Britain",
-
   "colors": [
     "Beige",
     "Bottle Green",
@@ -44,7 +43,6 @@
     "Yellow",
     "Military Green"
   ],
-
   "sizes": [
     "XS",
     "S",
@@ -55,9 +53,14 @@
     "3XL",
     "4XL",
     "5XL",
-    "6XL"
+    "6XL",
+    "1-2 Years",
+    "3-4 Years",
+    "5-6 Years",
+    "7-8 Years",
+    "9-11 Years",
+    "12-13 Years"
   ],
-
   "size_code_map": {
     "XS": "XS",
     "S": "S",
@@ -68,9 +71,15 @@
     "3XL": "3XL",
     "4XL": "4XL",
     "5XL": "5XL",
-    "6XL": "6XL"
-  },
+    "6XL": "6XL",
+    "1-2 Years": "1-2 Years",
+    "3-4 Years": "3-4 Years",
+    "5-6 Years": "5-6 Years",
+    "7-8 Years": "7-8 Years",
+    "9-11 Years": "9-11 Years",
+    "12-13 Years": "12-13 Years"
 
+  },
   "color_sku_map": {
     "Beige": "BEIG",
     "Bottle Green": "BOTT",
@@ -93,7 +102,28 @@
     "Yellow": "YELL",
     "Military Green": "MGRN"
   },
-
+  "color_size_map": {
+    "Beige": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Bottle Green": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Black": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Brown": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Charcoal": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "French Navy": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Heather Grey": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Hot Pink": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Kelly Green": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Maroon": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Navy": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Orange": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Purple": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Red": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Royal": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Sky": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Sapphire Blue": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "White": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Yellow": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Military Green": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"]
+  },
   "extra_parent_fields": {
     "outer_material_type": "Natural",
     "material_type1": "100% Cotton",
@@ -106,7 +136,6 @@
     "batteries_required": "FALSE",
     "are_batteries_included": "FALSE"
   },
-
   "extra_child_fields": {
     "outer_material_type": "Natural",
     "material_type1": "100% Cotton",
@@ -119,4 +148,5 @@
     "batteries_required": "FALSE",
     "are_batteries_included": "FALSE"
   }
+  
 }

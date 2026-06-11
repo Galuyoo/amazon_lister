@@ -1,43 +1,68 @@
-# Amazon Listing Generator System
+﻿# Amazon Listing Generator System
 
-Streamlit app for preparing and generating Amazon flat-file workbooks from Dropbox-managed listing folders.
+Streamlit app for preparing, reviewing, approving, and generating Amazon flat-file workbooks from Dropbox-managed listing folders.
 
-## What This App Does
+Amazon Lister is now the main listing workflow hub for product listing operations. It connects Dropbox folder queues, template configs, listing metadata, image mappings, review checks, and Amazon workbook generation into one workflow.
 
-The app supports a staff workflow built around three Dropbox queues:
+## Current Workflow
 
-- `_stage`: work-in-progress listings
-- `ready`: listings approved for workbook generation
-- `finished`: completed listings that already generated outputs
+The current Dropbox queue flow is:
 
-The main workspace is organized into three tabs:
+    _stage -> ready -> approved -> finished
+
+Meaning:
+
+- `_stage`: worker prepares listing assets and listing content.
+- `ready`: worker submitted the listing for admin review.
+- `approved`: admin approved the listing for generation/listing.
+- `finished`: workbook has been generated and the listing is completed.
+
+Saved `listing_inputs.json` data is the source of truth whenever a staged, ready, approved, or restaged folder already has saved listing context.
+
+## Main App Tabs
+
+The main workspace is organized into four tabs:
 
 1. `Product setup`
-2. `Listing content`
-3. `Review & output`
+   - select staged/restaged folders
+   - auto-detect templates
+   - review folder/image setup
+   - restage finished items for correction
 
-Saved `listing_inputs.json` data is used as the source of truth whenever a staged or ready folder already has saved listing context.
+2. `Listing content`
+   - edit title, bullets, description, and keywords
+   - select variants, prices, and quantity
+   - check listing score
+   - submit the listing for admin review
+
+3. `Review queue`
+   - review folders submitted to `ready`
+   - approve listings for generation
+   - deny listings back to `_stage` with a `_denied` suffix
+
+4. `Approved output`
+   - review approved listings
+   - generate selected approved folders
+   - generate all approved folders
+   - download generated workbooks
 
 ## Runtime Requirements
 
 - Python 3.11+
 - Dropbox OAuth app credentials
 - Access to the configured Dropbox folders referenced by `config/dropbox_templates.json`
+- Dropbox queue roots configured for `_stage`, `ready`, `approved`, and `finished`
 
 Install runtime dependencies with:
 
-```bash
-pip install -r requirements.txt
-```
+    pip install -r requirements.txt
 
 ## Local Setup
 
-1. Create a virtual environment.
+1. Create and activate a virtual environment.
 2. Install dependencies:
 
-```bash
-pip install -r requirements.txt
-```
+    pip install -r requirements.txt
 
 3. Create a local `.env` file from `.env.example`.
 4. Fill in the required Dropbox values:
@@ -48,23 +73,19 @@ pip install -r requirements.txt
 
 5. Start the app:
 
-```bash
-streamlit run app.py
-```
+    streamlit run app.py
 
 ## Streamlit Community Cloud Setup
 
-This repo is prepared for first staff deployment on Streamlit Community Cloud.
+This repo is prepared for staff deployment on Streamlit Community Cloud.
 
 ### Required secrets
 
 Add these secrets in the Streamlit app settings using the same names shown in `.streamlit/secrets.toml.example`:
 
-```toml
-DROPBOX_APP_KEY = "..."
-DROPBOX_APP_SECRET = "..."
-DROPBOX_REFRESH_TOKEN = "..."
-```
+    DROPBOX_APP_KEY = "..."
+    DROPBOX_APP_SECRET = "..."
+    DROPBOX_REFRESH_TOKEN = "..."
 
 Notes:
 
@@ -82,88 +103,74 @@ Notes:
 
 ## Repository Structure
 
-```text
-amazon_lister/
-├── app.py                       # Main Streamlit app entrypoint
-├── requirements.txt             # Runtime dependencies
-├── config/                      # Dropbox/template mapping config
-├── templates/                   # Amazon flat-file template families and garment configs
-├── services/                    # Listing quality and workflow support logic
-├── utils/                       # Dropbox and image helper utilities
-├── docs/                        # Staff docs, deployment notes, and archived notes
-├── .streamlit/                  # Streamlit deployment example config
-└── tools/legacy/                # Older helper scripts not used by the main runtime
-```
+    amazon_lister/
+    ├── app.py                       # Main Streamlit app entrypoint
+    ├── requirements.txt             # Runtime dependencies
+    ├── config/                      # Dropbox/template mapping config
+    ├── templates/                   # Amazon flat-file template families and garment configs
+    ├── services/                    # Listing quality and workflow support logic
+    ├── utils/                       # Dropbox and image helper utilities
+    ├── docs/                        # Staff docs, deployment notes, changelogs, and handoff docs
+    ├── .streamlit/                  # Streamlit deployment example config
+    └── tools/legacy/                # Older helper scripts not used by the main runtime
 
 The production app starts from:
 
-```bash
-streamlit run app.py
-```
+    streamlit run app.py
 
 ## Generated Outputs
 
 Generated workbook files are written locally to `outputs/` during runtime.
 
-`outputs/` is intentionally ignored by Git and should be treated as temporary working storage. Staff should download generated workbooks immediately after generation or archive them externally, such as in Dropbox or another approved storage location.
+`outputs/` is intentionally ignored by Git and should be treated as temporary working storage. Staff should download generated workbooks immediately after generation or archive them externally.
 
 A hosted Streamlit app can create files during runtime, but those files are not committed back to GitHub and may not survive app restarts or redeployments.
 
-## Staff Workflow
+Future work should archive generated workbooks into the relevant Dropbox listing folder so approved/finished outputs can be downloaded again later.
 
-### 1. Product setup
+## Staff Workflow Summary
 
-Use this tab to:
+1. Worker adds product assets/content in `_stage`.
+2. Worker uses `Product setup` and `Listing content`.
+3. Worker clicks `Submit for Review`.
+4. Folder moves `_stage -> ready`.
+5. Admin reviews the listing in `Review queue`.
+6. Admin either:
+   - approves it, moving `ready -> approved`, or
+   - denies it, moving it back to `_stage` with `_denied` suffix.
+7. Approved listings are generated from `Approved output`.
+8. Generation moves folders `approved -> finished`.
 
-- choose the staged folder or restage a finished folder
-- confirm template detection and template selection
-- review staged images
-- check staged-folder readiness
+Staff should not manually move folders between Dropbox queues during normal operation.
 
-### 2. Listing content
+## Documentation
 
-Use this tab to:
-
-- confirm title, bullets, description, and keywords
-- confirm variants, prices, and quantity
-- run `Check listing score`
-- click `Mark as Ready` when the listing is complete
-
-### 3. Review & output
-
-Use this tab to:
-
-- review ready listings
-- inspect the review panel
-- generate selected ready folders
-- generate all ready folders when appropriate
-
-## Dropbox Queue Expectations
-
-- `_stage` contains listings still being prepared.
-- `ready` contains listings that passed content review and are waiting for workbook generation.
-- `finished` contains completed listings after generation.
-
-Staff should not manually move folders between these queues in Dropbox. Use the app workflow instead.
+- Current project handoff: `docs/CURRENT_STATE.md`
+- Staff workflow: `docs/STAFF_RUNBOOK.md`
+- Deployment checklist: `docs/DEPLOYMENT_CHECKLIST.md`
+- Approval workflow release notes: `docs/CHANGELOG_APPROVAL_WORKFLOW.md`
+- Stock-ready manifest contract: `docs/STOCK_READY_MANIFEST.md`
+- Archived project notes: `docs/archive/`
 
 ## Legacy and Archive Files
 
 Historical project notes are stored in:
 
-```text
-docs/archive/
-```
+    docs/archive/
 
 Older helper scripts and early development workbooks are stored in:
 
-```text
-tools/legacy/
-```
+    tools/legacy/
 
 These files are kept for reference only and are not part of the main Streamlit runtime.
 
-## Additional Docs
+## Current Priority
 
-- Staff workflow: `docs/STAFF_RUNBOOK.md`
-- Deployment steps: `docs/DEPLOYMENT_CHECKLIST.md`
-- Current app notes: `docs/CURRENT_STATE.md`
+The current active workstream is performance and lazy image loading.
+
+Goal:
+
+- Keep normal editing fast.
+- Avoid resolving/loading Dropbox image mappings during simple text, price, assignee, or quantity edits.
+- Load image mappings only when requested or when required for Submit/Approve/Generate.
+- Keep image previews optional and off by default.

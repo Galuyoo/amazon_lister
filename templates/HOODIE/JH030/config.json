@@ -1,0 +1,108 @@
+{
+  "label": "JH030 AWDis Sweat",
+  "template_key": "JH030",
+  "template_file": "SWEATSHIRT.xlsm",
+  "parent_sku": "JH030",
+  "sku_decoration_code": "EMB",
+  "feed_product_type": "sweatshirt",
+  "recommended_browse_nodes": "1731011031",
+  "product_category": "apparel",
+  "brand_name": "Generic",
+  "manufacturer": "Generic",
+  "department_name": "Unisex",
+  "target_gender": "Unisex",
+  "age_range_description": "Adult",
+  "material_type": "80% Ringspun Cotton, 20% Polyester",
+  "style_name": "AWDis Sweat",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "Sweatshirt",
+  "care_instructions": "Machine Wash",
+  "theme": "Custom Printed or Embroidered Sweatshirt",
+  "neck_style": "Crew Neck",
+  "fit_type": "Standard",
+  "weave_type": "Knit",
+  "sleeve_type": "Long Sleeve",
+  "country_of_origin": "Great Britain",
+
+  "colors": [
+    "Arctic White",
+    "Bottle Green",
+    "Burgundy",
+    "Charcoal",
+    "Chocolate Fudge Brownie",
+    "Deep Black",
+    "Desert Sand",
+    "Oxford Navy"
+  ],
+
+  "sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL",
+    "3XL",
+    "4XL",
+    "5XL"
+  ],
+
+  "color_size_map": {
+    "Arctic White": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL"],
+    "Bottle Green": ["XS", "S", "M", "L", "XL", "2XL"],
+    "Burgundy": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL"],
+    "Charcoal": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL"],
+    "Chocolate Fudge Brownie": ["XS", "S", "M", "L", "XL", "2XL"],
+    "Deep Black": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL"],
+    "Desert Sand": ["XS", "S", "M", "L", "XL", "2XL"],
+    "Oxford Navy": ["XS", "S", "M", "L", "XL", "2XL"]
+  },
+
+  "size_code_map": {
+    "XS": "XS",
+    "S": "S",
+    "M": "M",
+    "L": "L",
+    "XL": "XL",
+    "2XL": "2XL",
+    "3XL": "3XL",
+    "4XL": "4XL",
+    "5XL": "5XL"
+  },
+
+  "color_sku_map": {
+    "Arctic White": "AWHI",
+    "Bottle Green": "BOTT",
+    "Burgundy": "BURG",
+    "Charcoal": "CHAR",
+    "Chocolate Fudge Brownie": "CHFB",
+    "Deep Black": "DPBK",
+    "Desert Sand": "DSAN",
+    "Oxford Navy": "OXNY"
+  },
+
+  "field_aliases": {
+    "outer_material_type": [
+      "fabric_type"
+    ]
+  },
+
+  "extra_parent_fields": {
+    "outer_material_type": "Cotton Blend",
+    "material_type1": "80% Ringspun Cotton, 20% Polyester",
+    "fabric_type": "80% Ringspun Cotton, 20% Polyester",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
+  },
+
+  "extra_child_fields": {
+    "outer_material_type": "Cotton Blend",
+    "material_type1": "80% Ringspun Cotton, 20% Polyester",
+    "fabric_type": "80% Ringspun Cotton, 20% Polyester",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
+  }
+}

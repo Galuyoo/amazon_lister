@@ -5,6 +5,8 @@ from collections import Counter
 from itertools import product
 from typing import Any
 
+from services.stock_references import build_child_sku_details
+
 
 DISALLOWED_SYMBOL_PATTERN = re.compile(r"[★☆✓✔➡•◆►■□☑️🔥💥✨✅❌]")
 EMOJI_PATTERN = re.compile(
@@ -86,55 +88,18 @@ def repeated_word_ratio(value: str) -> float:
     return max(counts.values()) / len(words)
 
 
+def words_repeated_at_least(value: str, limit: int = 3) -> list[str]:
+    words = re.findall(r"\b[a-zA-Z0-9]+\b", (value or "").lower())
+    counts = Counter(words)
+    return sorted(word for word, count in counts.items() if count >= limit)
+
+
 def build_child_sku_for_validation(
     profile: dict[str, Any],
     parent_sku: str,
     variant_values: dict[str, str],
 ) -> str:
-    color_map = profile.get("color_sku_map", {})
-    size_map = profile.get("size_code_map", {})
-    design_map = profile.get("design_sku_map", {})
-
-    def slugify_part(value: str) -> str:
-        safe = value.strip().replace(" ", "-").replace("/", "-")
-        while "--" in safe:
-            safe = safe.replace("--", "-")
-        return safe
-
-    color_code = ""
-    size_code = ""
-    design_code = ""
-
-    if "color" in variant_values:
-        color_value = variant_values["color"]
-        color_code = color_map.get(color_value, slugify_part(color_value))
-
-    if "size" in variant_values:
-        size_value = variant_values["size"]
-        size_code = size_map.get(size_value, slugify_part(size_value))
-
-    if "design" in variant_values:
-        design_value = variant_values["design"]
-        design_code = design_map.get(design_value, slugify_part(design_value))
-
-    parts: list[str] = []
-
-    if color_code:
-        if color_code.startswith(parent_sku):
-            parts.append(color_code)
-        else:
-            parts.append(parent_sku)
-            parts.append(color_code)
-    else:
-        parts.append(parent_sku)
-
-    if size_code:
-        parts.append(size_code)
-
-    if design_code:
-        parts.append(design_code)
-
-    return "-".join(parts)
+    return build_child_sku_details(profile, parent_sku, variant_values)["amazon_seller_sku"]
 
 
 def resolve_variant_image_for_validation(
@@ -221,6 +186,15 @@ def validate_listing_quality(
     # Content quality checks - title
     title_chars = character_length(title)
     if title:
+        repeated_title_words = words_repeated_at_least(title, 3)
+        if repeated_title_words:
+            blockers.append(
+                "Title repeats the same word 3+ times: "
+                + ", ".join(repeated_title_words[:8])
+                + "."
+            )
+            breakdown["content_quality"] -= 6
+
         if title_chars < 80:
             warnings.append("Title looks short and may be too weak.")
             breakdown["content_quality"] -= 4
