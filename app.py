@@ -3650,7 +3650,8 @@ def validate_stock_ready_payload(profile: dict[str, Any], payload: dict[str, Any
 def validate_variant_image_count(
     profile: dict[str, Any],
     payload: dict[str, Any],
-    expected_total: int = 6,
+    min_total: int = 4,
+    max_total: int = 10,
 ) -> list[str]:
     selected_variants = dict(payload.get("selected_variants", {}))
     variant_combos = build_variant_combinations(profile, selected_variants)
@@ -3670,10 +3671,10 @@ def validate_variant_image_count(
             design_color_image_url_map=design_color_image_url_map,
         )
         total_images = (1 if main_image_url else 0) + len(secondary_images)
-        if total_images != expected_total:
+        if total_images < min_total or total_images > max_total:
             label = " / ".join([str(v) for v in variant_values.values() if v]) or "Unnamed variant"
             errors.append(
-                f"Variant '{label}' has {total_images} image(s); exactly {expected_total} are required before review."
+                f"Variant '{label}' has {total_images} image(s); {min_total}-{max_total} are allowed before review."
             )
 
     return errors
@@ -3813,7 +3814,7 @@ def build_preflight_report(
 
     template_errors = validate_template_file(profile)
     stock_ready_report = validate_stock_ready_payload(sku_profile, preview_payload)
-    variant_image_count_errors = validate_variant_image_count(sku_profile, preview_payload, expected_total=6)
+    variant_image_count_errors = validate_variant_image_count(sku_profile, preview_payload)
 
     all_preview_errors = [
         *profile_schema_errors,
