@@ -2225,6 +2225,10 @@ def build_color_image_filename_candidates(
         configured_filename,
         f"{template_part}{code_part}{extension}" if template_part and code_part else "",
         f"{template_part}-{color_part}{extension}" if template_part and color_part else "",
+        f"{color}.jpg" if color else "",
+        f"{color}.png" if color else "",
+        f"{color_part}.jpg" if color_part else "",
+        f"{color_part}.png" if color_part else "",
     ]:
         if filename and filename not in candidates:
             candidates.append(filename)
@@ -2249,6 +2253,16 @@ def resolve_existing_color_image_path(
         path = f"{folder_path}/{filename}"
         if path_exists(path):
             return path, candidates
+
+    try:
+        candidate_lookup = {filename.lower(): filename for filename in candidates}
+        for path in list_folder_files(folder_path):
+            filename = Path(path).name
+            if filename.lower() in candidate_lookup:
+                return path, candidates
+    except Exception:
+        pass
+
     return "", candidates
 
 
