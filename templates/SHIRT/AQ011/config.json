@@ -1,0 +1,146 @@
+{
+  "label": "AQ011 Classic Fit Tipped Polo",
+  "template_key": "AQ011",
+  "template_file": "SHIRT.xlsm",
+  "parent_sku": "AQ011",
+  "feed_product_type": "shirt",
+  "recommended_browse_nodes": "1730998031",
+  "product_category": "apparel",
+  "brand_name": "sloganitto",
+  "manufacturer": "Generic",
+  "department_name": "mens",
+  "target_gender": "male",
+  "age_range_description": "Adult",
+  "material_type": "100% Ringspun Combed Cotton",
+  "style_name": "Classic Fit Tipped Polo",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "polo-shirt",
+  "care_instructions": "Machine Wash at 30 Degrees",
+  "theme": "Custom Embroidered Tipped Polo Shirt",
+  "country_of_origin": "Bangladesh",
+  "fit_type": "Classic",
+  "collar_style": "Polo",
+  "neck_style": "Collared Neck",
+  "lifestyle": "Casual",
+  "pattern_type": "Tipped",
+  "weave_type": "Knit",
+  "colors": [
+    "Black/Red",
+    "Black/Orange",
+    "Black/Yellow",
+    "Black/Turquoise",
+    "Black/Kelly",
+    "Black/White",
+    "Heather Black/Charcoal",
+    "Charcoal/White",
+    "Heather Grey/Black",
+    "Burgundy/Sky",
+    "Red/White",
+    "Navy/Cornflower",
+    "Navy/Red",
+    "Navy/White",
+    "Royal/White",
+    "White/Burgundy",
+    "White/Navy",
+    "White/Black"
+  ],
+  "sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL",
+    "3XL"
+  ],
+  "size_code_map": {
+    "XS": "XS",
+    "S": "S",
+    "M": "M",
+    "L": "L",
+    "XL": "XL",
+    "2XL": "2XL",
+    "3XL": "3XL"
+  },
+  "color_sku_map": {
+    "Black/Red": "BKRD",
+    "Black/Orange": "BKOR",
+    "Black/Yellow": "BKYW",
+    "Black/Turquoise": "BKTQ",
+    "Black/Kelly": "BKKG",
+    "Black/White": "BKWH",
+    "Heather Black/Charcoal": "HBCH",
+    "Charcoal/White": "CHWH",
+    "Heather Grey/Black": "HGBK",
+    "Burgundy/Sky": "BUSK",
+    "Red/White": "RDWH",
+    "Navy/Cornflower": "NYCF",
+    "Navy/Red": "NYRD",
+    "Navy/White": "NYWH",
+    "Royal/White": "RYWH",
+    "White/Burgundy": "WHBU",
+    "White/Navy": "WHNY",
+    "White/Black": "WHBK"
+  },
+  "extra_parent_fields": {
+    "outer_material_type": "Natural",
+    "material_type1": "100% Ringspun Combed Cotton",
+    "fabric_type": "Cotton",
+    "fabric_weight": "200",
+    "fabric_weight_unit_of_measure": "grams_per_square_meter",
+    "weave_type": "Knit",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Alpha",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+  "extra_child_fields": {
+    "outer_material_type": "Natural",
+    "material_type1": "100% Ringspun Combed Cotton",
+    "fabric_type": "Cotton",
+    "fabric_weight": "200",
+    "fabric_weight_unit_of_measure": "grams_per_square_meter",
+    "weave_type": "Knit",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Alpha",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+  "field_aliases": {
+    "apparel_size_system": [
+      "shirt_size_system",
+      "tops_size_system",
+      "outerwear_size_system"
+    ],
+    "apparel_size_class": [
+      "shirt_size_class",
+      "tops_size_class",
+      "outerwear_size_class"
+    ],
+    "apparel_size": [
+      "shirt_size",
+      "tops_size_value",
+      "outerwear_size_value"
+    ],
+    "apparel_body_type": [
+      "shirt_body_type",
+      "tops_body_type",
+      "outerwear_body_type"
+    ],
+    "apparel_height_type": [
+      "shirt_height_type",
+      "tops_height_type",
+      "outerwear_height_type"
+    ],
+    "outer_material_type": [
+      "material_type",
+      "material_type1",
+      "fabric_type"
+    ]
+  }
+}

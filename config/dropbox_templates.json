@@ -411,6 +411,29 @@
     "White/Royal Blue": "SS026WHRB.jpg"
   }
 },
+"AQ011": {
+  "variant_folder": "AQ011",
+  "main_image_map": {
+    "Black/Red": "AQ011BKRD.jpg",
+    "Black/Orange": "AQ011BKOR.jpg",
+    "Black/Yellow": "AQ011BKYW.jpg",
+    "Black/Turquoise": "AQ011BKTQ.jpg",
+    "Black/Kelly": "AQ011BKKG.jpg",
+    "Black/White": "AQ011BKWH.jpg",
+    "Heather Black/Charcoal": "AQ011HBCH.jpg",
+    "Charcoal/White": "AQ011CHWH.jpg",
+    "Heather Grey/Black": "AQ011HGBK.jpg",
+    "Burgundy/Sky": "AQ011BUSK.jpg",
+    "Red/White": "AQ011RDWH.jpg",
+    "Navy/Cornflower": "AQ011NYCF.jpg",
+    "Navy/Red": "AQ011NYRD.jpg",
+    "Navy/White": "AQ011NYWH.jpg",
+    "Royal/White": "AQ011RYWH.jpg",
+    "White/Burgundy": "AQ011WHBU.jpg",
+    "White/Navy": "AQ011WHNY.jpg",
+    "White/Black": "AQ011WHBK.jpg"
+  }
+},
 "RL100": {
   "variant_folder": "RL100",
   "main_image_map": {
