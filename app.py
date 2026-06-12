@@ -2217,28 +2217,14 @@ def build_color_image_filename_candidates(
     color_part = normalize_image_filename_part(color)
     template_part = normalize_image_filename_part(template_key)
     code_part = normalize_image_filename_part(color_code)
+    configured_filename = str(configured_filename or "").strip()
+    extension = Path(configured_filename).suffix if configured_filename else ".jpg"
     candidates: list[str] = []
 
     for filename in [
         configured_filename,
-        f"{template_part}{code_part}.jpg" if template_part and code_part else "",
-        f"{template_part}{code_part}.jpeg" if template_part and code_part else "",
-        f"{template_part}{code_part}.png" if template_part and code_part else "",
-        f"{template_part}-{code_part}.jpg" if template_part and code_part else "",
-        f"{template_part}-{code_part}.jpeg" if template_part and code_part else "",
-        f"{template_part}-{code_part}.png" if template_part and code_part else "",
-        f"{code_part}.jpg" if code_part else "",
-        f"{code_part}.jpeg" if code_part else "",
-        f"{code_part}.png" if code_part else "",
-        f"{template_part}-{color_part}.jpg" if template_part and color_part else "",
-        f"{template_part}-{color_part}.jpeg" if template_part and color_part else "",
-        f"{template_part}-{color_part}.png" if template_part and color_part else "",
-        f"{color_part}.jpg" if color_part else "",
-        f"{color_part}.jpeg" if color_part else "",
-        f"{color_part}.png" if color_part else "",
-        f"{color}.jpg" if color else "",
-        f"{color}.jpeg" if color else "",
-        f"{color}.png" if color else "",
+        f"{template_part}{code_part}{extension}" if template_part and code_part else "",
+        f"{template_part}-{color_part}{extension}" if template_part and color_part else "",
     ]:
         if filename and filename not in candidates:
             candidates.append(filename)
