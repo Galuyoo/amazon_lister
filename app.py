@@ -2200,7 +2200,71 @@ def build_dropbox_overview(profile: dict[str, Any], dropbox_cfg: dict[str, Any])
         "shared_resource_images": shared_resource_images,
         "main_image_map": template_block.get("main_image_map", {}),
         "design_color_image_map": template_block.get("design_color_image_map", {}),
+        "color_sku_map": profile.get("color_sku_map", {}),
     }
+
+
+def normalize_image_filename_part(value: str) -> str:
+    return "-".join(str(value or "").strip().split())
+
+
+def build_color_image_filename_candidates(
+    template_key: str,
+    color: str,
+    configured_filename: str = "",
+    color_code: str = "",
+) -> list[str]:
+    color_part = normalize_image_filename_part(color)
+    template_part = normalize_image_filename_part(template_key)
+    code_part = normalize_image_filename_part(color_code)
+    candidates: list[str] = []
+
+    for filename in [
+        configured_filename,
+        f"{template_part}{code_part}.jpg" if template_part and code_part else "",
+        f"{template_part}{code_part}.jpeg" if template_part and code_part else "",
+        f"{template_part}{code_part}.png" if template_part and code_part else "",
+        f"{template_part}-{code_part}.jpg" if template_part and code_part else "",
+        f"{template_part}-{code_part}.jpeg" if template_part and code_part else "",
+        f"{template_part}-{code_part}.png" if template_part and code_part else "",
+        f"{code_part}.jpg" if code_part else "",
+        f"{code_part}.jpeg" if code_part else "",
+        f"{code_part}.png" if code_part else "",
+        f"{template_part}-{color_part}.jpg" if template_part and color_part else "",
+        f"{template_part}-{color_part}.jpeg" if template_part and color_part else "",
+        f"{template_part}-{color_part}.png" if template_part and color_part else "",
+        f"{color_part}.jpg" if color_part else "",
+        f"{color_part}.jpeg" if color_part else "",
+        f"{color_part}.png" if color_part else "",
+        f"{color}.jpg" if color else "",
+        f"{color}.jpeg" if color else "",
+        f"{color}.png" if color else "",
+    ]:
+        if filename and filename not in candidates:
+            candidates.append(filename)
+
+    return candidates
+
+
+def resolve_existing_color_image_path(
+    folder_path: str,
+    template_key: str,
+    color: str,
+    configured_filename: str = "",
+    color_code: str = "",
+) -> tuple[str, list[str]]:
+    candidates = build_color_image_filename_candidates(
+        template_key,
+        color,
+        configured_filename,
+        color_code,
+    )
+    for filename in candidates:
+        path = f"{folder_path}/{filename}"
+        if path_exists(path):
+            return path, candidates
+    return "", candidates
+
 
 def resolve_child_variant_image_url(
     variant_values: dict[str, str],
@@ -2462,16 +2526,22 @@ def build_lenient_image_maps(
     dropbox_overview: dict[str, Any],
     folder_path: str,
 ) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    template_key = str(dropbox_overview.get("template_key", "") or "")
     main_image_map = dropbox_overview.get("main_image_map", {})
     design_color_image_map = dropbox_overview.get("design_color_image_map", {})
+    color_sku_map = dropbox_overview.get("color_sku_map", {})
 
     color_image_map: dict[str, str] = {}
     for color in selected_colors:
         filename = main_image_map.get(color, "")
-        if not filename:
-            continue
-        path = f"{folder_path}/{filename}"
-        if not path_exists(path):
+        path, _ = resolve_existing_color_image_path(
+            folder_path,
+            template_key,
+            color,
+            filename,
+            str(color_sku_map.get(color, "") or ""),
+        )
+        if not path:
             continue
         url = dropbox_preview_url(path)
         if url:
@@ -2728,8 +2798,10 @@ def resolve_folder_image_urls(
     selected_parent_main_image_url: str = "",
     use_resource_fallback_images: bool = False,
 ) -> tuple[str, list[str], dict[str, str], dict[str, dict[str, str]]]:
+    template_key = str(dropbox_overview.get("template_key", "") or profile.get("template_key", "") or "")
     main_image_map = dropbox_overview.get("main_image_map", {})
     design_color_image_map = dropbox_overview.get("design_color_image_map", {})
+    color_sku_map = dropbox_overview.get("color_sku_map", profile.get("color_sku_map", {}))
     garment_resource_images = dropbox_overview.get("garment_resource_images", [])
     shared_resource_images = dropbox_overview.get("shared_resource_images", [])
     staged_resource_images = list_image_paths_in_dropbox_folder(f"{folder_path.rstrip('/')}/resources")
@@ -2738,11 +2810,16 @@ def resolve_folder_image_urls(
     color_image_map: dict[str, str] = {}
     for color in selected_colors:
         filename = main_image_map.get(color, "")
-        if not filename:
-            continue
-        path = f"{folder_path}/{filename}"
-        if not path_exists(path):
-            raise ValueError(f"Missing staged mapped image for colour '{color}': {filename}")
+        path, candidates = resolve_existing_color_image_path(
+            folder_path,
+            template_key,
+            color,
+            filename,
+            str(color_sku_map.get(color, "") or ""),
+        )
+        if not path:
+            expected = ", ".join(candidates[:4])
+            raise ValueError(f"Missing staged mapped image for colour '{color}'. Expected one of: {expected}")
         url = dropbox_preview_url(path)
         if url:
             color_image_map[color] = url
@@ -4263,14 +4340,21 @@ def scan_staged_folder_readiness(
     stage_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
     dropbox_overview = build_dropbox_overview(profile, dropbox_cfg)
     main_image_map = dropbox_overview.get("main_image_map", {})
+    color_sku_map = dropbox_overview.get("color_sku_map", profile.get("color_sku_map", {}))
+    template_key = str(profile.get("template_key", "") or "")
 
     missing_files: list[str] = []
-    for filename in main_image_map.values():
-        if not filename:
-            continue
-        staged_path = f"{stage_folder_path}/{filename}"
-        if not path_exists(staged_path):
-            missing_files.append(filename)
+    for color in get_profile_color_options(profile):
+        filename = main_image_map.get(color, "")
+        staged_path, candidates = resolve_existing_color_image_path(
+            stage_folder_path,
+            template_key,
+            color,
+            filename,
+            str(color_sku_map.get(color, "") or ""),
+        )
+        if not staged_path:
+            missing_files.append(candidates[0] if candidates else color)
 
     if missing_files:
         result.update({
