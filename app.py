@@ -2683,15 +2683,26 @@ def get_cached_preview_image_data(
 
     stage_folder_path_for_preview = build_stage_folder_path(dropbox_cfg, staged_folder_name) if staged_folder_name else ""
     color_preview_source = get_selected_colors_for_image_resolution(profile, selected_variants) or get_profile_color_options(profile)
-    staged_variant_entries = resolve_display_entries([
-        (
+    staged_variant_entries: list[dict[str, Any]] = []
+    fallback_variant_entries: list[tuple[str, str]] = []
+    for color in color_preview_source:
+        resolved_url = preview_color_image_map.get(color, "")
+        if resolved_url:
+            staged_variant_entries.append({
+                "label": color,
+                "path": resolved_url,
+                "exists": True,
+                "direct_url": resolved_url,
+            })
+            continue
+
+        fallback_variant_entries.append((
             color,
             f"{stage_folder_path_for_preview}/{dropbox_overview.get('main_image_map', {}).get(color, '')}"
             if stage_folder_path_for_preview and dropbox_overview.get("main_image_map", {}).get(color, "")
             else "",
-        )
-        for color in color_preview_source
-    ])
+        ))
+    staged_variant_entries.extend(resolve_display_entries(fallback_variant_entries))
     design_color_preview_entries = resolve_display_entries([
         (f"{row['color']} / {row['design']}", row.get("path", ""))
         for row in design_color_preview_rows
