@@ -37,7 +37,7 @@ from utils.dropbox_client import (
 )
 
 GLOBAL_BRAND_NAME = "sloganitto"
-WORKFLOW_ASSIGNEES = ["", "Hannan", "Amroz", "Moon", "Sal", "Richard", "Ben"]
+WORKFLOW_ASSIGNEES = ["","Sal", "Suleman"]
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
