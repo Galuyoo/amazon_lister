@@ -6553,6 +6553,7 @@ def main() -> None:
         "design_color_image_url_map": preview_design_color_image_url_map,
     }
     resolved_image_error = ""
+    partial_image_mappings_loaded = False
     image_mappings_loaded_this_run = False
     current_resolved_image_cache_key = ""
     if staged_folder_name:
@@ -6582,13 +6583,17 @@ def main() -> None:
             )
             image_mappings_loaded_this_run = should_load_image_mappings and not resolved_image_bundle_cache_hit
         except Exception as exc:
-            resolved_image_error = str(exc)
             resolved_image_bundle = {
                 "parent_main_image_url": preview_parent_main_image_url if preview_parent_main_image_url else "",
                 "other_images": [],
                 "color_image_map": preview_color_image_map,
                 "design_color_image_url_map": preview_design_color_image_url_map,
             }
+            partial_image_mappings_loaded = bool(
+                preview_color_image_map or preview_design_color_image_url_map
+            )
+            if not partial_image_mappings_loaded:
+                resolved_image_error = str(exc)
     t_resolved_image_end = time.perf_counter()
     record_load_event(
         "Images: resolved image bundle",
@@ -6602,8 +6607,11 @@ def main() -> None:
         resolved_image_bundle.get("design_color_image_url_map", preview_design_color_image_url_map)
     )
     image_mappings_loaded = bool(
-        current_resolved_image_cache_key
-        and st.session_state.get("resolved_image_bundle_cache", {}).get("key") == current_resolved_image_cache_key
+        (
+            current_resolved_image_cache_key
+            and st.session_state.get("resolved_image_bundle_cache", {}).get("key") == current_resolved_image_cache_key
+        )
+        or partial_image_mappings_loaded
     )
     if not staged_folder_name:
         image_mapping_status = "not_loaded"
@@ -6613,7 +6621,10 @@ def main() -> None:
         image_mapping_detail = resolved_image_error
     elif image_mappings_loaded:
         image_mapping_status = "loaded"
-        image_mapping_detail = "Image mappings loaded."
+        if partial_image_mappings_loaded:
+            image_mapping_detail = "Partial image mappings loaded from staged filenames. Use Mapped colours to select only those colours."
+        else:
+            image_mapping_detail = "Image mappings loaded."
     elif image_mappings_stale:
         image_mapping_status = "not_loaded"
         image_mapping_detail = "Image mappings need refresh because the folder or template changed. Click Load / refresh image mappings to update them."
