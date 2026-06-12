@@ -1,0 +1,131 @@
+{
+  "label": "SS026 Short Sleeve Baseball T",
+  "template_key": "SS026",
+  "template_file": "SHIRT.xlsm",
+  "parent_sku": "SS026",
+  "feed_product_type": "shirt",
+  "recommended_browse_nodes": "1731028031",
+  "product_category": "apparel",
+  "brand_name": "sloganitto",
+  "manufacturer": "Generic",
+  "department_name": "mens",
+  "target_gender": "male",
+  "age_range_description": "Adult",
+  "material_type": "100% Cotton",
+  "style_name": "Short Sleeve Baseball T",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "t-shirt",
+  "care_instructions": "Machine Wash",
+  "theme": "Custom Printed Baseball T Shirt",
+  "country_of_origin": "Great Britain",
+  "fit_type": "Regular",
+  "collar_style": "Crew Neck",
+  "neck_style": "Crew Neck",
+  "lifestyle": "Casual",
+  "pattern_type": "Contrast Sleeve",
+  "weave_type": "Knit",
+  "colors": [
+    "Heather Grey/Deep Navy",
+    "Sunflower/Kelly Green",
+    "White/Black",
+    "White/Deep Navy",
+    "White/Kelly Green",
+    "White/Red",
+    "White/Royal Blue"
+  ],
+  "sizes": [
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL",
+    "3XL"
+  ],
+  "size_code_map": {
+    "S": "S",
+    "M": "M",
+    "L": "L",
+    "XL": "XL",
+    "2XL": "2XL",
+    "3XL": "3XL"
+  },
+  "color_sku_map": {
+    "Heather Grey/Deep Navy": "HGDN",
+    "Sunflower/Kelly Green": "SFKG",
+    "White/Black": "WHBK",
+    "White/Deep Navy": "WHDN",
+    "White/Kelly Green": "WHKG",
+    "White/Red": "WHRD",
+    "White/Royal Blue": "WHRB"
+  },
+  "color_size_map": {
+    "Heather Grey/Deep Navy": ["S", "M", "L", "XL", "2XL"],
+    "Sunflower/Kelly Green": ["S", "M", "L", "XL", "2XL"],
+    "White/Black": ["S", "M", "L", "XL", "2XL", "3XL"],
+    "White/Deep Navy": ["S", "M", "L", "XL", "2XL", "3XL"],
+    "White/Kelly Green": ["S", "M", "L", "XL", "2XL"],
+    "White/Red": ["S", "M", "L", "XL", "2XL", "3XL"],
+    "White/Royal Blue": ["S", "M", "L", "XL", "2XL", "3XL"]
+  },
+  "extra_parent_fields": {
+    "outer_material_type": "Natural",
+    "material_type1": "100% Cotton",
+    "fabric_type": "Cotton",
+    "fabric_weight": "160",
+    "fabric_weight_unit_of_measure": "grams_per_square_meter",
+    "weave_type": "Knit",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Alpha",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+  "extra_child_fields": {
+    "outer_material_type": "Natural",
+    "material_type1": "100% Cotton",
+    "fabric_type": "Cotton",
+    "fabric_weight": "160",
+    "fabric_weight_unit_of_measure": "grams_per_square_meter",
+    "weave_type": "Knit",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Alpha",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+  "field_aliases": {
+    "apparel_size_system": [
+      "shirt_size_system",
+      "tops_size_system",
+      "outerwear_size_system"
+    ],
+    "apparel_size_class": [
+      "shirt_size_class",
+      "tops_size_class",
+      "outerwear_size_class"
+    ],
+    "apparel_size": [
+      "shirt_size",
+      "tops_size_value",
+      "outerwear_size_value"
+    ],
+    "apparel_body_type": [
+      "shirt_body_type",
+      "tops_body_type",
+      "outerwear_body_type"
+    ],
+    "apparel_height_type": [
+      "shirt_height_type",
+      "tops_height_type",
+      "outerwear_height_type"
+    ],
+    "outer_material_type": [
+      "material_type",
+      "material_type1",
+      "fabric_type"
+    ]
+  }
+}

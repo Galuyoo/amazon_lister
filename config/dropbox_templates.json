@@ -399,6 +399,18 @@
     "White/Royal Blue": "SS168WHRB.png"
   }
 },
+"SS026": {
+  "variant_folder": "SS026",
+  "main_image_map": {
+    "Heather Grey/Deep Navy": "SS026HGDN.jpg",
+    "Sunflower/Kelly Green": "SS026SFKG.jpg",
+    "White/Black": "SS026WHBK.jpg",
+    "White/Deep Navy": "SS026WHDN.jpg",
+    "White/Kelly Green": "SS026WHKG.jpg",
+    "White/Red": "SS026WHRD.jpg",
+    "White/Royal Blue": "SS026WHRB.jpg"
+  }
+},
 "RL100": {
   "variant_folder": "RL100",
   "main_image_map": {

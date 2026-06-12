@@ -2205,7 +2205,7 @@ def build_dropbox_overview(profile: dict[str, Any], dropbox_cfg: dict[str, Any])
 
 
 def normalize_image_filename_part(value: str) -> str:
-    return "-".join(str(value or "").strip().split())
+    return re.sub(r"[^A-Za-z0-9]+", "-", str(value or "").strip()).strip("-")
 
 
 def build_color_image_filename_candidates(
@@ -2225,6 +2225,8 @@ def build_color_image_filename_candidates(
         configured_filename,
         f"{template_part}{code_part}{extension}" if template_part and code_part else "",
         f"{template_part}-{color_part}{extension}" if template_part and color_part else "",
+        f"{color_part.replace('-', ' ')}.jpg" if color_part else "",
+        f"{color_part.replace('-', ' ')}.png" if color_part else "",
         f"{color}.jpg" if color else "",
         f"{color}.png" if color else "",
         f"{color_part}.jpg" if color_part else "",
