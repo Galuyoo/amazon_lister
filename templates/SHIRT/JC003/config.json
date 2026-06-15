@@ -1,0 +1,228 @@
+{
+  "label": "JC003 Contrast Cool T",
+  "template_key": "JC003",
+  "template_file": "SHIRT.xlsm",
+  "parent_sku": "JC003",
+  "stock_reference_key": "JC003",
+  "feed_product_type": "shirt",
+  "recommended_browse_nodes": "1731028031",
+  "product_category": "apparel",
+  "brand_name": "sloganitto",
+  "manufacturer": "Generic",
+  "department_name": "mens",
+  "target_gender": "male",
+  "age_range_description": "Adult",
+  "material_type": "100% Polyester",
+  "style_name": "Contrast Cool T",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "t-shirt",
+  "care_instructions": "Machine Wash",
+  "theme": "Custom Printed Sports T Shirt",
+  "fit_type": "Relaxed",
+  "collar_style": "Crew Neck",
+  "neck_style": "Crew Neck",
+  "lifestyle": "Sports",
+  "pattern_type": "Contrast Sleeve",
+  "weave_type": "Knit",
+  "colors": [
+    "Arctic White/Fire Red",
+    "Arctic White/Jet Black",
+    "Arctic White/Sapphire Blue",
+    "Charcoal/Jet Black",
+    "Electric Yellow/Jet Black",
+    "Fire Red/Arctic White",
+    "Fire Red/Jet Black",
+    "French Navy/Arctic White",
+    "French Navy/Fire Red",
+    "Kelly Green/Arctic White",
+    "Purple/Arctic White",
+    "Royal Blue/Arctic White",
+    "Sapphire Blue/Charcoal"
+  ],
+  "sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL"
+  ],
+  "size_code_map": {
+    "XS": "XS",
+    "S": "S",
+    "M": "M",
+    "L": "L",
+    "XL": "XL",
+    "2XL": "2XL"
+  },
+  "color_sku_map": {
+    "Arctic White/Fire Red": "JC003AWFR",
+    "Arctic White/Jet Black": "JC003AWJB",
+    "Arctic White/Sapphire Blue": "JC003AWSA",
+    "Charcoal/Jet Black": "JC003CHJB",
+    "Electric Yellow/Jet Black": "JC003EYJB",
+    "Fire Red/Arctic White": "JC003FRAW",
+    "Fire Red/Jet Black": "JC003FRJB",
+    "French Navy/Arctic White": "JC003FNAW",
+    "French Navy/Fire Red": "JC003FNFR",
+    "Kelly Green/Arctic White": "JC003KGAW",
+    "Purple/Arctic White": "JC003PUAW",
+    "Royal Blue/Arctic White": "JC003RBAW",
+    "Sapphire Blue/Charcoal": "JC003SACH"
+  },
+  "color_size_map": {
+    "Arctic White/Fire Red": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Arctic White/Jet Black": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Arctic White/Sapphire Blue": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Charcoal/Jet Black": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Electric Yellow/Jet Black": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Fire Red/Arctic White": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Fire Red/Jet Black": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "French Navy/Arctic White": [
+      "XS",
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "French Navy/Fire Red": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Kelly Green/Arctic White": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Purple/Arctic White": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Royal Blue/Arctic White": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Sapphire Blue/Charcoal": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ]
+  },
+  "extra_parent_fields": {
+    "outer_material_type": "Synthetic",
+    "material_type1": "100% Polyester",
+    "fabric_type": "Polyester",
+    "fabric_weight": "140",
+    "fabric_weight_unit_of_measure": "grams_per_square_meter",
+    "weave_type": "Knit",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Alpha",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+  "extra_child_fields": {
+    "outer_material_type": "Synthetic",
+    "material_type1": "100% Polyester",
+    "fabric_type": "Polyester",
+    "fabric_weight": "140",
+    "fabric_weight_unit_of_measure": "grams_per_square_meter",
+    "weave_type": "Knit",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Alpha",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+  "field_aliases": {
+    "apparel_size_system": [
+      "shirt_size_system",
+      "tops_size_system",
+      "outerwear_size_system"
+    ],
+    "apparel_size_class": [
+      "shirt_size_class",
+      "tops_size_class",
+      "outerwear_size_class"
+    ],
+    "apparel_size": [
+      "shirt_size",
+      "tops_size_value",
+      "outerwear_size_value"
+    ],
+    "apparel_body_type": [
+      "shirt_body_type",
+      "tops_body_type",
+      "outerwear_body_type"
+    ],
+    "apparel_height_type": [
+      "shirt_height_type",
+      "tops_height_type",
+      "outerwear_height_type"
+    ],
+    "outer_material_type": [
+      "material_type",
+      "material_type1",
+      "fabric_type"
+    ]
+  }
+}

@@ -1,0 +1,156 @@
+{
+  "label": "JC03J Kids Contrast Cool T",
+  "template_key": "JC03J",
+  "template_file": "SHIRT.xlsm",
+  "parent_sku": "JC003J",
+  "stock_reference_key": "JC003J",
+  "feed_product_type": "shirt",
+  "recommended_browse_nodes": "1730830031",
+  "product_category": "apparel",
+  "brand_name": "sloganitto",
+  "manufacturer": "Generic",
+  "department_name": "unisex-child",
+  "target_gender": "unisex",
+  "age_range_description": "Child",
+  "material_type": "100% Polyester",
+  "style_name": "Kids Contrast Cool T",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "t-shirt",
+  "care_instructions": "Machine Wash",
+  "theme": "Custom Printed Kids Sports T Shirt",
+  "fit_type": "Relaxed",
+  "collar_style": "Crew Neck",
+  "neck_style": "Crew Neck",
+  "lifestyle": "Sports",
+  "pattern_type": "Contrast Sleeve",
+  "weave_type": "Knit",
+  "colors": [
+    "Jet Black/Arctic White",
+    "Jet Black/Electric Orange",
+    "Jet Black/Fire Red",
+    "Jet Black/Gold"
+  ],
+  "sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL"
+  ],
+  "size_code_map": {
+    "XS": "XS",
+    "S": "S",
+    "M": "M",
+    "L": "L",
+    "XL": "XL",
+    "2XL": "2XL"
+  },
+  "size_display_map": {
+    "XS": "3/4 YRS",
+    "S": "5/6 YRS",
+    "M": "7/8 YRS",
+    "L": "9/11 YRS",
+    "XL": "12/13 YRS",
+    "2XL": "2XL"
+  },
+  "color_sku_map": {
+    "Jet Black/Arctic White": "JC003JBAW",
+    "Jet Black/Electric Orange": "JC003JBEO",
+    "Jet Black/Fire Red": "JC003JBFR",
+    "Jet Black/Gold": "JC003JBGO"
+  },
+  "color_size_map": {
+    "Jet Black/Arctic White": [
+      "XS",
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Jet Black/Electric Orange": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Jet Black/Fire Red": [
+      "XS",
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Jet Black/Gold": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ]
+  },
+  "extra_parent_fields": {
+    "outer_material_type": "Synthetic",
+    "material_type1": "100% Polyester",
+    "fabric_type": "Polyester",
+    "fabric_weight": "140",
+    "fabric_weight_unit_of_measure": "grams_per_square_meter",
+    "weave_type": "Knit",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Age",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+  "extra_child_fields": {
+    "outer_material_type": "Synthetic",
+    "material_type1": "100% Polyester",
+    "fabric_type": "Polyester",
+    "fabric_weight": "140",
+    "fabric_weight_unit_of_measure": "grams_per_square_meter",
+    "weave_type": "Knit",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Age",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+  "field_aliases": {
+    "apparel_size_system": [
+      "shirt_size_system",
+      "tops_size_system",
+      "outerwear_size_system"
+    ],
+    "apparel_size_class": [
+      "shirt_size_class",
+      "tops_size_class",
+      "outerwear_size_class"
+    ],
+    "apparel_size": [
+      "shirt_size",
+      "tops_size_value",
+      "outerwear_size_value"
+    ],
+    "apparel_body_type": [
+      "shirt_body_type",
+      "tops_body_type",
+      "outerwear_body_type"
+    ],
+    "apparel_height_type": [
+      "shirt_height_type",
+      "tops_height_type",
+      "outerwear_height_type"
+    ],
+    "outer_material_type": [
+      "material_type",
+      "material_type1",
+      "fabric_type"
+    ]
+  }
+}
