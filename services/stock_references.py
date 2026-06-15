@@ -112,11 +112,13 @@ def get_stock_reference(profile: dict[str, Any]) -> dict[str, Any]:
 
 def is_strict_stock_ready(profile: dict[str, Any]) -> bool:
     reference = get_stock_reference(profile)
+    if not reference:
+        return False
     if "strict_stock_ready" in reference:
         return bool(reference.get("strict_stock_ready"))
     if "strict" in reference:
         return bool(reference.get("strict"))
-    return has_stock_reference(profile)
+    return False
 
 
 def build_variant_reference_key(
