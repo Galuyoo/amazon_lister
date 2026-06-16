@@ -2045,6 +2045,35 @@ def normalize_multiselect_values(
     return valid_current, False
 
 
+def expand_full_selection_after_option_change(
+    session_key: str,
+    options_state_key: str,
+    current_values: list[str] | None,
+    valid_options: list[str],
+) -> tuple[list[str] | None, bool]:
+    previous_options = st.session_state.get(options_state_key)
+    st.session_state[options_state_key] = list(valid_options)
+
+    if current_values is None or not isinstance(previous_options, list):
+        return current_values, False
+
+    current_list = list(current_values)
+    previous_list = [value for value in previous_options if value in valid_options]
+    if not previous_list or len(previous_list) == len(valid_options):
+        return current_values, False
+
+    was_all_previous_options = (
+        len(current_list) == len(previous_list)
+        and set(current_list) == set(previous_list)
+    )
+    if not was_all_previous_options:
+        return current_values, False
+
+    expanded_values = list(valid_options)
+    st.session_state[session_key] = expanded_values
+    return expanded_values, True
+
+
 def normalize_selected_variants_session_state(
     profile: dict[str, Any],
     listing_memory: dict[str, Any],
@@ -2072,6 +2101,13 @@ def normalize_selected_variants_session_state(
                 if force_saved_values or force_defaults
                 else st.session_state.get(widget_key) if widget_key in st.session_state else None
             )
+            if not force_saved_values and not force_defaults:
+                current_values, _ = expand_full_selection_after_option_change(
+                    widget_key,
+                    f"{widget_key}_available_options",
+                    current_values,
+                    dim_options,
+                )
             normalized_values, should_set = normalize_multiselect_values(
                 current_values,
                 dim_options,
@@ -2095,6 +2131,13 @@ def normalize_selected_variants_session_state(
         if force_saved_values or force_defaults
         else st.session_state.get("selected_colours") if "selected_colours" in st.session_state else None
     )
+    if not force_saved_values and not force_defaults:
+        current_colors, _ = expand_full_selection_after_option_change(
+            "selected_colours",
+            "selected_colours_available_options",
+            current_colors,
+            color_options,
+        )
     normalized_colors, should_set_colors = normalize_multiselect_values(
         current_colors,
         color_options,
