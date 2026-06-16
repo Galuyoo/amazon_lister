@@ -2748,7 +2748,7 @@ def get_cached_preview_image_data(
     global_resource_entries = resolve_display_entries([(Path(path).name, path) for path in dropbox_overview.get("shared_resource_images", [])])
 
     stage_folder_path_for_preview = build_stage_folder_path(dropbox_cfg, staged_folder_name) if staged_folder_name else ""
-    color_preview_source = get_selected_colors_for_image_resolution(profile, selected_variants) or get_profile_color_options(profile)
+    color_preview_source = get_profile_color_options(profile) or get_selected_colors_for_image_resolution(profile, selected_variants)
     staged_variant_entries: list[dict[str, Any]] = []
     fallback_variant_entries: list[tuple[str, str]] = []
     for color in color_preview_source:
