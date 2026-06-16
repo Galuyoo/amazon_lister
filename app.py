@@ -7031,8 +7031,10 @@ def main() -> None:
                     action_cols = st.columns(3)
                     if action_cols[0].button("All colours", key=f"{widget_key}_all", width="stretch"):
                         st.session_state[widget_key] = list(dim_options)
+                        st.rerun()
                     if action_cols[1].button("No colours", key=f"{widget_key}_none", width="stretch"):
                         st.session_state[widget_key] = []
+                        st.rerun()
                     if action_cols[2].button(
                         "Mapped colours",
                         key=f"{widget_key}_mapped",
@@ -7042,6 +7044,7 @@ def main() -> None:
                     ):
                         if mapped_colors:
                             st.session_state[widget_key] = list(mapped_colors)
+                            st.rerun()
                         else:
                             st.session_state["apply_mapped_colours_widget_key"] = widget_key
                             st.session_state["load_image_mappings_now"] = True
@@ -7064,8 +7067,10 @@ def main() -> None:
             color_action_cols = st.columns(3)
             if color_action_cols[0].button("All colours", key="selected_colours_all", width="stretch"):
                 st.session_state["selected_colours"] = list(colors_available)
+                st.rerun()
             if color_action_cols[1].button("No colours", key="selected_colours_none", width="stretch"):
                 st.session_state["selected_colours"] = []
+                st.rerun()
             if color_action_cols[2].button(
                 "Mapped colours",
                 key="selected_colours_mapped",
@@ -7075,6 +7080,7 @@ def main() -> None:
             ):
                 if mapped_colors:
                     st.session_state["selected_colours"] = list(mapped_colors)
+                    st.rerun()
                 else:
                     st.session_state["apply_mapped_colours_widget_key"] = "selected_colours"
                     st.session_state["load_image_mappings_now"] = True
