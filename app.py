@@ -2664,8 +2664,6 @@ def get_cached_preview_image_data(
 
     preview_color_image_map: dict[str, str] = {}
     preview_design_color_image_url_map: dict[str, dict[str, str]] = {}
-    full_color_image_map: dict[str, str] = {}
-    full_design_color_image_url_map: dict[str, dict[str, str]] = {}
     parent_main_image_options: list[tuple[str, str]] = []
 
     def resolve_display_entries(items: list[tuple[str, str]]) -> list[dict[str, Any]]:
@@ -2742,8 +2740,6 @@ def get_cached_preview_image_data(
         except Exception:
             preview_color_image_map = {}
             preview_design_color_image_url_map = {}
-            full_color_image_map = {}
-            full_design_color_image_url_map = {}
             parent_main_image_options = []
 
     staged_preview_entries = resolve_display_entries([(Path(path).name, path) for path in staged_preview_paths])
@@ -2787,8 +2783,6 @@ def get_cached_preview_image_data(
         "design_color_preview_entries": design_color_preview_entries,
         "color_image_map": preview_color_image_map,
         "design_color_image_url_map": preview_design_color_image_url_map,
-        "full_color_image_map": full_color_image_map,
-        "full_design_color_image_url_map": full_design_color_image_url_map,
         "parent_main_image_options": parent_main_image_options,
         "garment_resource_entries": garment_resource_entries,
         "global_resource_entries": global_resource_entries,
@@ -6598,39 +6592,6 @@ def main() -> None:
     staged_variant_entries = preview_image_data.get("staged_variant_entries", [])
     preview_color_image_map = preview_image_data.get("color_image_map", {})
     preview_design_color_image_url_map = preview_image_data.get("design_color_image_url_map", {})
-    full_preview_color_image_map = preview_image_data.get("full_color_image_map", preview_color_image_map)
-    full_preview_design_color_image_url_map = preview_image_data.get(
-        "full_design_color_image_url_map",
-        preview_design_color_image_url_map,
-    )
-
-    profile_color_options = get_profile_color_options(profile)
-    selected_color_count = len(get_selected_colors_for_image_resolution(profile, selected_variants))
-    staged_variant_file_count = len(staged_preview_paths)
-    auto_apply_mapped_context = json.dumps(
-        {
-            "folder": staged_folder_name or "",
-            "template_key": active_profile.get("template_key", ""),
-            "selected_color_count": selected_color_count,
-            "staged_variant_file_count": staged_variant_file_count,
-        },
-        sort_keys=True,
-    )
-    if (
-        staged_folder_name
-        and not should_load_image_mappings
-        and profile_color_options
-        and selected_color_count
-        and selected_color_count < len(profile_color_options)
-        and staged_variant_file_count >= len(profile_color_options)
-        and st.session_state.get("auto_apply_mapped_colours_context") != auto_apply_mapped_context
-    ):
-        st.session_state["auto_apply_mapped_colours_context"] = auto_apply_mapped_context
-        st.session_state["apply_mapped_colours_widget_key"] = "selected_colours"
-        st.session_state["load_image_mappings_now"] = True
-        st.session_state["image_mappings_loaded_folder"] = staged_folder_name
-        st.session_state["image_mappings_loaded_context"] = image_mapping_context_key
-        st.rerun()
 
     pending_mapped_colour_key = st.session_state.get("apply_mapped_colours_widget_key", "")
     if pending_mapped_colour_key and should_load_image_mappings:
@@ -6641,8 +6602,8 @@ def main() -> None:
         )
         mapped_colours_to_apply = get_mapped_color_options(
             pending_valid_colours,
-            full_preview_color_image_map,
-            full_preview_design_color_image_url_map,
+            preview_color_image_map,
+            preview_design_color_image_url_map,
         )
         if mapped_colours_to_apply:
             st.session_state[pending_mapped_colour_key] = list(mapped_colours_to_apply)
