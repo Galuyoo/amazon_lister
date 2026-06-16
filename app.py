@@ -1422,6 +1422,8 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
         "reviewed_by": payload.get("reviewed_by", ""),
         "prepared_at": payload.get("prepared_at", ""),
         "reviewed_at": payload.get("reviewed_at", ""),
+        "parent_main_image_choice": payload.get("parent_main_image_choice", ""),
+        "parent_main_image_url": payload.get("parent_main_image_url", ""),
     }
 
     original_finished_folder_name = str(payload.get("original_finished_folder_name", "")).strip()
@@ -1567,6 +1569,10 @@ def apply_listing_memory_to_session(listing_memory: dict[str, Any], profile: dic
         get_saved_generated_sku_listing_code(listing_memory)
         or f"D{generate_unique_sku(5)}"
     )
+    st.session_state["parent_main_image_choice"] = listing_memory.get(
+        "parent_main_image_choice",
+        "Automatic (recommended)",
+    ) or "Automatic (recommended)"
     st.session_state["variant_quantity"] = int(listing_memory.get("quantity", 100))
 
     saved_prices = listing_memory.get("size_price_map", {})
@@ -2362,6 +2368,23 @@ def build_parent_main_image_options(
     return options
 
 
+def resolve_selected_parent_main_image_url(
+    parent_main_options: list[tuple[str, str]],
+    selected_parent_main_image_label: str = "",
+    selected_parent_main_image_url: str = "",
+) -> str:
+    selected_label = str(selected_parent_main_image_label or "").strip()
+    if selected_label and selected_label != "Automatic (recommended)":
+        for label, url in parent_main_options:
+            if label == selected_label and url:
+                return url
+
+    if selected_parent_main_image_url:
+        return selected_parent_main_image_url
+
+    return parent_main_options[0][1] if parent_main_options else ""
+
+
 def build_dropbox_overview_cache_key(
     profile: dict[str, Any],
     dropbox_cfg: dict[str, Any],
@@ -2773,6 +2796,7 @@ def build_resolved_image_bundle_cache_key(
     dropbox_cfg: dict[str, Any],
     staged_folder_name: str,
     selected_variants: dict[str, list[str]],
+    selected_parent_main_image_label: str = "",
     selected_parent_main_image_url: str = "",
     use_resource_fallback_images: bool = False,
 ) -> str:
@@ -2782,6 +2806,7 @@ def build_resolved_image_bundle_cache_key(
         "staged_folder_name": staged_folder_name,
         "selected_colors": get_selected_colors_for_image_resolution(profile, selected_variants),
         "selected_designs": selected_variants.get("design", []),
+        "selected_parent_main_image_label": selected_parent_main_image_label,
         "selected_parent_main_image_url": selected_parent_main_image_url,
         "template_cfg": dropbox_cfg.get("templates", {}).get(template_key, {}),
         "general_resource_images": dropbox_cfg.get("general_resource_images", []),
@@ -2797,6 +2822,7 @@ def get_cached_resolved_image_bundle(
     staged_folder_name: str,
     selected_variants: dict[str, list[str]],
     dropbox_overview: dict[str, Any],
+    selected_parent_main_image_label: str = "",
     selected_parent_main_image_url: str = "",
     use_resource_fallback_images: bool = False,
 ) -> dict[str, Any]:
@@ -2813,6 +2839,7 @@ def get_cached_resolved_image_bundle(
         dropbox_cfg,
         staged_folder_name,
         selected_variants,
+        selected_parent_main_image_label,
         selected_parent_main_image_url,
         use_resource_fallback_images,
     )
@@ -2828,6 +2855,7 @@ def get_cached_resolved_image_bundle(
         get_selected_colors_for_image_resolution(profile, selected_variants),
         dropbox_overview,
         stage_folder_path,
+        selected_parent_main_image_label=selected_parent_main_image_label,
         selected_parent_main_image_url=selected_parent_main_image_url,
         use_resource_fallback_images=use_resource_fallback_images,
     )
@@ -2851,6 +2879,7 @@ def resolve_folder_image_urls(
     selected_colors: list[str],
     dropbox_overview: dict[str, Any],
     folder_path: str,
+    selected_parent_main_image_label: str = "",
     selected_parent_main_image_url: str = "",
     use_resource_fallback_images: bool = False,
 ) -> tuple[str, list[str], dict[str, str], dict[str, dict[str, str]]]:
@@ -2919,10 +2948,11 @@ def resolve_folder_image_urls(
             "Missing staged mapped image for variant(s): " + ", ".join(missing_variant_labels)
         )
 
-    if selected_parent_main_image_url:
-        parent_main_image_url = selected_parent_main_image_url
-    elif parent_main_options:
-        parent_main_image_url = parent_main_options[0][1]
+    parent_main_image_url = resolve_selected_parent_main_image_url(
+        parent_main_options,
+        selected_parent_main_image_label=selected_parent_main_image_label,
+        selected_parent_main_image_url=selected_parent_main_image_url,
+    )
 
     if not parent_main_image_url:
         raise ValueError("No staged mapped image exists for the selected variants.")
@@ -4066,6 +4096,8 @@ def prepare_generation_payload(
     generated_sku_listing_code: str,
     quantity: int,
     staged_folder_name: str,
+    parent_main_image_choice: str = "",
+    parent_main_image_url: str = "",
 ) -> dict[str, Any]:
     base_parent_sku = str(get_default(profile, "parent_sku", "")).strip()
     manual_sku_listing_code = sanitize_sku(str(manual_sku_listing_code or "")).upper()
@@ -4113,6 +4145,8 @@ def prepare_generation_payload(
         "extra_parent_fields": get_extra_parent_fields(profile),
         "extra_child_fields": get_extra_child_fields(profile),
         "parent_main_image_url": "",
+        "parent_main_image_choice": parent_main_image_choice,
+        "selected_parent_main_image_url": parent_main_image_url,
         "product_description": product_description.strip(),
         "generic_keywords": generic_keywords.strip(),
         "bullet_points": [bullet.strip() for bullet in bullets],
@@ -4801,6 +4835,8 @@ def build_ready_review_data(
         generated_sku_listing_code=get_saved_generated_sku_listing_code(listing_memory),
         quantity=review_data["quantity"],
         staged_folder_name=ready_folder_name,
+        parent_main_image_choice=str(listing_memory.get("parent_main_image_choice", "") or ""),
+        parent_main_image_url=str(listing_memory.get("parent_main_image_url", "") or ""),
     )
 
     review_data["errors"].extend(generation_prep["errors"])
@@ -4825,6 +4861,8 @@ def build_ready_review_data(
             selected_colors,
             dropbox_overview,
             ready_folder_path,
+            selected_parent_main_image_label=str(payload.get("parent_main_image_choice", "") or ""),
+            selected_parent_main_image_url=str(payload.get("selected_parent_main_image_url", "") or payload.get("parent_main_image_url", "") or ""),
         )
     except Exception as exc:
         review_data["errors"].append(str(exc))
@@ -5342,6 +5380,8 @@ def generate_approved_listing(
         generated_sku_listing_code=get_saved_generated_sku_listing_code(listing_memory),
         quantity=quantity,
         staged_folder_name=approved_folder_name,
+        parent_main_image_choice=str(listing_memory.get("parent_main_image_choice", "") or ""),
+        parent_main_image_url=str(listing_memory.get("parent_main_image_url", "") or ""),
     )
     generation_payload = generation_prep["payload"]
     original_finished_folder_name = str(listing_memory.get("original_finished_folder_name", "")).strip()
@@ -5363,6 +5403,12 @@ def generate_approved_listing(
     dropbox_overview = get_cached_dropbox_overview(profile, dropbox_cfg)
     approved_folder_path = build_approved_folder_path(dropbox_cfg, approved_folder_name)
     selected_colors = generation_payload["colors"]
+    selected_parent_main_image_label = str(generation_payload.get("parent_main_image_choice", "") or "")
+    selected_parent_main_image_url = str(
+        generation_payload.get("selected_parent_main_image_url", "")
+        or generation_payload.get("parent_main_image_url", "")
+        or ""
+    )
 
     generation_timings: dict[str, float] = {}
 
@@ -5379,6 +5425,8 @@ def generate_approved_listing(
         selected_colors,
         dropbox_overview,
         approved_folder_path,
+        selected_parent_main_image_label=selected_parent_main_image_label,
+        selected_parent_main_image_url=selected_parent_main_image_url,
     )
     generation_timings["pre_move_image_check"] = round(time.perf_counter() - step_started_at, 4)
 
@@ -5410,6 +5458,8 @@ def generate_approved_listing(
             selected_colors,
             dropbox_overview,
             finished_folder_path,
+            selected_parent_main_image_label=selected_parent_main_image_label,
+            selected_parent_main_image_url=selected_parent_main_image_url,
         )
         generation_timings["final_image_resolve"] = round(time.perf_counter() - step_started_at, 4)
 
@@ -6590,9 +6640,9 @@ def main() -> None:
 
     quantity = int(st.session_state.get("variant_quantity", listing_memory.get("quantity", 100)))
     selected_parent_main_label = st.session_state.get("parent_main_image_choice", "Automatic (recommended)")
-    selected_parent_main_image_url = next(
-        (url for label, url in parent_main_image_options if label == selected_parent_main_label),
-        "",
+    selected_parent_main_image_url = resolve_selected_parent_main_image_url(
+        parent_main_image_options,
+        selected_parent_main_image_label=selected_parent_main_label,
     )
     st.session_state.setdefault("use_resource_fallback_images", False)
     use_resource_fallback_images = bool(st.session_state.get("use_resource_fallback_images", False))
@@ -6612,12 +6662,13 @@ def main() -> None:
     current_resolved_image_cache_key = ""
     if staged_folder_name:
         current_resolved_image_cache_key = build_resolved_image_bundle_cache_key(
-            profile,
-            dropbox_cfg,
-            staged_folder_name,
-            image_preview_variants,
-            selected_parent_main_image_url,
-            use_resource_fallback_images,
+            profile=profile,
+            dropbox_cfg=dropbox_cfg,
+            staged_folder_name=staged_folder_name,
+            selected_variants=image_preview_variants,
+            selected_parent_main_image_label=selected_parent_main_label,
+            selected_parent_main_image_url=selected_parent_main_image_url,
+            use_resource_fallback_images=use_resource_fallback_images,
         )
     resolved_image_bundle_cache_hit = bool(
         current_resolved_image_cache_key
@@ -6632,6 +6683,7 @@ def main() -> None:
                 staged_folder_name=staged_folder_name,
                 selected_variants=image_preview_variants,
                 dropbox_overview=dropbox_overview,
+                selected_parent_main_image_label=selected_parent_main_label,
                 selected_parent_main_image_url=selected_parent_main_image_url,
                 use_resource_fallback_images=use_resource_fallback_images,
             )
@@ -7331,6 +7383,7 @@ def main() -> None:
                     staged_folder_name=staged_folder_name,
                     selected_variants=selected_variants,
                     dropbox_overview=dropbox_overview,
+                    selected_parent_main_image_label=selected_parent_main_label,
                     selected_parent_main_image_url=selected_parent_main_image_url,
                     use_resource_fallback_images=use_resource_fallback_images,
                 )
@@ -7446,6 +7499,8 @@ def main() -> None:
         generated_sku_listing_code=generated_sku_listing_code,
         quantity=quantity,
         staged_folder_name=staged_folder_name or "",
+        parent_main_image_choice=selected_parent_main_label,
+        parent_main_image_url=preview_parent_main_image_url or selected_parent_main_image_url,
     )
 
     generation_payload = generation_prep["payload"]
@@ -7557,6 +7612,7 @@ def main() -> None:
             selected_colors,
             dropbox_overview,
             stage_folder_path,
+            selected_parent_main_image_label=selected_parent_main_label,
             selected_parent_main_image_url=selected_parent_main_image_url,
         )
         t2 = time.perf_counter()
@@ -7585,6 +7641,7 @@ def main() -> None:
             selected_colors,
             dropbox_overview,
             finished_folder_path,
+            selected_parent_main_image_label=selected_parent_main_label,
             selected_parent_main_image_url=selected_parent_main_image_url,
         )
         t4 = time.perf_counter()
