@@ -35,6 +35,10 @@
     "Fire Red/Jet Black",
     "French Navy/Arctic White",
     "French Navy/Fire Red",
+    "Jet Black/Arctic White",
+    "Jet Black/Electric Orange",
+    "Jet Black/Fire Red",
+    "Jet Black/Gold",
     "Kelly Green/Arctic White",
     "Purple/Arctic White",
     "Royal Blue/Arctic White",
@@ -66,6 +70,10 @@
     "Fire Red/Jet Black": "JC003FRJB",
     "French Navy/Arctic White": "JC003FNAW",
     "French Navy/Fire Red": "JC003FNFR",
+    "Jet Black/Arctic White": "JC003JBAW",
+    "Jet Black/Electric Orange": "JC003JBEO",
+    "Jet Black/Fire Red": "JC003JBFR",
+    "Jet Black/Gold": "JC003JBGD",
     "Kelly Green/Arctic White": "JC003KGAW",
     "Purple/Arctic White": "JC003PUAW",
     "Royal Blue/Arctic White": "JC003RBAW",
@@ -130,6 +138,36 @@
       "2XL"
     ],
     "French Navy/Fire Red": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Jet Black/Arctic White": [
+      "XS",
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Jet Black/Electric Orange": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Jet Black/Fire Red": [
+      "XS",
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Jet Black/Gold": [
       "S",
       "M",
       "L",
