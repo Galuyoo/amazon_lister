@@ -189,8 +189,9 @@
       "outerwear_body_type"
     ],
     "apparel_height_type": [
-      "shirt_height_type",
-      "tops_height_type"
+      "shirt_size_height_type",
+      "tops_height_type",
+      "outerwear_height_type"
     ],
     "outer_material_type": [
       "material_type",
