@@ -2257,6 +2257,11 @@ def normalize_image_filename_part(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "-", str(value or "").strip()).strip("-")
 
 
+def normalize_image_match_key(value: str) -> str:
+    stem = re.sub(r"\.[A-Za-z0-9]+$", "", str(value or "").strip())
+    return normalize_image_filename_part(stem).lower()
+
+
 def build_color_image_filename_candidates(
     template_key: str,
     color: str,
@@ -2307,10 +2312,19 @@ def resolve_existing_color_image_path(
 
     try:
         candidate_lookup = {filename.lower(): filename for filename in candidates}
+        candidate_stem_lookup = {
+            normalize_image_match_key(filename): filename
+            for filename in candidates
+            if normalize_image_match_key(filename)
+        }
         for path in list_folder_files(folder_path):
             filename = Path(path).name
             if filename.lower() in candidate_lookup:
                 return path, candidates
+            if Path(filename).suffix.lower() in {".jpg", ".jpeg", ".png"}:
+                filename_key = normalize_image_match_key(filename)
+                if filename_key in candidate_stem_lookup:
+                    return path, candidates
     except Exception:
         pass
 
@@ -2751,6 +2765,8 @@ def get_cached_preview_image_data(
     color_preview_source = get_profile_color_options(profile) or get_selected_colors_for_image_resolution(profile, selected_variants)
     staged_variant_entries: list[dict[str, Any]] = []
     fallback_variant_entries: list[tuple[str, str]] = []
+    main_image_map = dropbox_overview.get("main_image_map", {})
+    color_sku_map = dropbox_overview.get("color_sku_map", {})
     for color in color_preview_source:
         resolved_url = preview_color_image_map.get(color, "")
         if resolved_url:
@@ -2762,10 +2778,32 @@ def get_cached_preview_image_data(
             })
             continue
 
+        if stage_folder_path_for_preview and include_mappings:
+            path, _ = resolve_existing_color_image_path(
+                stage_folder_path_for_preview,
+                str(dropbox_overview.get("template_key", "") or profile.get("template_key", "") or ""),
+                color,
+                str(main_image_map.get(color, "") or ""),
+                str(color_sku_map.get(color, "") or ""),
+            )
+            if path:
+                try:
+                    resolved_url = dropbox_preview_url(path) if resolve_preview_urls else path
+                except Exception:
+                    resolved_url = ""
+            if resolved_url:
+                staged_variant_entries.append({
+                    "label": color,
+                    "path": resolved_url,
+                    "exists": True,
+                    "direct_url": resolved_url,
+                })
+                continue
+
         fallback_variant_entries.append((
             color,
-            f"{stage_folder_path_for_preview}/{dropbox_overview.get('main_image_map', {}).get(color, '')}"
-            if stage_folder_path_for_preview and dropbox_overview.get("main_image_map", {}).get(color, "")
+            f"{stage_folder_path_for_preview}/{main_image_map.get(color, '')}"
+            if stage_folder_path_for_preview and main_image_map.get(color, "")
             else "",
         ))
     staged_variant_entries.extend(resolve_display_entries(fallback_variant_entries))
