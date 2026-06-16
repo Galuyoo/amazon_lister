@@ -26,10 +26,15 @@
   "pattern_type": "Contrast Sleeve",
   "weave_type": "Knit",
   "colors": [
+    "Arctic White/Fire Red",
+    "Arctic White/Jet Black",
+    "Arctic White/Sapphire Blue",
+    "Fire Red/Jet Black",
+    "French Navy/Arctic White",
+    "French Navy/Fire Red",
     "Jet Black/Arctic White",
-    "Jet Black/Electric Orange",
     "Jet Black/Fire Red",
-    "Jet Black/Gold"
+    "Royal Blue/Arctic White"
   ],
   "sizes": [
     "XS",
@@ -56,13 +61,46 @@
     "2XL": "2XL"
   },
   "color_sku_map": {
+    "Arctic White/Fire Red": "JC003JAWFR",
+    "Arctic White/Jet Black": "JC003JAWJB",
+    "Arctic White/Sapphire Blue": "JC003JAWSA",
+    "Fire Red/Jet Black": "JC003JFRJB",
+    "French Navy/Arctic White": "JC003JFNAW",
+    "French Navy/Fire Red": "JC003JFNFR",
     "Jet Black/Arctic White": "JC003JBAW",
-    "Jet Black/Electric Orange": "JC003JBEO",
     "Jet Black/Fire Red": "JC003JBFR",
-    "Jet Black/Gold": "JC003JBGO"
+    "Royal Blue/Arctic White": "JC003JRBAW"
   },
   "color_size_map": {
-    "Jet Black/Arctic White": [
+    "Arctic White/Fire Red": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Arctic White/Jet Black": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Arctic White/Sapphire Blue": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Fire Red/Jet Black": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "French Navy/Arctic White": [
       "XS",
       "S",
       "M",
@@ -70,7 +108,15 @@
       "XL",
       "2XL"
     ],
-    "Jet Black/Electric Orange": [
+    "French Navy/Fire Red": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL"
+    ],
+    "Jet Black/Arctic White": [
+      "XS",
       "S",
       "M",
       "L",
@@ -85,7 +131,7 @@
       "XL",
       "2XL"
     ],
-    "Jet Black/Gold": [
+    "Royal Blue/Arctic White": [
       "S",
       "M",
       "L",
@@ -144,8 +190,7 @@
     ],
     "apparel_height_type": [
       "shirt_height_type",
-      "tops_height_type",
-      "outerwear_height_type"
+      "tops_height_type"
     ],
     "outer_material_type": [
       "material_type",
