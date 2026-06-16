@@ -41,24 +41,21 @@
     "S",
     "M",
     "L",
-    "XL",
-    "2XL"
+    "XL"
   ],
   "size_code_map": {
     "XS": "XS",
     "S": "S",
     "M": "M",
     "L": "L",
-    "XL": "XL",
-    "2XL": "2XL"
+    "XL": "XL"
   },
   "size_display_map": {
     "XS": "3/4 YRS",
     "S": "5/6 YRS",
     "M": "7/8 YRS",
     "L": "9/11 YRS",
-    "XL": "12/13 YRS",
-    "2XL": "2XL"
+    "XL": "12/13 YRS"
   },
   "color_sku_map": {
     "Arctic White/Fire Red": "JC003JAWFR",
@@ -73,70 +70,67 @@
   },
   "color_size_map": {
     "Arctic White/Fire Red": [
+      "XS",
       "S",
       "M",
       "L",
-      "XL",
-      "2XL"
+      "XL"
     ],
     "Arctic White/Jet Black": [
+      "XS",
       "S",
       "M",
       "L",
-      "XL",
-      "2XL"
+      "XL"
     ],
     "Arctic White/Sapphire Blue": [
+      "XS",
       "S",
       "M",
       "L",
-      "XL",
-      "2XL"
+      "XL"
     ],
     "Fire Red/Jet Black": [
+      "XS",
       "S",
       "M",
       "L",
-      "XL",
-      "2XL"
+      "XL"
     ],
     "French Navy/Arctic White": [
       "XS",
       "S",
       "M",
       "L",
-      "XL",
-      "2XL"
+      "XL"
     ],
     "French Navy/Fire Red": [
+      "XS",
       "S",
       "M",
       "L",
-      "XL",
-      "2XL"
+      "XL"
     ],
     "Jet Black/Arctic White": [
       "XS",
       "S",
       "M",
       "L",
-      "XL",
-      "2XL"
+      "XL"
     ],
     "Jet Black/Fire Red": [
       "XS",
       "S",
       "M",
       "L",
-      "XL",
-      "2XL"
+      "XL"
     ],
     "Royal Blue/Arctic White": [
+      "XS",
       "S",
       "M",
       "L",
-      "XL",
-      "2XL"
+      "XL"
     ]
   },
   "extra_parent_fields": {
