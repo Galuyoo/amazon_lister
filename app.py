@@ -2678,6 +2678,8 @@ def get_cached_preview_image_data(
 
     preview_color_image_map: dict[str, str] = {}
     preview_design_color_image_url_map: dict[str, dict[str, str]] = {}
+    full_color_image_map: dict[str, str] = {}
+    full_design_color_image_url_map: dict[str, dict[str, str]] = {}
     parent_main_image_options: list[tuple[str, str]] = []
 
     def resolve_display_entries(items: list[tuple[str, str]]) -> list[dict[str, Any]]:
@@ -2754,6 +2756,8 @@ def get_cached_preview_image_data(
         except Exception:
             preview_color_image_map = {}
             preview_design_color_image_url_map = {}
+            full_color_image_map = {}
+            full_design_color_image_url_map = {}
             parent_main_image_options = []
 
     staged_preview_entries = resolve_display_entries([(Path(path).name, path) for path in staged_preview_paths])
@@ -2821,6 +2825,8 @@ def get_cached_preview_image_data(
         "design_color_preview_entries": design_color_preview_entries,
         "color_image_map": preview_color_image_map,
         "design_color_image_url_map": preview_design_color_image_url_map,
+        "full_color_image_map": full_color_image_map,
+        "full_design_color_image_url_map": full_design_color_image_url_map,
         "parent_main_image_options": parent_main_image_options,
         "garment_resource_entries": garment_resource_entries,
         "global_resource_entries": global_resource_entries,
@@ -6585,12 +6591,6 @@ def main() -> None:
         image_resolution_reason = ""
 
     image_preview_variants = selected_variants
-    if manual_image_load_requested:
-        st.session_state["image_mappings_loaded_variants"] = dict(selected_variants)
-    elif persisted_image_mappings_loaded and not auto_load_image_mappings:
-        image_preview_variants = dict(
-            st.session_state.get("image_mappings_loaded_variants", selected_variants)
-        )
 
     preview_image_cache_hit = (
         st.session_state.get("preview_image_cache", {}).get("key")
@@ -6630,6 +6630,11 @@ def main() -> None:
     staged_variant_entries = preview_image_data.get("staged_variant_entries", [])
     preview_color_image_map = preview_image_data.get("color_image_map", {})
     preview_design_color_image_url_map = preview_image_data.get("design_color_image_url_map", {})
+    full_preview_color_image_map = preview_image_data.get("full_color_image_map", preview_color_image_map)
+    full_preview_design_color_image_url_map = preview_image_data.get(
+        "full_design_color_image_url_map",
+        preview_design_color_image_url_map,
+    )
 
     pending_mapped_colour_key = st.session_state.get("apply_mapped_colours_widget_key", "")
     if pending_mapped_colour_key and should_load_image_mappings:
@@ -6640,8 +6645,8 @@ def main() -> None:
         )
         mapped_colours_to_apply = get_mapped_color_options(
             pending_valid_colours,
-            preview_color_image_map,
-            preview_design_color_image_url_map,
+            full_preview_color_image_map,
+            full_preview_design_color_image_url_map,
         )
         if mapped_colours_to_apply:
             st.session_state[pending_mapped_colour_key] = list(mapped_colours_to_apply)
@@ -7020,8 +7025,8 @@ def main() -> None:
                 if str(dim_name).strip().lower() in {"color", "colour"}:
                     mapped_colors = get_mapped_color_options(
                         list(dim_options),
-                        preview_color_image_map,
-                        preview_design_color_image_url_map,
+                        full_preview_color_image_map,
+                        full_preview_design_color_image_url_map,
                     )
                     action_cols = st.columns(3)
                     if action_cols[0].button("All colours", key=f"{widget_key}_all", width="stretch"):
@@ -7053,8 +7058,8 @@ def main() -> None:
         else:
             mapped_colors = get_mapped_color_options(
                 list(colors_available),
-                preview_color_image_map,
-                preview_design_color_image_url_map,
+                full_preview_color_image_map,
+                full_preview_design_color_image_url_map,
             )
             color_action_cols = st.columns(3)
             if color_action_cols[0].button("All colours", key="selected_colours_all", width="stretch"):

@@ -488,10 +488,15 @@
     "JC03J": {
       "variant_folder": "JC03J",
       "main_image_map": {
-        "Jet Black/Arctic White": "JC003JBAW.jpg",
-        "Jet Black/Electric Orange": "JC003JBEO.jpg",
-        "Jet Black/Fire Red": "JC003JBFR.jpg",
-        "Jet Black/Gold": "JC003JBGD.jpg"
+        "Arctic White/Fire Red": "Arctic White Fire Red.jpg",
+        "Arctic White/Jet Black": "Arctic White Jet Black.jpg",
+        "Arctic White/Sapphire Blue": "Arctic White Sapphire Blue.jpg",
+        "Fire Red/Jet Black": "Fire Red Jet Black.jpg",
+        "French Navy/Arctic White": "French Navy Arctic White.jpg",
+        "French Navy/Fire Red": "French Navy Fire Red.jpg",
+        "Jet Black/Arctic White": "Jet Black Arctic White.jpg",
+        "Jet Black/Fire Red": "Jet Black Fire Red.jpg",
+        "Royal Blue/Arctic White": "Royal Blue Arctic White.jpg"
       }
     },
     "JC003": {
