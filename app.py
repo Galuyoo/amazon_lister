@@ -47,6 +47,13 @@ OUTPUT_DIR = BASE_DIR / "outputs"
 LOAD_EVENT_LIMIT = 160
 DEFAULT_HANDLING_TIME_DAYS = 2
 DROPBOX_FOLDER_LIST_ATTEMPTS = 2
+MERCHANT_SHIPPING_GROUP_OPTIONS = [
+    "",
+    "Migrated TemplateDEFAULT",
+    "Nationwide Prime",
+    "INSTOCK Template",
+    "Template",
+]
 
 
 def reset_load_events() -> None:
@@ -1397,6 +1404,19 @@ def format_workflow_timestamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def normalize_handling_time_days(value: Any, default: int = DEFAULT_HANDLING_TIME_DAYS) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        normalized = default
+    return max(0, normalized)
+
+
+def normalize_merchant_shipping_group(value: Any) -> str:
+    group = str(value or "").strip()
+    return group if group in MERCHANT_SHIPPING_GROUP_OPTIONS else ""
+
+
 def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     memory_payload = {
         "template_label": profile.get("label", profile.get("_slug", "")),
@@ -1417,6 +1437,8 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
         "base_parent_sku": payload.get("base_parent_sku", ""),
         "parent_sku": payload.get("parent_sku", ""),
         "quantity": payload.get("quantity", 0),
+        "handling_time_days": normalize_handling_time_days(payload.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)),
+        "merchant_shipping_group_name": normalize_merchant_shipping_group(payload.get("merchant_shipping_group_name", "")),
         "assets_prepared_by": payload.get("assets_prepared_by", ""),
         "content_prepared_by": payload.get("content_prepared_by", ""),
         "reviewed_by": payload.get("reviewed_by", ""),
@@ -1538,6 +1560,8 @@ def load_listing_memory_from_dropbox(folder_path: str) -> dict[str, Any]:
 def initialize_listing_context_defaults(profile: dict[str, Any]) -> None:
     normalize_selected_variants_session_state(profile, {}, force_defaults=True)
     st.session_state["parent_main_image_choice"] = "Automatic (recommended)"
+    st.session_state["handling_time_days"] = DEFAULT_HANDLING_TIME_DAYS
+    st.session_state["merchant_shipping_group_name"] = ""
     sku_decoration_code = get_default_sku_decoration_code(profile)
     st.session_state["sku_decoration_choice"] = sku_decoration_code if sku_decoration_code in SKU_DECORATION_OPTIONS else "Custom"
     st.session_state["custom_sku_decoration_code"] = "" if sku_decoration_code in SKU_DECORATION_OPTIONS else sku_decoration_code
@@ -1574,6 +1598,12 @@ def apply_listing_memory_to_session(listing_memory: dict[str, Any], profile: dic
         "Automatic (recommended)",
     ) or "Automatic (recommended)"
     st.session_state["variant_quantity"] = int(listing_memory.get("quantity", 100))
+    st.session_state["handling_time_days"] = normalize_handling_time_days(
+        listing_memory.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)
+    )
+    st.session_state["merchant_shipping_group_name"] = normalize_merchant_shipping_group(
+        listing_memory.get("merchant_shipping_group_name", "")
+    )
 
     saved_prices = listing_memory.get("size_price_map", {})
     for size, price in saved_prices.items():
@@ -3525,7 +3555,12 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
 
             "fulfillment_availability#1.fulfillment_channel_code": "DEFAULT",
             "fulfillment_availability#1.quantity": data["quantity"],
-            "fulfillment_availability#1.lead_time_to_ship_max_days": DEFAULT_HANDLING_TIME_DAYS,
+            "fulfillment_availability#1.lead_time_to_ship_max_days": normalize_handling_time_days(
+                data.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)
+            ),
+            "merchant_shipping_group_name": normalize_merchant_shipping_group(
+                data.get("merchant_shipping_group_name", "")
+            ),
             "purchasable_offer[marketplace_id=A1F83G8C2ARO7P]#1.our_price#1.schedule#1.value_with_tax": price,
             "list_price_with_tax": price,
 
@@ -4140,6 +4175,8 @@ def prepare_generation_payload(
     generated_sku_listing_code: str,
     quantity: int,
     staged_folder_name: str,
+    handling_time_days: int = DEFAULT_HANDLING_TIME_DAYS,
+    merchant_shipping_group_name: str = "",
     parent_main_image_choice: str = "",
     parent_main_image_url: str = "",
 ) -> dict[str, Any]:
@@ -4170,6 +4207,8 @@ def prepare_generation_payload(
         "write_parent_starting_price": profile.get("write_parent_starting_price", False),
         "use_same_price_for_all_sizes": st.session_state.get("use_same_price_for_all_sizes", False),
         "quantity": quantity,
+        "handling_time_days": normalize_handling_time_days(handling_time_days),
+        "merchant_shipping_group_name": normalize_merchant_shipping_group(merchant_shipping_group_name),
         "department_name": profile.get("department_name", ""),
         "target_gender": profile.get("target_gender", ""),
         "age_range_description": profile.get("age_range_description", ""),
@@ -4798,6 +4837,14 @@ def build_review_snapshot(
         "variants_summary": build_variants_summary(selected_variants),
         "price_summary": build_price_summary(size_price_map),
         "quantity": int(payload.get("quantity", 0) or 0),
+        "fulfillment": {
+            "handling_time_days": normalize_handling_time_days(
+                payload.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)
+            ),
+            "merchant_shipping_group_name": normalize_merchant_shipping_group(
+                payload.get("merchant_shipping_group_name", "")
+            ),
+        },
         "image_summary": {
             "selected_color_count": len(get_selected_colors_for_image_resolution(profile, selected_variants)) if profile else 0,
             "selected_size_count": len(selected_variants.get("size", [])),
@@ -4879,6 +4926,12 @@ def build_ready_review_data(
         generated_sku_listing_code=get_saved_generated_sku_listing_code(listing_memory),
         quantity=review_data["quantity"],
         staged_folder_name=ready_folder_name,
+        handling_time_days=normalize_handling_time_days(
+            listing_memory.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)
+        ),
+        merchant_shipping_group_name=normalize_merchant_shipping_group(
+            listing_memory.get("merchant_shipping_group_name", "")
+        ),
         parent_main_image_choice=str(listing_memory.get("parent_main_image_choice", "") or ""),
         parent_main_image_url=str(listing_memory.get("parent_main_image_url", "") or ""),
     )
@@ -5424,6 +5477,12 @@ def generate_approved_listing(
         generated_sku_listing_code=get_saved_generated_sku_listing_code(listing_memory),
         quantity=quantity,
         staged_folder_name=approved_folder_name,
+        handling_time_days=normalize_handling_time_days(
+            listing_memory.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)
+        ),
+        merchant_shipping_group_name=normalize_merchant_shipping_group(
+            listing_memory.get("merchant_shipping_group_name", "")
+        ),
         parent_main_image_choice=str(listing_memory.get("parent_main_image_choice", "") or ""),
         parent_main_image_url=str(listing_memory.get("parent_main_image_url", "") or ""),
     )
@@ -6529,6 +6588,14 @@ def main() -> None:
     st.session_state.setdefault("product_description", product_description)
     st.session_state.setdefault("generic_keywords", generic_keywords)
     st.session_state.setdefault("variant_quantity", int(listing_memory.get("quantity", 100)))
+    st.session_state.setdefault(
+        "handling_time_days",
+        normalize_handling_time_days(listing_memory.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)),
+    )
+    st.session_state.setdefault(
+        "merchant_shipping_group_name",
+        normalize_merchant_shipping_group(listing_memory.get("merchant_shipping_group_name", "")),
+    )
 
     profile = active_profile
     variant_dimensions = active_profile.get("variant_dimensions", [])
@@ -7012,6 +7079,28 @@ def main() -> None:
         if trimmed_keywords != generic_keywords.strip():
             st.warning("Search terms will be trimmed to fit Amazon limit:")
             st.code(trimmed_keywords)
+
+        st.subheader("Fulfillment")
+        fulfillment_col1, fulfillment_col2 = st.columns(2)
+        with fulfillment_col1:
+            handling_time_days = st.number_input(
+                "Handling time",
+                min_value=0,
+                step=1,
+                key="handling_time_days",
+                help="Writes fulfillment lead time for child rows. Default is 2.",
+            )
+        with fulfillment_col2:
+            current_shipping_group = normalize_merchant_shipping_group(
+                st.session_state.get("merchant_shipping_group_name", "")
+            )
+            st.selectbox(
+                "Merchant Shipping Group",
+                MERCHANT_SHIPPING_GROUP_OPTIONS,
+                index=MERCHANT_SHIPPING_GROUP_OPTIONS.index(current_shipping_group),
+                key="merchant_shipping_group_name",
+                help="Leave empty to skip this Amazon field.",
+            )
 
         st.subheader("Variants")
 
@@ -7548,6 +7637,10 @@ def main() -> None:
         generated_sku_listing_code=generated_sku_listing_code,
         quantity=quantity,
         staged_folder_name=staged_folder_name or "",
+        handling_time_days=normalize_handling_time_days(handling_time_days),
+        merchant_shipping_group_name=normalize_merchant_shipping_group(
+            st.session_state.get("merchant_shipping_group_name", "")
+        ),
         parent_main_image_choice=selected_parent_main_label,
         parent_main_image_url=preview_parent_main_image_url or selected_parent_main_image_url,
     )
