@@ -37,25 +37,25 @@
     "Royal Blue/Arctic White"
   ],
   "sizes": [
-    "XS",
-    "S",
-    "M",
-    "L",
-    "XL"
+    "3/4 YRS",
+    "5/6 YRS",
+    "7/8 YRS",
+    "9/11 YRS",
+    "12/13 YRS"
   ],
   "size_code_map": {
-    "XS": "XS",
-    "S": "S",
-    "M": "M",
-    "L": "L",
-    "XL": "XL"
+    "3/4 YRS": "XS",
+    "5/6 YRS": "S",
+    "7/8 YRS": "M",
+    "9/11 YRS": "L",
+    "12/13 YRS": "XL"
   },
   "size_display_map": {
-    "XS": "3/4 YRS",
-    "S": "5/6 YRS",
-    "M": "7/8 YRS",
-    "L": "9/11 YRS",
-    "XL": "12/13 YRS"
+    "3/4 YRS": "3/4 YRS",
+    "5/6 YRS": "5/6 YRS",
+    "7/8 YRS": "7/8 YRS",
+    "9/11 YRS": "9/11 YRS",
+    "12/13 YRS": "12/13 YRS"
   },
   "color_sku_map": {
     "Arctic White/Fire Red": "JC003JAWFR",
@@ -70,67 +70,67 @@
   },
   "color_size_map": {
     "Arctic White/Fire Red": [
-      "XS",
-      "S",
-      "M",
-      "L",
-      "XL"
+      "3/4 YRS",
+      "5/6 YRS",
+      "7/8 YRS",
+      "9/11 YRS",
+      "12/13 YRS"
     ],
     "Arctic White/Jet Black": [
-      "XS",
-      "S",
-      "M",
-      "L",
-      "XL"
+      "3/4 YRS",
+      "5/6 YRS",
+      "7/8 YRS",
+      "9/11 YRS",
+      "12/13 YRS"
     ],
     "Arctic White/Sapphire Blue": [
-      "XS",
-      "S",
-      "M",
-      "L",
-      "XL"
+      "3/4 YRS",
+      "5/6 YRS",
+      "7/8 YRS",
+      "9/11 YRS",
+      "12/13 YRS"
     ],
     "Fire Red/Jet Black": [
-      "XS",
-      "S",
-      "M",
-      "L",
-      "XL"
+      "3/4 YRS",
+      "5/6 YRS",
+      "7/8 YRS",
+      "9/11 YRS",
+      "12/13 YRS"
     ],
     "French Navy/Arctic White": [
-      "XS",
-      "S",
-      "M",
-      "L",
-      "XL"
+      "3/4 YRS",
+      "5/6 YRS",
+      "7/8 YRS",
+      "9/11 YRS",
+      "12/13 YRS"
     ],
     "French Navy/Fire Red": [
-      "XS",
-      "S",
-      "M",
-      "L",
-      "XL"
+      "3/4 YRS",
+      "5/6 YRS",
+      "7/8 YRS",
+      "9/11 YRS",
+      "12/13 YRS"
     ],
     "Jet Black/Arctic White": [
-      "XS",
-      "S",
-      "M",
-      "L",
-      "XL"
+      "3/4 YRS",
+      "5/6 YRS",
+      "7/8 YRS",
+      "9/11 YRS",
+      "12/13 YRS"
     ],
     "Jet Black/Fire Red": [
-      "XS",
-      "S",
-      "M",
-      "L",
-      "XL"
+      "3/4 YRS",
+      "5/6 YRS",
+      "7/8 YRS",
+      "9/11 YRS",
+      "12/13 YRS"
     ],
     "Royal Blue/Arctic White": [
-      "XS",
-      "S",
-      "M",
-      "L",
-      "XL"
+      "3/4 YRS",
+      "5/6 YRS",
+      "7/8 YRS",
+      "9/11 YRS",
+      "12/13 YRS"
     ]
   },
   "extra_parent_fields": {
