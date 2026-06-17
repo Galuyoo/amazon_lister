@@ -3334,6 +3334,7 @@ def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> No
     variation_theme = data.get("variation_theme", "")
     product_category = data.get("product_category", "apparel")
     is_apparel = product_category == "apparel"
+    update_delete_value = "PartialUpdate" if str(data.get("original_finished_folder_name", "") or "").strip() else ""
     has_size = "Size" in variation_theme
     parent_starting_price = ""
     if data.get("write_parent_starting_price", False):
@@ -3341,6 +3342,7 @@ def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> No
 
     values = {
         "item_sku": data["parent_sku"],
+        "update_delete": update_delete_value,
         "parent_sku": "",
         "item_name": data["title"],
         "brand_name": data["brand_name"],
@@ -3428,6 +3430,7 @@ def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> No
     extra_parent_fields = data.get("extra_parent_fields", {})
     values = prepare_row_values(values, field_aliases, extra_parent_fields)
     values["item_sku"] = data["parent_sku"]
+    values["update_delete"] = update_delete_value
     values["parent_sku"] = ""
     values["part_number"] = data["parent_sku"]
     values["model_name"] = get_product_model_name({}, data)
@@ -3472,6 +3475,7 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
     variation_theme = data.get("variation_theme", "")
     product_category = data.get("product_category", "apparel")
     is_apparel = product_category == "apparel"
+    update_delete_value = "PartialUpdate" if str(data.get("original_finished_folder_name", "") or "").strip() else ""
 
     selected_variants = data.get("selected_variants", {})
     variant_combos = build_variant_combinations(profile, selected_variants)
@@ -3503,6 +3507,7 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
 
         values = {
             "item_sku": item_sku,
+            "update_delete": update_delete_value,
             "parent_sku": data["parent_sku"],
             "item_name": child_item_name,
             "brand_name": data["brand_name"],
@@ -3593,6 +3598,7 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
         values = prepare_row_values(values, field_aliases, extra_child_fields)
         values = apply_apparel_size_fields(values, normalized_size, is_apparel=is_apparel)
         values["item_sku"] = item_sku
+        values["update_delete"] = update_delete_value
         values["parent_sku"] = data["parent_sku"]
         values["item_name"] = child_item_name
         values["part_number"] = item_sku
