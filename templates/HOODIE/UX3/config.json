@@ -1,0 +1,95 @@
+{
+  "label": "UX3 The UX Sweatshirt",
+  "template_key": "UX3",
+  "template_file": "SWEATSHIRT.xlsm",
+  "parent_sku": "UX3",
+  "feed_product_type": "sweatshirt",
+  "recommended_browse_nodes": "1731011031",
+  "product_category": "apparel",
+  "brand_name": "Generic",
+  "manufacturer": "Generic",
+  "department_name": "Unisex",
+  "target_gender": "Unisex",
+  "age_range_description": "Adult",
+  "material_type": "50% Polyester 50% Cotton",
+  "style_name": "The UX Sweatshirt",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "Sweatshirt",
+  "care_instructions": "Machine wash at 60 degrees",
+  "theme": "Casual",
+  "neck_style": "Crew Neck",
+  "fit_type": "Regular",
+  "weave_type": "Plain",
+  "sleeve_type": "Long Sleeve",
+  "country_of_origin": "Great Britain",
+  "colors": [
+    "Black",
+    "Bottle Green",
+    "Brown",
+    "Charcoal",
+    "Heather Grey",
+    "Maroon",
+    "Navy",
+    "Pink",
+    "Red",
+    "Royal",
+    "Sand",
+    "Sky",
+    "White"
+  ],
+  "sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL",
+    "3XL",
+    "4XL",
+    "5XL",
+    "6XL"
+  ],
+  "size_code_map": {
+    "XS": "XS",
+    "S": "S",
+    "M": "M",
+    "L": "L",
+    "XL": "XL",
+    "2XL": "2XL",
+    "3XL": "3XL",
+    "4XL": "4XL",
+    "5XL": "5XL",
+    "6XL": "6XL"
+  },
+  "color_sku_map": {
+    "Black": "UX3BK",
+    "Bottle Green": "UX3BG",
+    "Brown": "UX3BR",
+    "Charcoal": "UX3CH",
+    "Heather Grey": "UX3HG",
+    "Maroon": "UX3MR",
+    "Navy": "UX3NY",
+    "Pink": "UX3PI",
+    "Red": "UX3RD",
+    "Royal": "UX3RY",
+    "Sand": "UX3SN",
+    "Sky": "UX3SK",
+    "White": "UX3WH"
+  },
+  "field_aliases": {
+    "outer_material_type": [
+      "fabric_type"
+    ]
+  },
+  "extra_parent_fields": {
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
+  },
+  "extra_child_fields": {
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
+  }
+}

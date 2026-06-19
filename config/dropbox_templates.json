@@ -73,6 +73,24 @@
         "Brown": "UX04-BR.jpg"
       }
     },
+    "UX3": {
+      "variant_folder": "UX3",
+      "main_image_map": {
+        "Black": "Black.jpg",
+        "Bottle Green": "Bottle Green.jpg",
+        "Brown": "Brown.jpg",
+        "Charcoal": "Charcoal.jpg",
+        "Heather Grey": "Heather Grey.jpg",
+        "Maroon": "Maroon.jpg",
+        "Navy": "Navy.jpg",
+        "Pink": "Pink.jpg",
+        "Red": "Red.jpg",
+        "Royal": "Royal.jpg",
+        "Sand": "Sand.jpg",
+        "Sky": "Sky.jpg",
+        "White": "White.jpg"
+      }
+    },
     "TC013_3designs": {
       "variant_folder": "TC013_3designs",
       "main_image_map": {
