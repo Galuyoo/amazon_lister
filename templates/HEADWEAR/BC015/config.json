@@ -1,0 +1,72 @@
+{
+  "label": "BC015 Ultimate 5 Panel Cap",
+  "template_key": "BC015",
+  "template_file": "HAT.xlsm",
+  "parent_sku": "BC015",
+  "feed_product_type": "hat",
+  "recommended_browse_nodes": "1730956031",
+  "product_category": "accessory",
+  "brand_name": "Generic",
+  "manufacturer": "Generic",
+  "department_name": "Unisex",
+  "target_gender": "Unisex",
+  "age_range_description": "Adult",
+  "material_type": "Cotton",
+  "style_name": "Ultimate 5 Panel Cap",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "Baseball Cap",
+  "care_instructions": "Sponge Clean Only",
+  "fit_type": "Adjustable",
+  "weave_type": "Twill",
+  "theme": "Custom Embroidered Workwear",
+  "country_of_origin": "China",
+  "colors": [
+    "Black",
+    "Bottle Green",
+    "Bright Royal",
+    "Burgundy",
+    "Classic Red",
+    "French Navy",
+    "Graphite Grey",
+    "Light Grey",
+    "Olive Green",
+    "Putty",
+    "White"
+  ],
+  "sizes": [
+    "One Size"
+  ],
+  "size_code_map": {
+    "One Size": "ONE"
+  },
+  "color_sku_map": {
+    "Black": "BLAC",
+    "Bottle Green": "BOTT",
+    "Bright Royal": "ROYA",
+    "Burgundy": "BURG",
+    "Classic Red": "REDD",
+    "French Navy": "NAVY",
+    "Graphite Grey": "GRAP",
+    "Light Grey": "LGRE",
+    "Olive Green": "OLIV",
+    "Putty": "PUTT",
+    "White": "WHIT"
+  },
+  "extra_parent_fields": {
+    "headwear_size_system": "UK",
+    "headwear_size_class": "Alpha",
+    "headwear_size": "One Size",
+    "fabric_type": "100% Cotton Drill",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+  "extra_child_fields": {
+    "headwear_size_system": "UK",
+    "headwear_size_class": "Alpha",
+    "headwear_size": "One Size",
+    "fabric_type": "100% Cotton Drill",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  }
+}

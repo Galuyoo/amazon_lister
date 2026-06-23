@@ -316,6 +316,22 @@
         "White/French Navy": "BC15CWHFN.jpg"
       }
     },
+    "BC015": {
+      "variant_folder": "BC015",
+      "main_image_map": {
+        "Black": "bc015_black_ft.jpg",
+        "Bottle Green": "bc015_bottlegreen_ft.jpg",
+        "Bright Royal": "bc015_brightroyal_ft.jpg",
+        "Burgundy": "bc015_burgundy_ft.jpg",
+        "Classic Red": "bc015_classicred_ft.jpg",
+        "French Navy": "bc015_frenchnavy_ft.jpg",
+        "Graphite Grey": "bc015_graphitegrey_ft.jpg",
+        "Light Grey": "bc015_lightgrey_ft.jpg",
+        "Olive Green": "bc015_olivegreen_ft.jpg",
+        "Putty": "bc015_putty_ft.jpg",
+        "White": "bc015_white_ft.jpg"
+      }
+    },
     "R237X": {
       "variant_folder": "R237X",
       "main_image_map": {
