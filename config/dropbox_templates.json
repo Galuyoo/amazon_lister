@@ -106,6 +106,21 @@
         "White": "White.jpg"
       }
     },
+    "UX8": {
+      "variant_folder": "UX8",
+      "main_image_map": {
+        "Black": "Black.jpg",
+        "Bottle Green": "Bottle Green.jpg",
+        "Charcoal": "Charcoal.jpg",
+        "Heather Grey": "Heather Grey.jpg",
+        "Maroon": "Maroon.jpg",
+        "Navy": "Navy.jpg",
+        "Pink": "Pink.jpg",
+        "Red": "Red.jpg",
+        "Royal": "Royal.jpg",
+        "White": "White.jpg"
+      }
+    },
     "TC013_3designs": {
       "variant_folder": "TC013_3designs",
       "main_image_map": {
