@@ -1,0 +1,95 @@
+{
+  "label": "UX7 The UX Children's Sweatshirt",
+  "template_key": "UX7",
+  "template_file": "SWEATSHIRT.xlsm",
+  "parent_sku": "UX7",
+  "feed_product_type": "sweatshirt",
+  "recommended_browse_nodes": "1731011031",
+  "product_category": "apparel",
+  "brand_name": "Generic",
+  "manufacturer": "Generic",
+  "department_name": "unisex-child",
+  "target_gender": "unisex",
+  "age_range_description": "Child",
+  "material_type": "50% Polyester 50% Cotton",
+  "style_name": "The UX Children's Sweatshirt",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "Sweatshirt",
+  "care_instructions": "Machine wash at 60 degrees",
+  "theme": "Custom Printed Kids Sweatshirt",
+  "neck_style": "Crew Neck",
+  "fit_type": "Regular",
+  "weave_type": "Plain",
+  "sleeve_type": "Long Sleeve",
+  "country_of_origin": "Great Britain",
+  "colors": [
+    "Black",
+    "Bottle Green",
+    "Charcoal",
+    "Heather Grey",
+    "Maroon",
+    "Navy",
+    "Pink",
+    "Red",
+    "Royal",
+    "White"
+  ],
+  "sizes": [
+    "2 YRS",
+    "3/4 YRS",
+    "5/6 YRS",
+    "7/8 YRS",
+    "9/10 YRS",
+    "11/13 YRS"
+  ],
+  "size_code_map": {
+    "2 YRS": "2Y",
+    "3/4 YRS": "34Y",
+    "5/6 YRS": "56Y",
+    "7/8 YRS": "78Y",
+    "9/10 YRS": "910Y",
+    "11/13 YRS": "1113Y"
+  },
+  "color_sku_map": {
+    "Black": "UX7BK",
+    "Bottle Green": "UX7BG",
+    "Charcoal": "UX7CH",
+    "Heather Grey": "UX7HG",
+    "Maroon": "UX7MR",
+    "Navy": "UX7NY",
+    "Pink": "UX7PI",
+    "Red": "UX7RD",
+    "Royal": "UX7RY",
+    "White": "UX7WH"
+  },
+  "field_aliases": {
+    "outer_material_type": [
+      "fabric_type"
+    ]
+  },
+  "extra_parent_fields": {
+    "outer_material_type": "Synthetic",
+    "material_type1": "50% Polyester 50% Cotton",
+    "fabric_type": "Polycotton",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Age",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
+  },
+  "extra_child_fields": {
+    "outer_material_type": "Synthetic",
+    "material_type1": "50% Polyester 50% Cotton",
+    "fabric_type": "Polycotton",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Age",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
+  }
+}
