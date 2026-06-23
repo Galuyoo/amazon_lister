@@ -332,6 +332,23 @@
         "White": "bc015_white_ft.jpg"
       }
     },
+    "BC610": {
+      "variant_folder": "BC610",
+      "main_image_map": {
+        "Black": "bc610_black_ft2.jpg",
+        "Bottle Green": "bc610_bottlegreen_ft2.jpg",
+        "Bright Royal": "bc610_brightroyal_ft2.jpg",
+        "Burgundy": "bc610_burgundy_ft2.jpg",
+        "Classic Red": "bc610_classicred_ft2.jpg",
+        "French Navy": "bc610_frenchnavy_ft2.jpg",
+        "Graphite Grey": "bc610_graphitegrey_ft2.jpg",
+        "Light Grey": "bc610_lightgrey_ft2.jpg",
+        "Olive Green": "bc610_olivegreen_ft2.jpg",
+        "Orange": "bc610_orange_ft2.jpg",
+        "Purple": "bc610_purple_ft2.jpg",
+        "White": "bc610_white_ft2.jpg"
+      }
+    },
     "R237X": {
       "variant_folder": "R237X",
       "main_image_map": {
