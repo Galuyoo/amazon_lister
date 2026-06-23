@@ -32,7 +32,6 @@
     "Light Grey",
     "Olive Green",
     "Orange",
-    "Purple",
     "White"
   ],
   "sizes": [
@@ -52,7 +51,6 @@
     "Light Grey": "LGRE",
     "Olive Green": "OLIV",
     "Orange": "ORAN",
-    "Purple": "PURP",
     "White": "WHIT"
   },
   "extra_parent_fields": {
