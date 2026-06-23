@@ -422,6 +422,26 @@
         "Charcoal": "20.png"
       }
     },
+    "UC320": {
+      "variant_folder": "UC320",
+      "main_image_map": {
+        "Black": "Black.jpg",
+        "Bottle Green": "Bottle Green.jpg",
+        "Charcoal": "Charcoal.jpg",
+        "French Navy": "French Navy.jpg",
+        "Heather Grey": "Heather Grey.jpg",
+        "Hot Pink": "Hot Pink.jpg",
+        "Kelly Green": "Kelly Green.jpg",
+        "Maroon": "Maroon.jpg",
+        "Navy": "Navy.jpg",
+        "Orange": "Orange.jpg",
+        "Purple": "Purple.jpg",
+        "Red": "Red.jpg",
+        "Royal": "Royal.jpg",
+        "Sky": "Sky.jpg",
+        "White": "White.jpg"
+      }
+    },
     "B657": {
       "variant_folder": "B657",
       "main_image_map": {
