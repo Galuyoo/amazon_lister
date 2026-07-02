@@ -37,7 +37,7 @@ from utils.dropbox_client import (
 )
 
 GLOBAL_BRAND_NAME = "sloganitto"
-WORKFLOW_ASSIGNEES = ["","Sal", "Suleman"]
+WORKFLOW_ASSIGNEES = ["", "Sal", "Suleman", "Khalid"]
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -583,6 +583,24 @@ FIRST_CHILD_ROW = 5
 SKU_DECORATION_OPTIONS = ["PRINT", "EMB", "PERSO", "PLAIN", "Custom"]
 
 
+def get_workbook_layout(profile: dict[str, Any]) -> dict[str, Any]:
+    schema = profile.get("_schema", {})
+
+    def as_int(key: str, fallback: int) -> int:
+        value = profile.get(key, schema.get(key, fallback))
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    return {
+        "mode": str(profile.get("workbook_mode", schema.get("workbook_mode", "")) or "").strip(),
+        "header_row": as_int("workbook_header_row", HEADER_ROW),
+        "parent_row": as_int("workbook_parent_row", PARENT_ROW),
+        "first_child_row": as_int("workbook_first_child_row", FIRST_CHILD_ROW),
+    }
+
+
 def load_dropbox_templates_config() -> dict[str, Any]:
     config_path = CONFIG_DIR / "dropbox_templates.json"
     if not config_path.exists():
@@ -890,11 +908,24 @@ def get_child_model_number(
 def is_variant_combo_allowed(profile: dict[str, Any], variant_values: dict[str, str]) -> bool:
     color = variant_values.get("color", "")
     size = variant_values.get("size", "")
+    design = variant_values.get("design", "")
 
     color_size_map = profile.get("color_size_map", {})
     if color and size and color_size_map:
         allowed_sizes = color_size_map.get(color)
         if allowed_sizes is not None and size not in allowed_sizes:
+            return False
+
+    design_size_map = profile.get("design_size_map", {})
+    if design and size and design_size_map:
+        allowed_sizes = design_size_map.get(design)
+        if allowed_sizes is not None and size not in allowed_sizes:
+            return False
+
+    design_color_map = profile.get("design_color_map", {})
+    if design and color and design_color_map:
+        allowed_colors = design_color_map.get(design)
+        if allowed_colors is not None and color not in allowed_colors:
             return False
 
     return True
@@ -972,10 +1003,16 @@ def build_child_sku(profile: dict[str, Any], parent_sku: str, variant_values: di
     return build_child_sku_details(profile, parent_sku, variant_values)["amazon_seller_sku"]
 
 
-def build_child_item_name(base_title: str, variant_values: dict[str, str]) -> str:
+def build_child_item_name(
+    base_title: str,
+    variant_values: dict[str, str],
+    profile: dict[str, Any] | None = None,
+) -> str:
+    profile = profile or {}
     title_parts = [
+        str(variant_values.get("design", "") or "").strip(),
         str(variant_values.get("color", "") or "").strip(),
-        str(variant_values.get("size", "") or "").strip(),
+        get_variant_size_display_label(profile, variant_values),
     ]
     title_parts = [part for part in title_parts if part]
     base_title = str(base_title or "").strip()
@@ -984,6 +1021,50 @@ def build_child_item_name(base_title: str, variant_values: dict[str, str]) -> st
         title_parts.append(base_title)
 
     return ", ".join(title_parts)
+
+
+def get_variant_design_overrides(profile: dict[str, Any], variant_values: dict[str, str]) -> dict[str, Any]:
+    design_value = str(variant_values.get("design", "") or "").strip()
+    if not design_value:
+        return {}
+
+    overrides = profile.get("design_field_overrides", {})
+    if not isinstance(overrides, dict):
+        return {}
+
+    raw_override = overrides.get(design_value, {})
+    return dict(raw_override) if isinstance(raw_override, dict) else {}
+
+
+def get_variant_size_display_label(profile: dict[str, Any], variant_values: dict[str, str]) -> str:
+    size_value = str(variant_values.get("size", "") or "").strip()
+    if not size_value:
+        return ""
+
+    design_value = str(variant_values.get("design", "") or "").strip()
+    prefixes = profile.get("size_display_prefix_by_design", {})
+    prefix = str(dict(prefixes or {}).get(design_value, "") or "").strip()
+    return f"{prefix} - {size_value}" if prefix else size_value
+
+
+def get_variant_color_display_label(profile: dict[str, Any], variant_values: dict[str, str]) -> str:
+    color_value = str(variant_values.get("color", "") or "").strip()
+    if not color_value:
+        return ""
+
+    design_value = str(variant_values.get("design", "") or "").strip()
+    prefixes = profile.get("color_display_prefix_by_design", {})
+    suffixes = profile.get("color_display_suffix_by_design", {})
+    prefix = str(dict(prefixes or {}).get(design_value, "") or "").strip()
+    suffix = str(dict(suffixes or {}).get(design_value, "") or "").strip()
+
+    if prefix and suffix:
+        return f"{prefix} {color_value} - {suffix}"
+    if prefix:
+        return f"{prefix} {color_value}"
+    if suffix:
+        return f"{color_value} - {suffix}"
+    return color_value
 
 
 def apply_sku_decoration_to_profile(profile: dict[str, Any], sku_decoration_code: str = "") -> dict[str, Any]:
@@ -1065,10 +1146,10 @@ def build_variant_field_values(profile: dict[str, Any], variant_values: dict[str
     values: dict[str, Any] = {}
 
     if "color" in variant_values:
-        values["color_name"] = variant_values["color"]
+        values["color_name"] = get_variant_color_display_label(profile, variant_values)
 
     if "size" in variant_values:
-        normalized_size = normalize_size(variant_values["size"])
+        normalized_size = normalize_size(get_variant_size_display_label(profile, variant_values))
         values["size_name"] = normalized_size
         values["apparel_size"] = normalized_size
 
@@ -1986,7 +2067,7 @@ def render_variant_combinations_preview(
     for idx, combo in enumerate(combos, start=1):
         row = {"#": idx}
         row.update(combo)
-        row["child_title"] = build_child_item_name(base_title, combo)
+        row["child_title"] = build_child_item_name(base_title, combo, profile)
         sku_details = build_child_sku_details(profile, parent_sku, combo)
         row["child_sku"] = sku_details["amazon_seller_sku"]
         if has_stock_reference(profile):
@@ -3327,8 +3408,8 @@ def build_output_workbook_name(profile: dict[str, Any], parent_sku: str) -> str:
     return f"{parent_sku}_amazon_listing.xlsm"
 
 
-def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> None:
-    clear_row_values(ws, PARENT_ROW)
+def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any], parent_row: int = PARENT_ROW) -> None:
+    clear_row_values(ws, parent_row)
     other_images = padded_list(data.get("other_images", []), 14)
 
     variation_theme = data.get("variation_theme", "")
@@ -3459,11 +3540,17 @@ def write_parent_row(ws, header_map: dict[str, int], data: dict[str, Any]) -> No
     if "search_terms" in header_map:
         values["search_terms"] = trim_search_terms(data["generic_keywords"])
 
-    write_values_with_debug(ws, PARENT_ROW, header_map, values, "Parent row")
+    write_values_with_debug(ws, parent_row, header_map, values, "Parent row")
 
-def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], data: dict[str, Any]) -> int:
-    row_idx = FIRST_CHILD_ROW
-    template_row = FIRST_CHILD_ROW
+def write_child_rows(
+    ws,
+    header_map: dict[str, int],
+    profile: dict[str, Any],
+    data: dict[str, Any],
+    first_child_row: int = FIRST_CHILD_ROW,
+) -> int:
+    row_idx = first_child_row
+    template_row = first_child_row
     variants_written = 0
     other_images = padded_list(data.get("other_images", []), 14)
     sku_profile = apply_sku_context_to_profile(
@@ -3492,9 +3579,12 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
 
         size_value = variant_values.get("size", "")
         normalized_size = normalize_size(size_value) if size_value else ""
+        display_size = get_variant_size_display_label(profile, variant_values)
+        normalized_display_size = normalize_size(display_size) if display_size else ""
         design_value = variant_values.get("design", "")
         color_value = variant_values.get("color", "")
-        child_item_name = build_child_item_name(data["title"], variant_values)
+        display_color = get_variant_color_display_label(profile, variant_values)
+        child_item_name = build_child_item_name(data["title"], variant_values, profile)
 
         price_key = size_value if size_value else "default"
         price = data["size_price_map"].get(price_key, 0)
@@ -3531,9 +3621,9 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
             "relationship_type": "variation",
             "variation_theme": variation_theme,
 
-            "color_name": color_value,
-            "size_name": normalized_size,
-            "apparel_size": normalized_size if is_apparel else "",
+            "color_name": display_color,
+            "size_name": normalized_display_size,
+            "apparel_size": normalized_display_size if is_apparel else "",
 
             "department_name": get_row_department_name(profile, data, normalized_size),
             "feed_product_type": data["feed_product_type"],
@@ -3592,11 +3682,15 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
         values.update(dynamic_profile_fields)
 
         values.update(variant_field_values)
+        values.update(get_variant_design_overrides(profile, variant_values))
 
         field_aliases = data.get("field_aliases", {})
         extra_child_fields = data.get("extra_child_fields", {})
         values = prepare_row_values(values, field_aliases, extra_child_fields)
         values = apply_apparel_size_fields(values, normalized_size, is_apparel=is_apparel)
+        values["size_name"] = normalized_display_size
+        if is_apparel:
+            values["apparel_size"] = normalized_display_size
         values["item_sku"] = item_sku
         values["update_delete"] = update_delete_value
         values["parent_sku"] = data["parent_sku"]
@@ -3604,6 +3698,7 @@ def write_child_rows(ws, header_map: dict[str, int], profile: dict[str, Any], da
         values["part_number"] = item_sku
         values["model_name"] = get_product_model_name(profile, data)
         values["model"] = get_child_model_number(profile, data, sku_details)
+        values["color_name"] = display_color
         values["department_name"] = get_row_department_name(profile, data, normalized_size)
         values["age_range_description"] = get_row_age_range_description(profile, data, normalized_size)
         values["parent_child"] = "child"
@@ -3760,7 +3855,8 @@ def validate_template_file(profile: dict[str, Any]) -> list[str]:
             return [f"Sheet '{SHEET_NAME}' not found in template workbook."]
 
         ws = wb[SHEET_NAME]
-        header_map = build_header_map(ws, HEADER_ROW)
+        layout = get_workbook_layout(profile)
+        header_map = build_header_map(ws, layout["header_row"])
 
         required_headers = get_required_workbook_headers(profile) or [
             "item_sku",
@@ -3807,7 +3903,8 @@ def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Pa
     t1 = time.perf_counter()
 
     ws = wb[SHEET_NAME]
-    header_map = build_header_map(ws, HEADER_ROW)
+    layout = get_workbook_layout(profile)
+    header_map = build_header_map(ws, layout["header_row"])
 
 
     dynamic_profile_fields = get_dynamic_profile_fields(profile, header_map)
@@ -3846,10 +3943,17 @@ def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Pa
             ],
         )
 
-    write_parent_row(ws, header_map, payload)
+    if layout["mode"] != "offer_only":
+        write_parent_row(ws, header_map, payload, parent_row=layout["parent_row"])
     t2 = time.perf_counter()
 
-    variants_written = write_child_rows(ws, header_map, profile, payload)
+    variants_written = write_child_rows(
+        ws,
+        header_map,
+        profile,
+        payload,
+        first_child_row=layout["first_child_row"],
+    )
     t3 = time.perf_counter()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

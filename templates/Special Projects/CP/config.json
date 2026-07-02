@@ -1,0 +1,455 @@
+{
+  "label": "Christmas Project",
+  "template_key": "CP",
+  "template_file": "CP.xlsm",
+  "parent_sku": "CP",
+  "feed_product_type": "shirt",
+  "recommended_browse_nodes": "1731028031",
+  "product_category": "apparel",
+  "brand_name": "sloganitto",
+  "manufacturer": "Generic",
+  "department_name": "Unisex",
+  "target_gender": "Unisex",
+  "age_range_description": "Adult",
+  "material_type": "Cotton Blend",
+  "style_name": "Christmas Project",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "Custom Christmas Clothing",
+  "care_instructions": "Machine Wash",
+  "theme": "Custom Printed Christmas Clothing",
+  "fit_type": "Regular",
+  "collar_style": "Crew Neck",
+  "neck_style": "Crew Neck",
+  "lifestyle": "Casual",
+  "pattern_type": "Christmas Print",
+  "weave_type": "Knit",
+  "country_of_origin": "Great Britain",
+  "variant_dimensions": [
+    {
+      "name": "design",
+      "label": "Garment",
+      "options": [
+        "Adult T-Shirt",
+        "Kids T-Shirt",
+        "Adult Hoodie",
+        "Kids Hoodie",
+        "Adult Sweatshirt",
+        "Kids Sweatshirt"
+      ]
+    },
+    {
+      "name": "color",
+      "label": "Colour",
+      "options": [
+        "Black",
+        "Navy",
+        "Heather Grey",
+        "Kelly Green",
+        "Red",
+        "Royal",
+        "White"
+      ]
+    },
+    {
+      "name": "size",
+      "label": "Size",
+      "options": [
+        "XS",
+        "S",
+        "M",
+        "L",
+        "XL",
+        "2XL",
+        "3XL",
+        "4XL",
+        "5XL",
+        "6XL",
+        "2 YRS",
+        "3/4 YRS",
+        "5/6 YRS",
+        "7/8 YRS",
+        "9/10 YRS",
+        "11/13 YRS"
+      ]
+    }
+  ],
+  "colors": [
+    "Black",
+    "Navy",
+    "Heather Grey",
+    "Kelly Green",
+    "Red",
+    "Royal",
+    "White"
+  ],
+  "sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL",
+    "3XL",
+    "4XL",
+    "5XL",
+    "6XL",
+    "2 YRS",
+    "3/4 YRS",
+    "5/6 YRS",
+    "7/8 YRS",
+    "9/10 YRS",
+    "11/13 YRS"
+  ],
+  "design_sku_map": {
+    "Adult T-Shirt": "T01",
+    "Kids T-Shirt": "T02",
+    "Adult Hoodie": "H01",
+    "Kids Hoodie": "H02",
+    "Adult Sweatshirt": "S01",
+    "Kids Sweatshirt": "S02"
+  },
+  "color_sku_map": {
+    "Black": "BK",
+    "Navy": "NY",
+    "Heather Grey": "HG",
+    "Kelly Green": "KG",
+    "Red": "RD",
+    "Royal": "RY",
+    "White": "WH"
+  },
+  "size_code_map": {
+    "XS": "XS",
+    "S": "S",
+    "M": "M",
+    "L": "L",
+    "XL": "XL",
+    "2XL": "2XL",
+    "3XL": "3XL",
+    "4XL": "4XL",
+    "5XL": "5XL",
+    "6XL": "6XL",
+    "2 YRS": "2Y",
+    "3/4 YRS": "34Y",
+    "5/6 YRS": "56Y",
+    "7/8 YRS": "78Y",
+    "9/10 YRS": "910Y",
+    "11/13 YRS": "1113Y"
+  },
+  "design_size_map": {
+    "Adult T-Shirt": [
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL",
+      "3XL",
+      "4XL",
+      "5XL"
+    ],
+    "Kids T-Shirt": [
+      "2 YRS",
+      "3/4 YRS",
+      "5/6 YRS",
+      "7/8 YRS",
+      "9/10 YRS",
+      "11/13 YRS"
+    ],
+    "Adult Hoodie": [
+      "XS",
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL",
+      "3XL",
+      "4XL",
+      "5XL"
+    ],
+    "Kids Hoodie": [
+      "2 YRS",
+      "3/4 YRS",
+      "5/6 YRS",
+      "7/8 YRS",
+      "9/10 YRS",
+      "11/13 YRS"
+    ],
+    "Adult Sweatshirt": [
+      "XS",
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL",
+      "3XL",
+      "4XL",
+      "5XL",
+      "6XL"
+    ],
+    "Kids Sweatshirt": [
+      "2 YRS",
+      "3/4 YRS",
+      "5/6 YRS",
+      "7/8 YRS",
+      "9/10 YRS",
+      "11/13 YRS"
+    ]
+  },
+  "design_color_map": {
+    "Adult T-Shirt": [
+      "Black",
+      "Navy",
+      "Heather Grey",
+      "Kelly Green",
+      "Red",
+      "Royal",
+      "White"
+    ],
+    "Kids T-Shirt": [
+      "Black",
+      "Navy",
+      "Heather Grey",
+      "Kelly Green",
+      "Red",
+      "Royal",
+      "White"
+    ],
+    "Adult Hoodie": [
+      "Black",
+      "Navy"
+    ],
+    "Kids Hoodie": [
+      "Black",
+      "Navy"
+    ],
+    "Adult Sweatshirt": [
+      "Black",
+      "Navy",
+      "Heather Grey",
+      "Kelly Green",
+      "Red",
+      "Royal",
+      "White"
+    ],
+    "Kids Sweatshirt": [
+      "Black",
+      "Navy",
+      "Heather Grey",
+      "Kelly Green",
+      "Red",
+      "Royal",
+      "White"
+    ]
+  },
+  "color_display_suffix_by_design": {
+    "Adult T-Shirt": "Adult T-Shirt",
+    "Kids T-Shirt": "Kids T-Shirt",
+    "Adult Hoodie": "Adult Hoodie",
+    "Kids Hoodie": "Kids Hoodie",
+    "Adult Sweatshirt": "Adult Sweatshirt",
+    "Kids Sweatshirt": "Kids Sweatshirt"
+  },
+  "design_field_overrides": {
+    "Adult T-Shirt": {
+      "feed_product_type": "shirt",
+      "item_type_name": "t-shirt",
+      "style_name": "Adult Christmas T-Shirt",
+      "theme": "Custom Printed Christmas T Shirt",
+      "material_type": "100% Cotton",
+      "outer_material_type": "Natural",
+      "material_type1": "100% Cotton",
+      "fabric_type": "Cotton",
+      "shirt_size_system": "UK",
+      "shirt_size_class": "Alpha",
+      "apparel_size_system": "UK",
+      "apparel_size_class": "Alpha",
+      "age_range_description": "Adult",
+      "department_name": "Unisex",
+      "target_gender": "Unisex",
+      "collar_style": "Crew Neck",
+      "neck_style": "Crew Neck"
+    },
+    "Kids T-Shirt": {
+      "feed_product_type": "shirt",
+      "item_type_name": "t-shirt",
+      "style_name": "Kids Christmas T-Shirt",
+      "theme": "Custom Printed Kids Christmas T Shirt",
+      "material_type": "100% Cotton",
+      "outer_material_type": "Natural",
+      "material_type1": "100% Cotton",
+      "fabric_type": "Cotton",
+      "shirt_size_system": "UK",
+      "shirt_size_class": "Age",
+      "apparel_size_system": "UK",
+      "apparel_size_class": "Age",
+      "age_range_description": "Child",
+      "department_name": "unisex-child",
+      "target_gender": "unisex",
+      "collar_style": "Crew Neck",
+      "neck_style": "Crew Neck"
+    },
+    "Adult Hoodie": {
+      "feed_product_type": "sweatshirt",
+      "item_type_name": "Hooded Sweatshirt",
+      "style_name": "Adult Christmas Hoodie",
+      "theme": "Custom Printed Christmas Hoodie",
+      "material_type": "80% Ringspun Cotton, 20% Polyester",
+      "outer_material_type": "Cotton Blend",
+      "material_type1": "80% Ringspun Cotton, 20% Polyester",
+      "fabric_type": "80% Ringspun Cotton, 20% Polyester",
+      "shirt_size_system": "UK",
+      "shirt_size_class": "Alpha",
+      "apparel_size_system": "UK",
+      "apparel_size_class": "Alpha",
+      "age_range_description": "Adult",
+      "department_name": "Unisex",
+      "target_gender": "Unisex",
+      "collar_style": "Hooded Neck",
+      "neck_style": "Hooded Neck"
+    },
+    "Kids Hoodie": {
+      "feed_product_type": "sweatshirt",
+      "item_type_name": "Hooded Sweatshirt",
+      "style_name": "Kids Christmas Hoodie",
+      "theme": "Custom Printed Kids Christmas Hoodie",
+      "material_type": "50% Polyester 50% Cotton",
+      "outer_material_type": "Synthetic",
+      "material_type1": "50% Polyester 50% Cotton",
+      "fabric_type": "Polycotton",
+      "shirt_size_system": "UK",
+      "shirt_size_class": "Age",
+      "apparel_size_system": "UK",
+      "apparel_size_class": "Age",
+      "age_range_description": "Child",
+      "department_name": "unisex-child",
+      "target_gender": "unisex",
+      "collar_style": "Hooded Neck",
+      "neck_style": "Hooded Neck"
+    },
+    "Adult Sweatshirt": {
+      "feed_product_type": "sweatshirt",
+      "item_type_name": "Sweatshirt",
+      "style_name": "Adult Christmas Sweatshirt",
+      "theme": "Custom Printed Christmas Sweatshirt",
+      "material_type": "50% Polyester 50% Cotton",
+      "outer_material_type": "Synthetic",
+      "material_type1": "50% Polyester 50% Cotton",
+      "fabric_type": "Polycotton",
+      "shirt_size_system": "UK",
+      "shirt_size_class": "Alpha",
+      "apparel_size_system": "UK",
+      "apparel_size_class": "Alpha",
+      "age_range_description": "Adult",
+      "department_name": "Unisex",
+      "target_gender": "Unisex",
+      "collar_style": "Crew Neck",
+      "neck_style": "Crew Neck"
+    },
+    "Kids Sweatshirt": {
+      "feed_product_type": "sweatshirt",
+      "item_type_name": "Sweatshirt",
+      "style_name": "Kids Christmas Sweatshirt",
+      "theme": "Custom Printed Kids Christmas Sweatshirt",
+      "material_type": "50% Polyester 50% Cotton",
+      "outer_material_type": "Synthetic",
+      "material_type1": "50% Polyester 50% Cotton",
+      "fabric_type": "Polycotton",
+      "shirt_size_system": "UK",
+      "shirt_size_class": "Age",
+      "apparel_size_system": "UK",
+      "apparel_size_class": "Age",
+      "age_range_description": "Child",
+      "department_name": "unisex-child",
+      "target_gender": "unisex",
+      "collar_style": "Crew Neck",
+      "neck_style": "Crew Neck"
+    }
+  },
+  "extra_parent_fields": {
+    "outer_material_type": "Cotton Blend",
+    "material_type1": "Cotton Blend",
+    "fabric_type": "Cotton Blend",
+    "weave_type": "Knit",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
+  },
+  "extra_child_fields": {
+    "weave_type": "Knit",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "shirt_body_type": "Regular",
+    "shirt_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
+  },
+  "field_aliases": {
+    "item_sku": [
+      "contribution_sku#1.value"
+    ],
+    "item_name": [
+      "::amazon_title"
+    ],
+    "update_delete": [
+      "::record_action"
+    ],
+    "condition_type": [
+      "condition_type#1.value"
+    ],
+    "main_image_url": [
+      "main_offer_image_locator#1.media_location"
+    ],
+    "other_image_url1": [
+      "other_offer_image_locator_1#1.media_location"
+    ],
+    "other_image_url2": [
+      "other_offer_image_locator_2#1.media_location"
+    ],
+    "other_image_url3": [
+      "other_offer_image_locator_3#1.media_location"
+    ],
+    "other_image_url4": [
+      "other_offer_image_locator_4#1.media_location"
+    ],
+    "other_image_url5": [
+      "other_offer_image_locator_5#1.media_location"
+    ],
+    "purchasable_offer[marketplace_id=A1F83G8C2ARO7P]#1.our_price#1.schedule#1.value_with_tax": [
+      "purchasable_offer[marketplace_id=A1F83G8C2ARO7P][audience=ALL]#1.our_price#1.schedule#1.value_with_tax"
+    ],
+    "apparel_size_system": [
+      "shirt_size_system",
+      "tops_size_system",
+      "outerwear_size_system"
+    ],
+    "apparel_size_class": [
+      "shirt_size_class",
+      "tops_size_class",
+      "outerwear_size_class"
+    ],
+    "apparel_size": [
+      "shirt_size",
+      "tops_size_value",
+      "outerwear_size_value"
+    ],
+    "apparel_body_type": [
+      "shirt_body_type",
+      "tops_body_type",
+      "outerwear_body_type"
+    ],
+    "apparel_height_type": [
+      "shirt_height_type",
+      "tops_height_type",
+      "outerwear_height_type"
+    ],
+    "outer_material_type": [
+      "material_type",
+      "material_type1",
+      "fabric_type"
+    ],
+    "merchant_shipping_group_name": [
+      "merchant_shipping_group[marketplace_id=A1F83G8C2ARO7P]#1.value"
+    ]
+  }
+}

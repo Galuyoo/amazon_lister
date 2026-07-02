@@ -457,6 +457,58 @@
         "White": "White.jpg"
       }
     },
+    "CP": {
+      "variant_folder": "CP",
+      "main_image_map": {},
+      "design_color_image_map": {
+        "Black": {
+          "Adult T-Shirt": "T01 T02 Black.png",
+          "Kids T-Shirt": "T01 T02 Black.png",
+          "Adult Hoodie": "H01 H02 Black.png",
+          "Kids Hoodie": "H01 H02 Black.png",
+          "Adult Sweatshirt": "S01 S02 Black.png",
+          "Kids Sweatshirt": "S01 S02 Black.png"
+        },
+        "Navy": {
+          "Adult T-Shirt": "T01 T02 Navy.png",
+          "Kids T-Shirt": "T01 T02 Navy.png",
+          "Adult Hoodie": "H01 H02 Navy.png",
+          "Kids Hoodie": "H01 H02 Navy.png",
+          "Adult Sweatshirt": "S01 S02 Navy.png",
+          "Kids Sweatshirt": "S01 S02 Navy.png"
+        },
+        "Heather Grey": {
+          "Adult T-Shirt": "T01 T02 Heather Grey.png",
+          "Kids T-Shirt": "T01 T02 Heather Grey.png",
+          "Adult Sweatshirt": "S01 S02 Heather Grey.png",
+          "Kids Sweatshirt": "S01 S02 Heather Grey.png"
+        },
+        "Kelly Green": {
+          "Adult T-Shirt": "T01 T02 Kelly Green.png",
+          "Kids T-Shirt": "T01 T02 Kelly Green.png",
+          "Adult Sweatshirt": "S01 S02 Kelly Green.png",
+          "Kids Sweatshirt": "S01 S02 Kelly Green.png"
+        },
+        "Red": {
+          "Adult T-Shirt": "T01 T02 Red.png",
+          "Kids T-Shirt": "T01 T02 Red.png",
+          "Adult Sweatshirt": "S01 S02 Red.png",
+          "Kids Sweatshirt": "S01 S02 Red.png"
+        },
+        "Royal": {
+          "Adult T-Shirt": "T01 T02 Royal.png",
+          "Kids T-Shirt": "T01 T02 Royal.png",
+          "Adult Sweatshirt": "S01 S02 Royal.png",
+          "Kids Sweatshirt": "S01 S02 Royal.png"
+        },
+        "White": {
+          "Adult T-Shirt": "T01 T02 White.png",
+          "Kids T-Shirt": "T01 T02 White.png",
+          "Adult Sweatshirt": "S01 S02 White.png",
+          "Kids Sweatshirt": "S01 S02 White.png"
+        }
+      }
+    },
     "B657": {
       "variant_folder": "B657",
       "main_image_map": {

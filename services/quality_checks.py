@@ -21,11 +21,24 @@ EMOJI_PATTERN = re.compile(
 def is_variant_combo_allowed(profile: dict[str, Any], variant_values: dict[str, str]) -> bool:
     color = variant_values.get("color", "")
     size = variant_values.get("size", "")
+    design = variant_values.get("design", "")
 
     color_size_map = profile.get("color_size_map", {})
     if color and size and color_size_map:
         allowed_sizes = color_size_map.get(color)
         if allowed_sizes is not None and size not in allowed_sizes:
+            return False
+
+    design_size_map = profile.get("design_size_map", {})
+    if design and size and design_size_map:
+        allowed_sizes = design_size_map.get(design)
+        if allowed_sizes is not None and size not in allowed_sizes:
+            return False
+
+    design_color_map = profile.get("design_color_map", {})
+    if design and color and design_color_map:
+        allowed_colors = design_color_map.get(design)
+        if allowed_colors is not None and color not in allowed_colors:
             return False
 
     return True
