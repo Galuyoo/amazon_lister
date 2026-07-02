@@ -3058,6 +3058,8 @@ def resolve_folder_image_urls(
             str(color_sku_map.get(color, "") or ""),
         )
         if not path:
+            if design_color_image_map:
+                continue
             expected = ", ".join(candidates[:4])
             raise ValueError(f"Missing staged mapped image for colour '{color}'. Expected one of: {expected}")
         url = dropbox_preview_url(path)
@@ -7062,11 +7064,18 @@ def main() -> None:
                             index=parent_main_option_labels.index(current_parent_main_label),
                             key="parent_main_image_choice",
                         )
-                        render_color_grid(
-                            staged_variant_entries,
-                            cols_per_row=5,
-                            image_width=150,
-                        )
+                        if preview_design_color_image_url_map:
+                            render_design_color_grid(
+                                design_color_preview_entries,
+                                cols_per_row=5,
+                                image_width=150,
+                            )
+                        else:
+                            render_color_grid(
+                                staged_variant_entries,
+                                cols_per_row=5,
+                                image_width=150,
+                            )
 
                     with combos_tab:
                         render_design_color_grid(
