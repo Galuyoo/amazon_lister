@@ -7,6 +7,7 @@ from typing import Any
 
 
 SAFE_SKU_PART_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
+MAX_AMAZON_SKU_LENGTH = 30
 
 DEFAULT_VARIANT_VALUE_ALIASES = {
     "size": {
@@ -523,6 +524,20 @@ def validate_stock_ready_skus(
 
     if duplicate_skus:
         errors.append("Duplicate Amazon seller SKUs detected: " + ", ".join(duplicate_skus[:10]))
+
+    oversized_skus = [
+        row["amazon_seller_sku"]
+        for row in details
+        if len(str(row.get("amazon_seller_sku", ""))) > MAX_AMAZON_SKU_LENGTH
+    ]
+    if oversized_skus:
+        sample = ", ".join(
+            f"{sku} ({len(sku)} chars)" for sku in oversized_skus[:5]
+        )
+        errors.append(
+            f"Amazon seller SKUs must be {MAX_AMAZON_SKU_LENGTH} characters or fewer. "
+            f"Shorten the MPN/listing code before review. Too long: {sample}"
+        )
 
     if has_stock_reference(profile) and missing_rows:
         sample_reasons = []

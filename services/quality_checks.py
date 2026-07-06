@@ -5,7 +5,7 @@ from collections import Counter
 from itertools import product
 from typing import Any
 
-from services.stock_references import build_child_sku_details
+from services.stock_references import MAX_AMAZON_SKU_LENGTH, build_child_sku_details
 
 
 DISALLOWED_SYMBOL_PATTERN = re.compile(r"[★☆✓✔➡•◆►■□☑️🔥💥✨✅❌]")
@@ -115,6 +115,58 @@ def build_child_sku_for_validation(
     return build_child_sku_details(profile, parent_sku, variant_values)["amazon_seller_sku"]
 
 
+def get_variant_size_display_label(profile: dict[str, Any], variant_values: dict[str, str]) -> str:
+    size_value = str(variant_values.get("size", "") or "").strip()
+    if not size_value:
+        return ""
+
+    design_value = str(variant_values.get("design", "") or "").strip()
+    prefixes = profile.get("size_display_prefix_by_design", {})
+    prefix = str(dict(prefixes or {}).get(design_value, "") or "").strip()
+    return f"{prefix} - {size_value}" if prefix else size_value
+
+
+def build_child_title_for_validation(
+    profile: dict[str, Any],
+    base_title: str,
+    variant_values: dict[str, str],
+) -> str:
+    title_parts = [
+        str(variant_values.get("design", "") or "").strip(),
+        str(variant_values.get("color", "") or "").strip(),
+        get_variant_size_display_label(profile, variant_values),
+    ]
+    title_parts = [part for part in title_parts if part]
+    base_title = str(base_title or "").strip()
+    if base_title:
+        title_parts.append(base_title)
+    return ", ".join(title_parts)
+
+
+def build_variant_price_key(variant_values: dict[str, str]) -> str:
+    design_value = str(variant_values.get("design", "") or "").strip()
+    size_value = str(variant_values.get("size", "") or "").strip()
+    if design_value and size_value:
+        return f"{design_value}||{size_value}"
+    return size_value or design_value or "default"
+
+
+def get_variant_price_from_map(size_price_map: dict[str, Any], variant_values: dict[str, str]) -> Any:
+    size_price_map = dict(size_price_map or {})
+    price_key = build_variant_price_key(variant_values)
+    if price_key in size_price_map:
+        return size_price_map[price_key]
+
+    size_value = str(variant_values.get("size", "") or "").strip()
+    if size_value and size_value in size_price_map:
+        return size_price_map[size_value]
+
+    if "default" in size_price_map:
+        return size_price_map["default"]
+
+    return 0
+
+
 def resolve_variant_image_for_validation(
     variant_values: dict[str, str],
     color_image_map: dict[str, str],
@@ -216,8 +268,8 @@ def validate_listing_quality(
             breakdown["content_quality"] -= 2
 
         if title_chars > 200:
-            warnings.append("Title looks too long and may be harder to read.")
-            breakdown["content_quality"] -= 4
+            blockers.append("Base title exceeds Amazon's 200 character limit.")
+            breakdown["content_quality"] -= 10
 
         if contains_emoji(title) or contains_disallowed_symbols(title):
             warnings.append("Title contains emoji or decorative symbols.")
@@ -319,11 +371,48 @@ def validate_listing_quality(
         blockers.append("Duplicate child SKUs detected.")
         breakdown["variant_integrity"] -= 10
 
-    size_values = selected_variants.get("size", [])
-    if size_values:
-        invalid_sizes = [size for size in size_values if size_price_map.get(size, 0) <= 0]
-        if invalid_sizes:
-            blockers.append(f"Invalid or missing prices for sizes: {', '.join(invalid_sizes)}")
+    oversized_skus = [sku for sku in child_skus if len(sku) > MAX_AMAZON_SKU_LENGTH]
+    if oversized_skus:
+        sample = ", ".join(
+            f"{sku} ({len(sku)} chars)" for sku in oversized_skus[:5]
+        )
+        blockers.append(
+            f"Amazon SKUs must be {MAX_AMAZON_SKU_LENGTH} characters or fewer. "
+            f"Make the MPN/listing code shorter before review. Too long: {sample}"
+        )
+        breakdown["variant_integrity"] -= 10
+
+    oversized_child_titles: list[tuple[str, int]] = []
+    for combo in variant_combos:
+        child_title = build_child_title_for_validation(profile, title, combo)
+        child_title_len = character_length(child_title)
+        if child_title_len > 200:
+            oversized_child_titles.append((child_title, child_title_len))
+    if oversized_child_titles:
+        sample = "; ".join(
+            f"{child_title[:120]}{'...' if len(child_title) > 120 else ''} ({length} chars)"
+            for child_title, length in oversized_child_titles[:3]
+        )
+        blockers.append(
+            "Generated child titles exceed Amazon's 200 character limit after colour/size/garment prefixes. "
+            f"Shorten the base title. Too long: {sample}"
+        )
+        breakdown["content_quality"] -= 10
+
+    if variant_combos:
+        invalid_price_labels = []
+        for combo in variant_combos:
+            try:
+                price = get_variant_price_from_map(size_price_map, combo)
+                valid_price = float(price) > 0
+            except (TypeError, ValueError):
+                valid_price = False
+            if not valid_price:
+                invalid_price_labels.append(" / ".join([str(v) for v in combo.values() if v]) or "Unnamed variant")
+        if invalid_price_labels:
+            blockers.append(
+                f"Invalid or missing prices for variant(s): {', '.join(invalid_price_labels[:10])}"
+            )
             breakdown["variant_integrity"] -= 10
     else:
         if not size_price_map or all(price <= 0 for price in size_price_map.values()):

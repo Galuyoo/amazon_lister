@@ -1,9 +1,10 @@
 {
   "template_family": "Special Projects",
-  "workbook_file": "CP/CP.xlsm",
-  "workbook_mode": "offer_only",
-  "workbook_header_row": 5,
-  "workbook_first_child_row": 7,
+  "workbook_file": "CP/CP_VARIATION.xlsm",
+  "workbook_mode": "listing",
+  "workbook_header_row": 3,
+  "workbook_parent_row": 4,
+  "workbook_first_child_row": 5,
   "required_profile_fields": [
     "parent_sku",
     "feed_product_type",
@@ -45,13 +46,23 @@
     "country_of_origin"
   ],
   "required_workbook_headers": [
-    "contribution_sku#1.value",
-    "condition_type#1.value",
-    "main_offer_image_locator#1.media_location",
+    "item_sku",
+    "item_name",
+    "brand_name",
+    "manufacturer",
+    "parent_child",
+    "parent_sku",
+    "relationship_type",
+    "variation_theme",
+    "recommended_browse_nodes",
+    "color_name",
+    "size_name",
+    "condition_type",
+    "main_image_url",
     "fulfillment_availability#1.fulfillment_channel_code",
     "fulfillment_availability#1.quantity",
     "fulfillment_availability#1.lead_time_to_ship_max_days",
-    "purchasable_offer[marketplace_id=A1F83G8C2ARO7P][audience=ALL]#1.our_price#1.schedule#1.value_with_tax",
-    "merchant_shipping_group[marketplace_id=A1F83G8C2ARO7P]#1.value"
+    "purchasable_offer[marketplace_id=A1F83G8C2ARO7P]#1.our_price#1.schedule#1.value_with_tax",
+    "merchant_shipping_group_name"
   ]
 }

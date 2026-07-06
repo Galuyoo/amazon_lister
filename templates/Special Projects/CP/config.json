@@ -1,8 +1,9 @@
 {
   "label": "Christmas Project",
   "template_key": "CP",
-  "template_file": "CP.xlsm",
+  "template_file": "CP/CP_VARIATION.xlsm",
   "parent_sku": "CP",
+  "include_template_code_in_parent_sku": false,
   "feed_product_type": "shirt",
   "recommended_browse_nodes": "1731028031",
   "product_category": "apparel",
@@ -195,6 +196,14 @@
       "11/13 YRS"
     ]
   },
+  "size_display_prefix_by_design": {
+    "Adult T-Shirt": "Adult T-Shirt",
+    "Kids T-Shirt": "Kids T-Shirt",
+    "Adult Hoodie": "Adult Hoodie",
+    "Kids Hoodie": "Kids Hoodie",
+    "Adult Sweatshirt": "Adult Sweatshirt",
+    "Kids Sweatshirt": "Kids Sweatshirt"
+  },
   "design_color_map": {
     "Adult T-Shirt": [
       "Black",
@@ -241,14 +250,6 @@
       "White"
     ]
   },
-  "color_display_suffix_by_design": {
-    "Adult T-Shirt": "Adult T-Shirt",
-    "Kids T-Shirt": "Kids T-Shirt",
-    "Adult Hoodie": "Adult Hoodie",
-    "Kids Hoodie": "Kids Hoodie",
-    "Adult Sweatshirt": "Adult Sweatshirt",
-    "Kids Sweatshirt": "Kids Sweatshirt"
-  },
   "design_field_overrides": {
     "Adult T-Shirt": {
       "feed_product_type": "shirt",
@@ -289,7 +290,7 @@
       "neck_style": "Crew Neck"
     },
     "Adult Hoodie": {
-      "feed_product_type": "sweatshirt",
+      "feed_product_type": "shirt",
       "item_type_name": "Hooded Sweatshirt",
       "style_name": "Adult Christmas Hoodie",
       "theme": "Custom Printed Christmas Hoodie",
@@ -308,7 +309,7 @@
       "neck_style": "Hooded Neck"
     },
     "Kids Hoodie": {
-      "feed_product_type": "sweatshirt",
+      "feed_product_type": "shirt",
       "item_type_name": "Hooded Sweatshirt",
       "style_name": "Kids Christmas Hoodie",
       "theme": "Custom Printed Kids Christmas Hoodie",
@@ -327,7 +328,7 @@
       "neck_style": "Hooded Neck"
     },
     "Adult Sweatshirt": {
-      "feed_product_type": "sweatshirt",
+      "feed_product_type": "shirt",
       "item_type_name": "Sweatshirt",
       "style_name": "Adult Christmas Sweatshirt",
       "theme": "Custom Printed Christmas Sweatshirt",
@@ -346,7 +347,7 @@
       "neck_style": "Crew Neck"
     },
     "Kids Sweatshirt": {
-      "feed_product_type": "sweatshirt",
+      "feed_product_type": "shirt",
       "item_type_name": "Sweatshirt",
       "style_name": "Kids Christmas Sweatshirt",
       "theme": "Custom Printed Kids Christmas Sweatshirt",

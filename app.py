@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 from datetime import datetime
+import hashlib
 import time
 import json
 import re
@@ -15,6 +16,7 @@ from openpyxl import load_workbook
 from itertools import product
 from services.quality_checks import validate_listing_quality, words_repeated_at_least
 from services.stock_references import (
+    MAX_AMAZON_SKU_LENGTH,
     build_child_sku_details,
     get_stock_reference,
     has_stock_reference,
@@ -950,7 +952,96 @@ def build_variant_combinations(
     return combos
 
 
+def build_variant_price_key(variant_values: dict[str, str]) -> str:
+    design_value = str(variant_values.get("design", "") or "").strip()
+    size_value = str(variant_values.get("size", "") or "").strip()
+    if design_value and size_value:
+        return f"{design_value}||{size_value}"
+    return size_value or design_value or "default"
+
+
+def get_variant_price_from_map(
+    profile: dict[str, Any],
+    size_price_map: dict[str, Any],
+    variant_values: dict[str, str],
+    fallback: Any = 0,
+) -> Any:
+    size_price_map = dict(size_price_map or {})
+    price_key = build_variant_price_key(variant_values)
+    if price_key in size_price_map:
+        return size_price_map[price_key]
+
+    size_value = str(variant_values.get("size", "") or "").strip()
+    if size_value and size_value in size_price_map:
+        return size_price_map[size_value]
+
+    design_value = str(variant_values.get("design", "") or "").strip()
+    if design_value and design_value in size_price_map:
+        return size_price_map[design_value]
+
+    if "default" in size_price_map:
+        return size_price_map["default"]
+
+    if size_value:
+        return get_default_price_for_size(profile, size_value, size_price_map)
+
+    return fallback
+
+
+def get_positive_variant_price_from_map(
+    profile: dict[str, Any],
+    size_price_map: dict[str, Any],
+    variant_values: dict[str, str],
+) -> float | None:
+    try:
+        price = float(get_variant_price_from_map(profile, size_price_map, variant_values, fallback=0))
+    except (TypeError, ValueError):
+        return None
+    return price if price > 0 else None
+
+
+def has_design_size_pricing(profile: dict[str, Any], selected_variants: dict[str, list[str]]) -> bool:
+    return bool(
+        selected_variants.get("design")
+        and selected_variants.get("size")
+        and any(str(dim.get("name", "")).strip().lower() == "design" for dim in profile.get("variant_dimensions", []))
+    )
+
+
+def normalize_variant_price_map_for_selected_variants(
+    profile: dict[str, Any],
+    selected_variants: dict[str, list[str]],
+    size_price_map: dict[str, Any],
+) -> dict[str, float]:
+    raw_price_map = dict(size_price_map or {})
+    if not has_design_size_pricing(profile, selected_variants):
+        normalized: dict[str, float] = {}
+        for key, value in raw_price_map.items():
+            try:
+                normalized[str(key)] = float(value)
+            except (TypeError, ValueError):
+                normalized[str(key)] = 0.0
+        return normalized
+
+    normalized = {}
+    variant_combos = build_variant_combinations(
+        profile,
+        {
+            "design": list(selected_variants.get("design", []) or []),
+            "size": list(selected_variants.get("size", []) or []),
+        },
+    )
+    for combo in variant_combos:
+        price_key = build_variant_price_key(combo)
+        try:
+            normalized[price_key] = float(get_variant_price_from_map(profile, raw_price_map, combo, fallback=0))
+        except (TypeError, ValueError):
+            normalized[price_key] = 0.0
+    return normalized
+
+
 def sort_variant_combinations_by_price(
+    profile: dict[str, Any],
     variant_combos: list[dict[str, str]],
     size_price_map: dict[str, float],
 ) -> list[dict[str, str]]:
@@ -958,8 +1049,7 @@ def sort_variant_combinations_by_price(
 
     def sort_key(item: tuple[int, dict[str, str]]) -> tuple[float, int]:
         idx, combo = item
-        size_value = str(combo.get("size", "") or "")
-        price = size_price_map.get(size_value, size_price_map.get("default", 999999))
+        price = get_variant_price_from_map(profile, size_price_map, combo, fallback=999999)
         try:
             price_value = float(price)
         except (TypeError, ValueError):
@@ -1003,16 +1093,41 @@ def build_child_sku(profile: dict[str, Any], parent_sku: str, variant_values: di
     return build_child_sku_details(profile, parent_sku, variant_values)["amazon_seller_sku"]
 
 
+def build_child_sku_length_report(
+    profile: dict[str, Any],
+    parent_sku: str,
+    selected_variants: dict[str, list[str]],
+    *,
+    sku_decoration_code: str = "",
+    sku_listing_code: str = "",
+) -> dict[str, Any]:
+    effective_profile = apply_sku_context_to_profile(profile, sku_decoration_code, sku_listing_code)
+    combos = build_variant_combinations(profile, selected_variants)
+    rows: list[dict[str, Any]] = []
+    for combo in combos:
+        sku = build_child_sku_details(effective_profile, parent_sku, combo)["amazon_seller_sku"]
+        rows.append({"sku": sku, "length": len(sku), "variant": dict(combo)})
+    rows.sort(key=lambda row: row["length"], reverse=True)
+    return {
+        "max_length": rows[0]["length"] if rows else 0,
+        "longest": rows[:5],
+        "oversized": [row for row in rows if row["length"] > MAX_AMAZON_SKU_LENGTH],
+        "count": len(rows),
+    }
+
+
 def build_child_item_name(
     base_title: str,
     variant_values: dict[str, str],
     profile: dict[str, Any] | None = None,
 ) -> str:
     profile = profile or {}
+    size_value = str(variant_values.get("size", "") or "").strip()
+    title_size = f"Age {size_value}" if is_child_size_label(size_value) else size_value
     title_parts = [
         str(variant_values.get("design", "") or "").strip(),
         str(variant_values.get("color", "") or "").strip(),
-        get_variant_size_display_label(profile, variant_values),
+        title_size,
     ]
     title_parts = [part for part in title_parts if part]
     base_title = str(base_title or "").strip()
@@ -1119,11 +1234,13 @@ def build_parent_sku_from_context(
     sku_decoration_code: str,
     sku_listing_code: str,
 ) -> str:
+    include_template_code = bool(profile.get("include_template_code_in_parent_sku", True))
     parts = [
         sanitize_sku(str(sku_decoration_code or "")).upper(),
         sanitize_sku(str(sku_listing_code or "")).upper(),
-        get_garment_sku_code(profile),
     ]
+    if include_template_code:
+        parts.append(get_garment_sku_code(profile))
     return "-".join(part for part in parts if part)
 
 
@@ -1176,18 +1293,19 @@ def apply_apparel_size_fields(
     size_class = get_apparel_size_class(normalized_size)
     shirt_size, shirt_size_to = get_amazon_shirt_size_range(normalized_size)
     height_type = "" if size_class == "Age" else "Regular"
+    body_type = "" if size_class == "Age" else "Regular"
 
     size_values = {
         "apparel_size_system": "UK",
         "apparel_size_class": size_class,
         "apparel_size": normalized_size,
-        "apparel_body_type": "Regular",
+        "apparel_body_type": body_type,
         "apparel_height_type": height_type,
         "shirt_size_system": "UK",
         "shirt_size_class": size_class,
         "shirt_size": shirt_size,
         "shirt_size_to": shirt_size_to,
-        "shirt_body_type": "Regular",
+        "shirt_body_type": body_type,
         "shirt_height_type": height_type,
     }
 
@@ -1509,6 +1627,7 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
         "bullet_points": payload.get("bullet_points", []),
         "selected_variants": payload.get("selected_variants", {}),
         "size_price_map": payload.get("size_price_map", {}),
+        "price_input_mode": payload.get("price_input_mode", ""),
         "use_same_price_for_all_sizes": payload.get("use_same_price_for_all_sizes", False),
         "write_parent_starting_price": payload.get("write_parent_starting_price", False),
         "sku_decoration_code": payload.get("sku_decoration_code", ""),
@@ -1817,6 +1936,151 @@ def move_ready_dropbox_folder_to_denied_stage(
         if not moved_path:
             raise RuntimeError("Dropbox returned an empty path after moving the folder back to staging.")
         return moved_path
+
+
+def move_approved_dropbox_folder_to_ready(
+    dropbox_cfg: dict[str, Any],
+    approved_folder_name: str,
+) -> str:
+    approved_folder_name = sanitize_sku(approved_folder_name)
+    if not approved_folder_name:
+        raise ValueError("Approved folder name is required.")
+
+    ready_root = dropbox_cfg.get("ready_root", "").rstrip("/")
+    approved_path = build_approved_folder_path(dropbox_cfg, approved_folder_name)
+
+    create_folder_if_missing(ready_root)
+
+    final_ready_folder_name = approved_folder_name
+    counter = 1
+
+    while True:
+        ready_folder_path = build_ready_folder_path(dropbox_cfg, final_ready_folder_name)
+        if path_exists(ready_folder_path):
+            final_ready_folder_name = f"{approved_folder_name}-{counter}"
+            counter += 1
+            continue
+
+        moved_path = move_dropbox_folder(approved_path, ready_folder_path)
+        if not moved_path:
+            raise RuntimeError("Dropbox returned an empty path after moving the folder back to review.")
+        return moved_path
+
+
+def move_approved_dropbox_folder_to_stage(
+    dropbox_cfg: dict[str, Any],
+    approved_folder_name: str,
+) -> str:
+    approved_folder_name = sanitize_sku(approved_folder_name)
+    if not approved_folder_name:
+        raise ValueError("Approved folder name is required.")
+
+    stage_root = dropbox_cfg.get("stage_root", "").rstrip("/")
+    approved_path = build_approved_folder_path(dropbox_cfg, approved_folder_name)
+    stage_folder_name = sanitize_sku(f"{approved_folder_name}_rejected")
+
+    create_folder_if_missing(stage_root)
+
+    final_stage_folder_name = stage_folder_name
+    counter = 1
+
+    while True:
+        stage_folder_path = build_stage_folder_path(dropbox_cfg, final_stage_folder_name)
+        if path_exists(stage_folder_path):
+            final_stage_folder_name = f"{stage_folder_name}-{counter}"
+            counter += 1
+            continue
+
+        moved_path = move_dropbox_folder(approved_path, stage_folder_path)
+        if not moved_path:
+            raise RuntimeError("Dropbox returned an empty path after moving the folder back to staging.")
+        return moved_path
+
+
+def return_approved_listing(
+    dropbox_cfg: dict[str, Any],
+    profiles: list[dict[str, Any]],
+    fallback_profile: dict[str, Any],
+    approved_folder_name: str,
+    target_state: str,
+    actor: str = "",
+    reason: str = "",
+) -> dict[str, Any]:
+    approved_folder_name = sanitize_sku(approved_folder_name)
+    target_state = str(target_state or "").strip().lower()
+    if target_state not in {"ready", "stage"}:
+        raise ValueError("target_state must be either 'ready' or 'stage'.")
+
+    source_path = build_approved_folder_path(dropbox_cfg, approved_folder_name)
+    result = {
+        "folder_name": approved_folder_name,
+        "from_state": "approved",
+        "to_state": target_state,
+        "target_folder_name": "",
+        "target_path": "",
+        "status": "Failed",
+        "message": "",
+    }
+
+    try:
+        if not approved_folder_name:
+            raise ValueError("Approved folder name is required.")
+        if not path_exists(source_path):
+            raise FileNotFoundError(f"Approved folder not found: {source_path}")
+
+        listing_memory = load_listing_memory_from_dropbox(source_path)
+        if not listing_memory:
+            listing_memory = {}
+
+        moved_path = (
+            move_approved_dropbox_folder_to_ready(dropbox_cfg, approved_folder_name)
+            if target_state == "ready"
+            else move_approved_dropbox_folder_to_stage(dropbox_cfg, approved_folder_name)
+        )
+
+        payload = dict(listing_memory)
+        payload["reviewed_by"] = ""
+        payload["reviewed_at"] = ""
+        if target_state == "stage":
+            payload["prepared_at"] = ""
+
+        append_workflow_event(
+            payload,
+            action="return_approved_to_review" if target_state == "ready" else "return_approved_to_stage",
+            actor=actor,
+            from_state="approved",
+            to_state=target_state,
+            folder_path=moved_path,
+            details={
+                "old_approved_folder_name": approved_folder_name,
+                "old_approved_folder_path": source_path,
+                "reason": reason,
+            },
+        )
+
+        profile = find_profile_for_listing_memory(profiles, payload) or fallback_profile
+        save_listing_inputs_json_to_dropbox(
+            profile=profile,
+            payload=payload,
+            folder_path=moved_path,
+        )
+
+        result.update(
+            {
+                "target_folder_name": Path(moved_path).name,
+                "target_path": moved_path,
+                "status": "Success",
+                "message": (
+                    "Returned to review."
+                    if target_state == "ready"
+                    else "Returned to staging."
+                ),
+            }
+        )
+    except Exception as exc:
+        result["message"] = str(exc)
+
+    return result
 
 
 def finalize_ready_dropbox_folder(
@@ -2373,6 +2637,97 @@ def normalize_image_match_key(value: str) -> str:
     return normalize_image_filename_part(stem).lower()
 
 
+def tokenize_image_match_value(value: str) -> list[str]:
+    stem = re.sub(r"\.[A-Za-z0-9]+$", "", str(value or "").strip())
+    return re.findall(r"[a-z0-9]+", stem.lower())
+
+
+def contains_token_sequence(tokens: list[str], sequence: list[str]) -> bool:
+    if not sequence:
+        return False
+
+    sequence_len = len(sequence)
+    for idx in range(0, len(tokens) - sequence_len + 1):
+        if tokens[idx:idx + sequence_len] == sequence:
+            return True
+    return False
+
+
+def infer_design_color_image_url_map_from_folder(
+    profile: dict[str, Any],
+    folder_path: str,
+    selected_colors: list[str],
+    selected_designs: list[str] | None = None,
+) -> dict[str, dict[str, str]]:
+    design_sku_map = {
+        str(design): str(code)
+        for design, code in dict(profile.get("design_sku_map", {}) or {}).items()
+        if str(design or "").strip() and str(code or "").strip()
+    }
+    if not design_sku_map or not folder_path:
+        return {}
+
+    selected_design_set = set(selected_designs or [])
+    candidate_designs = [
+        design
+        for design in design_sku_map
+        if not selected_design_set or design in selected_design_set
+    ]
+    if not candidate_designs:
+        return {}
+
+    color_tokens = {
+        color: tokenize_image_match_value(color)
+        for color in selected_colors
+        if str(color or "").strip()
+    }
+    design_code_tokens = {
+        design: tokenize_image_match_value(code)
+        for design, code in design_sku_map.items()
+        if design in candidate_designs
+    }
+
+    try:
+        image_paths = [path for path in list_folder_files(folder_path) if is_image_file(path)]
+    except Exception:
+        return {}
+
+    inferred: dict[str, dict[str, str]] = {}
+    for path in image_paths:
+        filename_tokens = tokenize_image_match_value(Path(path).name)
+        if not filename_tokens:
+            continue
+
+        matched_designs = [
+            design
+            for design, code_tokens in design_code_tokens.items()
+            if contains_token_sequence(filename_tokens, code_tokens)
+        ]
+        if not matched_designs:
+            continue
+
+        matched_colors = [
+            color
+            for color, tokens in color_tokens.items()
+            if contains_token_sequence(filename_tokens, tokens)
+        ]
+        if not matched_colors:
+            continue
+
+        try:
+            image_url = dropbox_preview_url(path)
+        except Exception:
+            image_url = ""
+        if not image_url:
+            continue
+
+        for color in matched_colors:
+            for design in matched_designs:
+                inferred.setdefault(color, {}).setdefault(design, image_url)
+
+    return inferred
+
+
 def build_color_image_filename_candidates(
     template_key: str,
     color: str,
@@ -2715,6 +3070,8 @@ def get_mapped_color_options(
 
 
 def build_lenient_image_maps(
+    profile: dict[str, Any],
+    selected_variants: dict[str, list[str]],
     selected_colors: list[str],
     dropbox_overview: dict[str, Any],
     folder_path: str,
@@ -2752,6 +3109,16 @@ def build_lenient_image_maps(
             if not url:
                 continue
             design_color_image_url_map.setdefault(color, {})[design] = url
+
+    inferred_design_color_image_url_map = infer_design_color_image_url_map_from_folder(
+        profile=profile,
+        folder_path=folder_path,
+        selected_colors=selected_colors,
+        selected_designs=list(selected_variants.get("design", [])),
+    )
+    for color, design_map in inferred_design_color_image_url_map.items():
+        for design, image_url in design_map.items():
+            design_color_image_url_map.setdefault(color, {}).setdefault(design, image_url)
 
     return color_image_map, design_color_image_url_map
 
@@ -2836,6 +3203,8 @@ def get_cached_preview_image_data(
                 mapping_colors = get_selected_colors_for_image_resolution(profile, mapping_variants)
 
                 full_color_image_map, full_design_color_image_url_map = build_lenient_image_maps(
+                    profile,
+                    mapping_variants,
                     mapping_colors,
                     dropbox_overview,
                     preview_stage_folder_path,
@@ -3046,6 +3415,13 @@ def resolve_folder_image_urls(
     shared_resource_images = dropbox_overview.get("shared_resource_images", [])
     staged_resource_images = list_image_paths_in_dropbox_folder(f"{folder_path.rstrip('/')}/resources")
     variant_combos = build_variant_combinations(profile, selected_variants)
+    inferred_design_color_image_url_map = infer_design_color_image_url_map_from_folder(
+        profile=profile,
+        folder_path=folder_path,
+        selected_colors=selected_colors,
+        selected_designs=list(selected_variants.get("design", [])),
+    )
+    has_design_image_source = bool(design_color_image_map) or bool(inferred_design_color_image_url_map)
 
     color_image_map: dict[str, str] = {}
     for color in selected_colors:
@@ -3058,7 +3434,7 @@ def resolve_folder_image_urls(
             str(color_sku_map.get(color, "") or ""),
         )
         if not path:
-            if design_color_image_map:
+            if has_design_image_source:
                 continue
             expected = ", ".join(candidates[:4])
             raise ValueError(f"Missing staged mapped image for colour '{color}'. Expected one of: {expected}")
@@ -3079,6 +3455,10 @@ def resolve_folder_image_urls(
             url = dropbox_preview_url(path)
             if url:
                 design_color_image_url_map[color][design] = url
+
+    for color, design_map in inferred_design_color_image_url_map.items():
+        for design, image_url in design_map.items():
+            design_color_image_url_map.setdefault(color, {}).setdefault(design, image_url)
 
     parent_main_image_url = ""
     missing_variant_labels: list[str] = []
@@ -3257,7 +3637,12 @@ def build_size_price_inputs(
     sizes: list[str],
     saved_prices: dict[str, float] | None = None,
     profile: dict[str, Any] | None = None,
+    selected_variants: dict[str, list[str]] | None = None,
 ) -> dict[str, float]:
+    selected_variants = selected_variants or {}
+    if profile and has_design_size_pricing(profile, selected_variants):
+        return build_design_size_price_inputs(profile, selected_variants, saved_prices)
+
     st.markdown("**Price by size**")
     if not sizes:
         st.caption("No sizes configured.")
@@ -3319,6 +3704,178 @@ def build_size_price_inputs(
             )
 
     return size_price_map
+
+
+def build_design_size_price_inputs(
+    profile: dict[str, Any],
+    selected_variants: dict[str, list[str]],
+    saved_prices: dict[str, float] | None = None,
+) -> dict[str, float]:
+    st.markdown("**Price by garment and size**")
+    selected_designs = list(selected_variants.get("design", []) or [])
+    selected_sizes = list(selected_variants.get("size", []) or [])
+    saved_prices = dict(saved_prices or {})
+
+    if not selected_designs or not selected_sizes:
+        st.caption("Select at least one garment and one size to price variants.")
+        return {}
+
+    variant_combos = build_variant_combinations(profile, {
+        "design": selected_designs,
+        "size": selected_sizes,
+    })
+    if not variant_combos:
+        st.caption("No valid garment/size combinations selected.")
+        return {}
+
+    default_same_price = False
+    existing_values = [
+        saved_prices.get(build_variant_price_key(combo))
+        for combo in variant_combos
+        if build_variant_price_key(combo) in saved_prices
+    ]
+    unique_existing_values = {v for v in existing_values if v is not None}
+    if len(unique_existing_values) == 1 and len(existing_values) == len(variant_combos):
+        default_same_price = True
+
+    pricing_modes = [
+        "Use one price for all",
+        "Use one price per cluster",
+        "Manual price by garment/size",
+    ]
+    if "design_size_pricing_mode" not in st.session_state:
+        st.session_state["design_size_pricing_mode"] = (
+            "Use one price for all"
+            if st.session_state.get("use_same_price_for_all_sizes", default_same_price)
+            else "Manual price by garment/size"
+        )
+    legacy_pricing_modes = {
+        "One price for all": "Use one price for all",
+        "One price per cluster": "Use one price per cluster",
+        "Manual by garment/size": "Manual price by garment/size",
+    }
+    current_pricing_mode = st.session_state.get("design_size_pricing_mode")
+    st.session_state["design_size_pricing_mode"] = legacy_pricing_modes.get(
+        current_pricing_mode,
+        current_pricing_mode if current_pricing_mode in pricing_modes else "Manual price by garment/size",
+    )
+
+    pricing_mode = st.radio(
+        "Pricing mode",
+        pricing_modes,
+        horizontal=True,
+        key="design_size_pricing_mode",
+    )
+    use_same_price = pricing_mode == "Use one price for all"
+    st.session_state["use_same_price_for_all_sizes"] = use_same_price
+
+    size_price_map: dict[str, float] = {}
+    if use_same_price:
+        first_combo = variant_combos[0]
+        first_key = build_variant_price_key(first_combo)
+        fallback_price = (
+            get_positive_variant_price_from_map(profile, saved_prices, first_combo)
+            or float(get_default_price_for_size(profile, first_combo.get("size", ""), {}))
+        )
+        if "shared_price_all_sizes" not in st.session_state:
+            st.session_state["shared_price_all_sizes"] = float(fallback_price)
+
+        shared_price = st.number_input(
+            "Price for all garment/size combinations",
+            min_value=0.0,
+            step=0.50,
+            key="shared_price_all_sizes",
+        )
+        for combo in variant_combos:
+            size_price_map[build_variant_price_key(combo)] = shared_price
+        return size_price_map
+
+    design_size_map = profile.get("design_size_map", {})
+    if pricing_mode == "Use one price per cluster":
+        for design in selected_designs:
+            valid_design_sizes = [
+                size
+                for size in selected_sizes
+                if not design_size_map.get(design) or size in design_size_map.get(design, [])
+            ]
+            if not valid_design_sizes:
+                continue
+
+            clusters: dict[str, list[str]] = {}
+            for size in valid_design_sizes:
+                cluster_label = get_design_size_price_cluster_label(design, size)
+                clusters.setdefault(cluster_label, []).append(size)
+
+            with st.expander(f"{design} cluster prices", expanded=True):
+                cols_per_row = 3
+                cols = st.columns(cols_per_row)
+                for idx, (cluster_label, cluster_sizes) in enumerate(clusters.items()):
+                    first_size = cluster_sizes[0]
+                    first_combo = {"design": design, "size": first_size}
+                    cluster_key = f"cluster_price_{sanitize_sku(design)}_{sanitize_sku(cluster_label)}"
+                    fallback_price = (
+                        get_positive_variant_price_from_map(profile, saved_prices, first_combo)
+                        or float(get_default_price_for_size(profile, first_size, {}))
+                    )
+                    with cols[idx % cols_per_row]:
+                        if cluster_key not in st.session_state:
+                            st.session_state[cluster_key] = fallback_price
+                        cluster_price = st.number_input(
+                            f"{cluster_label} price",
+                            min_value=0.0,
+                            step=0.50,
+                            key=cluster_key,
+                        )
+                        st.caption(", ".join(cluster_sizes))
+
+                    for size in cluster_sizes:
+                        size_price_map[build_variant_price_key({"design": design, "size": size})] = cluster_price
+
+        return size_price_map
+
+    for design in selected_designs:
+        valid_design_sizes = [
+            size
+            for size in selected_sizes
+            if not design_size_map.get(design) or size in design_size_map.get(design, [])
+        ]
+        if not valid_design_sizes:
+            continue
+
+        with st.expander(f"{design} prices", expanded=True):
+            cols_per_row = 4
+            cols = st.columns(cols_per_row)
+            for idx, size in enumerate(valid_design_sizes):
+                combo = {"design": design, "size": size}
+                price_key = build_variant_price_key(combo)
+                widget_key = f"price_{sanitize_sku(price_key)}"
+                with cols[idx % cols_per_row]:
+                    if widget_key not in st.session_state:
+                        default_price = (
+                            get_positive_variant_price_from_map(profile, saved_prices, combo)
+                            or float(get_default_price_for_size(profile, size, {}))
+                        )
+                        st.session_state[widget_key] = float(
+                            default_price
+                        )
+                    size_price_map[price_key] = st.number_input(
+                        f"{size} price",
+                        min_value=0.0,
+                        step=0.50,
+                        key=widget_key,
+                    )
+
+    return size_price_map
+
+
+def get_design_size_price_cluster_label(design: str, size: str) -> str:
+    design_normalized = str(design or "").strip().lower()
+    size_normalized = str(size or "").strip().upper()
+    if "kid" in design_normalized or is_child_size_label(size):
+        return "Kids"
+    if size_normalized in {"3XL", "4XL", "5XL", "6XL", "7XL", "8XL"}:
+        return "Adult 3XL+"
+    return "Adult XS-2XL"
 
 
 def is_child_size_label(size: str) -> bool:
@@ -3568,7 +4125,7 @@ def write_child_rows(
 
     selected_variants = data.get("selected_variants", {})
     variant_combos = build_variant_combinations(profile, selected_variants)
-    variant_combos = sort_variant_combinations_by_price(variant_combos, data.get("size_price_map", {}))
+    variant_combos = sort_variant_combinations_by_price(profile, variant_combos, data.get("size_price_map", {}))
 
     for variant_values in variant_combos:
         if row_idx != template_row and st.session_state.get("copy_row_styles", True):
@@ -3588,8 +4145,7 @@ def write_child_rows(
         display_color = get_variant_color_display_label(profile, variant_values)
         child_item_name = build_child_item_name(data["title"], variant_values, profile)
 
-        price_key = size_value if size_value else "default"
-        price = data["size_price_map"].get(price_key, 0)
+        price = get_variant_price_from_map(profile, data.get("size_price_map", {}), variant_values)
 
         image_url = resolve_child_variant_image_url(
             variant_values=variant_values,
@@ -4018,8 +4574,10 @@ def validate_variants(
     selected_variants: dict[str, list[str]],
     size_price_map: dict[str, float],
     quantity: int,
+    profile: dict[str, Any] | None = None,
 ) -> list[str]:
     errors: list[str] = []
+    profile = profile or {}
 
     for dim_name, values in selected_variants.items():
         if not values:
@@ -4028,9 +4586,21 @@ def validate_variants(
     if quantity < 0:
         errors.append("Quantity cannot be negative.")
 
-    size_values = selected_variants.get("size", [])
-    if size_values:
-        for size in size_values:
+    variant_combos = build_variant_combinations(profile, selected_variants) if profile else []
+    if variant_combos:
+        invalid_labels = []
+        for combo in variant_combos:
+            price = get_variant_price_from_map(profile, size_price_map, combo, fallback=0)
+            try:
+                valid_price = float(price) > 0
+            except (TypeError, ValueError):
+                valid_price = False
+            if not valid_price:
+                invalid_labels.append(" / ".join([str(v) for v in combo.values() if v]) or "Unnamed variant")
+        if invalid_labels:
+            errors.append(f"Invalid or missing prices for variant(s): {', '.join(invalid_labels[:10])}")
+    elif selected_variants.get("size", []):
+        for size in selected_variants.get("size", []):
             if size_price_map.get(size, 0) <= 0:
                 errors.append(f"Invalid price for size {size}.")
     else:
@@ -4101,6 +4671,35 @@ def validate_variant_image_count(
             )
 
     return errors
+
+
+def validate_child_title_lengths(
+    profile: dict[str, Any],
+    payload: dict[str, Any],
+    max_chars: int = 200,
+) -> list[str]:
+    title = str(payload.get("title", "") or "").strip()
+    selected_variants = dict(payload.get("selected_variants", {}) or {})
+    variant_combos = build_variant_combinations(profile, selected_variants)
+
+    oversized_titles: list[tuple[str, int]] = []
+    for variant_values in variant_combos:
+        child_title = build_child_item_name(title, variant_values, profile)
+        child_title_len = len(child_title.strip())
+        if child_title_len > max_chars:
+            oversized_titles.append((child_title, child_title_len))
+
+    if not oversized_titles:
+        return []
+
+    sample = "; ".join(
+        f"{child_title[:120]}{'...' if len(child_title) > 120 else ''} ({length} chars)"
+        for child_title, length in oversized_titles[:3]
+    )
+    return [
+        f"Amazon titles must be {max_chars} characters or fewer after variant prefixes. "
+        f"Shorten the base title so colour/size/garment can be added safely. Too long: {sample}"
+    ]
 
 
 def build_preflight_report(
@@ -4232,12 +4831,14 @@ def build_preflight_report(
         selected_variants,
         size_price_map,
         quantity,
+        profile=sku_profile,
     )
     preview_structure_errors = validate_parent_child_structure(preview_payload)
 
     template_errors = validate_template_file(profile)
     stock_ready_report = validate_stock_ready_payload(sku_profile, preview_payload)
     variant_image_count_errors = validate_variant_image_count(sku_profile, preview_payload)
+    child_title_length_errors = validate_child_title_lengths(sku_profile, preview_payload)
 
     all_preview_errors = [
         *profile_schema_errors,
@@ -4247,6 +4848,7 @@ def build_preflight_report(
         *template_errors,
         *stock_ready_report.get("errors", []),
         *variant_image_count_errors,
+        *child_title_length_errors,
     ]
 
     sku_profile = apply_sku_context_to_profile(
@@ -4302,6 +4904,11 @@ def prepare_generation_payload(
     elif not manual_sku_listing_code and not generated_sku_listing_code:
         generated_sku_listing_code = sku_listing_code
     parent_sku = build_parent_sku_from_context(profile, sku_decoration_code, sku_listing_code)
+    size_price_map = normalize_variant_price_map_for_selected_variants(
+        profile,
+        selected_variants,
+        size_price_map,
+    )
 
     payload = {
         "parent_sku": parent_sku,
@@ -4318,6 +4925,7 @@ def prepare_generation_payload(
         "sku_listing_code": sku_listing_code,
         "write_parent_starting_price": profile.get("write_parent_starting_price", False),
         "use_same_price_for_all_sizes": st.session_state.get("use_same_price_for_all_sizes", False),
+        "price_input_mode": st.session_state.get("design_size_pricing_mode", ""),
         "quantity": quantity,
         "handling_time_days": normalize_handling_time_days(handling_time_days),
         "merchant_shipping_group_name": normalize_merchant_shipping_group(merchant_shipping_group_name),
@@ -4380,17 +4988,18 @@ def prepare_generation_payload(
     if not sku_listing_code.strip():
         errors.append("SKU listing/design code is required.")
 
-    errors.extend(validate_variant_dimensions(selected_variants))
-    errors.extend(validate_payload(payload))
-    errors.extend(validate_variants(selected_variants, size_price_map, quantity))
-    errors.extend(validate_parent_child_structure(payload))
-    errors.extend(validate_template_file(profile))
-
     sku_profile = apply_sku_context_to_profile(
         profile,
         payload.get("sku_decoration_code", ""),
         payload.get("sku_listing_code", ""),
     )
+
+    errors.extend(validate_variant_dimensions(selected_variants))
+    errors.extend(validate_payload(payload))
+    errors.extend(validate_variants(selected_variants, size_price_map, quantity, profile=sku_profile))
+    errors.extend(validate_parent_child_structure(payload))
+    errors.extend(validate_template_file(profile))
+
     quality_report = validate_listing_quality(sku_profile, payload)
     stock_ready_report = validate_stock_ready_payload(profile, payload)
     errors.extend(stock_ready_report.get("errors", []))
@@ -4704,18 +5313,116 @@ def build_price_summary(size_price_map: dict[str, float]) -> str:
     if not size_price_map:
         return "No pricing"
 
-    prices = [float(price) for price in size_price_map.values()]
+    prices: list[float] = []
+    missing_count = 0
+    for raw_price in dict(size_price_map or {}).values():
+        try:
+            price = float(raw_price)
+        except (TypeError, ValueError):
+            price = 0.0
+        if price > 0:
+            prices.append(price)
+        else:
+            missing_count += 1
+
     if not prices:
-        return "No pricing"
+        return f"No valid pricing ({missing_count} missing)"
 
     if len(set(prices)) == 1:
-        return f"{len(prices)} variant(s) at {prices[0]:.2f}"
+        summary = f"{len(prices)} price key(s) at {prices[0]:.2f}"
+    else:
+        summary = f"{len(prices)} price key(s) from {min(prices):.2f} to {max(prices):.2f}"
 
-    return f"{len(prices)} variant(s) from {min(prices):.2f} to {max(prices):.2f}"
+    if missing_count:
+        summary += f" ({missing_count} missing)"
+    return summary
+
+
+def build_review_price_rows(
+    profile: dict[str, Any] | None,
+    listing_memory: dict[str, Any],
+) -> list[dict[str, Any]]:
+    profile = profile or {}
+    selected_variants = dict(listing_memory.get("selected_variants", {}) or {})
+    size_price_map = dict(listing_memory.get("size_price_map", {}) or {})
+    rows: list[dict[str, Any]] = []
+
+    if has_design_size_pricing(profile, selected_variants):
+        variant_combos = build_variant_combinations(
+            profile,
+            {
+                "design": list(selected_variants.get("design", []) or []),
+                "size": list(selected_variants.get("size", []) or []),
+            },
+        )
+        for combo in variant_combos:
+            price_key = build_variant_price_key(combo)
+            try:
+                price = float(get_variant_price_from_map(profile, size_price_map, combo, fallback=0) or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            rows.append({
+                "Garment": combo.get("design", ""),
+                "Size": combo.get("size", ""),
+                "Price key": price_key,
+                "Price": price,
+                "Status": "OK" if price > 0 else "Missing",
+            })
+        return rows
+
+    for key, raw_price in size_price_map.items():
+        try:
+            price = float(raw_price)
+        except (TypeError, ValueError):
+            price = 0.0
+        rows.append({
+            "Size": str(key),
+            "Price key": str(key),
+            "Price": price,
+            "Status": "OK" if price > 0 else "Missing",
+        })
+    return rows
 
 
 def safe_widget_key_part(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "")).strip("_") or "value"
+
+
+def build_review_memory_fingerprint(
+    listing_memory: dict[str, Any],
+    profile: dict[str, Any] | None = None,
+) -> str:
+    payload = {
+        "template": profile.get("template_key", profile.get("_slug", "")) if profile else "",
+        "sku_decoration_code": listing_memory.get("sku_decoration_code", ""),
+        "manual_sku_listing_code": listing_memory.get("manual_sku_listing_code", ""),
+        "generated_sku_listing_code": listing_memory.get("generated_sku_listing_code", ""),
+        "sku_listing_code": listing_memory.get("sku_listing_code", ""),
+        "parent_sku": listing_memory.get("parent_sku", ""),
+        "size_price_map": listing_memory.get("size_price_map", {}),
+        "price_input_mode": listing_memory.get("price_input_mode", ""),
+        "title": listing_memory.get("title", ""),
+        "product_description": listing_memory.get("product_description", ""),
+        "generic_keywords": listing_memory.get("generic_keywords", ""),
+        "bullet_points": listing_memory.get("bullet_points", []),
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
+
+
+def normalize_design_size_pricing_mode(value: Any, default: str = "Manual price by garment/size") -> str:
+    pricing_modes = {
+        "Use one price for all",
+        "Use one price per cluster",
+        "Manual price by garment/size",
+    }
+    legacy_pricing_modes = {
+        "One price for all": "Use one price for all",
+        "One price per cluster": "Use one price per cluster",
+        "Manual by garment/size": "Manual price by garment/size",
+    }
+    value = legacy_pricing_modes.get(str(value or ""), str(value or ""))
+    return value if value in pricing_modes else default
 
 
 def get_review_edit_state_keys(review_key_prefix: str) -> dict[str, str]:
@@ -4725,7 +5432,130 @@ def get_review_edit_state_keys(review_key_prefix: str) -> dict[str, str]:
         "custom_sku_decoration_code": f"{review_key_prefix}_custom_sku_decoration_code",
         "manual_sku_listing_code": f"{review_key_prefix}_manual_sku_listing_code",
         "generated_sku_listing_code": f"{review_key_prefix}_generated_sku_listing_code",
+        "price_input_mode": f"{review_key_prefix}_price_input_mode",
     }
+
+
+def clear_review_editor_state(review_key_prefix: str) -> None:
+    prefixes = [
+        f"{review_key_prefix}_edit_",
+        f"{review_key_prefix}_content_",
+        f"{review_key_prefix}_price_",
+        f"{review_key_prefix}_sku_",
+        f"{review_key_prefix}_custom_sku_",
+        f"{review_key_prefix}_manual_sku_",
+        f"{review_key_prefix}_generated_sku_",
+        f"{review_key_prefix}_active_editor_",
+    ]
+    review_state_tokens = [
+        "_edit_",
+        "_content_",
+        "_price_",
+        "_sku_",
+        "_custom_sku_",
+        "_manual_sku_",
+        "_generated_sku_",
+    ]
+    exact_keys = set(get_review_edit_state_keys(review_key_prefix).values())
+    exact_keys.update(get_review_content_state_keys(review_key_prefix).values())
+    exact_keys.add(f"{review_key_prefix}_active_editor_prefix")
+    for key in list(st.session_state.keys()):
+        key_text = str(key)
+        fingerprinted_review_key = (
+            key_text.startswith(f"{review_key_prefix}_")
+            and any(token in key_text for token in review_state_tokens)
+        )
+        if key in exact_keys or fingerprinted_review_key or any(key_text.startswith(prefix) for prefix in prefixes):
+            st.session_state.pop(key, None)
+
+
+def get_review_content_state_keys(review_key_prefix: str) -> dict[str, str]:
+    return {
+        "context": f"{review_key_prefix}_content_context",
+        "title": f"{review_key_prefix}_content_title",
+        "description": f"{review_key_prefix}_content_description",
+        "keywords": f"{review_key_prefix}_content_keywords",
+        "bullet_1": f"{review_key_prefix}_content_bullet_1",
+        "bullet_2": f"{review_key_prefix}_content_bullet_2",
+        "bullet_3": f"{review_key_prefix}_content_bullet_3",
+        "bullet_4": f"{review_key_prefix}_content_bullet_4",
+        "bullet_5": f"{review_key_prefix}_content_bullet_5",
+    }
+
+
+def initialize_review_content_state(
+    review_key_prefix: str,
+    listing_memory: dict[str, Any],
+) -> None:
+    keys = get_review_content_state_keys(review_key_prefix)
+    bullet_points = (list(listing_memory.get("bullet_points", [])) + ["", "", "", "", ""])[:5]
+    context = json.dumps(
+        {
+            "title": listing_memory.get("title", ""),
+            "product_description": listing_memory.get("product_description", ""),
+            "generic_keywords": listing_memory.get("generic_keywords", ""),
+            "bullet_points": bullet_points,
+        },
+        sort_keys=True,
+    )
+    if st.session_state.get(keys["context"]) == context:
+        return
+
+    st.session_state[keys["title"]] = str(listing_memory.get("title", "") or "")
+    st.session_state[keys["description"]] = str(listing_memory.get("product_description", "") or "")
+    st.session_state[keys["keywords"]] = str(listing_memory.get("generic_keywords", "") or "")
+    for idx, bullet in enumerate(bullet_points, start=1):
+        st.session_state[keys[f"bullet_{idx}"]] = str(bullet or "")
+    st.session_state[keys["context"]] = context
+
+
+def get_review_content_edits(review_key_prefix: str) -> dict[str, Any]:
+    keys = get_review_content_state_keys(review_key_prefix)
+    return {
+        "title": str(st.session_state.get(keys["title"], "") or "").strip(),
+        "product_description": str(st.session_state.get(keys["description"], "") or "").strip(),
+        "generic_keywords": str(st.session_state.get(keys["keywords"], "") or "").strip(),
+        "bullet_points": [
+            str(st.session_state.get(keys[f"bullet_{idx}"], "") or "").strip()
+            for idx in range(1, 6)
+        ],
+    }
+
+
+def apply_review_content_edits(
+    payload: dict[str, Any],
+    edits: dict[str, Any],
+) -> dict[str, Any]:
+    payload = dict(payload)
+    for field_name in ["title", "product_description", "generic_keywords", "bullet_points"]:
+        payload[field_name] = edits.get(field_name, payload.get(field_name, "" if field_name != "bullet_points" else []))
+    return payload
+
+
+def render_review_content_editor(
+    review_key_prefix: str,
+    listing_memory: dict[str, Any],
+) -> dict[str, Any]:
+    initialize_review_content_state(review_key_prefix, listing_memory)
+    keys = get_review_content_state_keys(review_key_prefix)
+
+    st.text_input("Product title", key=keys["title"])
+    title_chars = len(str(st.session_state.get(keys["title"], "") or "").strip())
+    st.caption(f"Title: {title_chars}/200 chars")
+
+    st.markdown("**Bullets**")
+    for idx in range(1, 6):
+        st.text_input(f"Bullet {idx}", key=keys[f"bullet_{idx}"])
+
+    st.text_area("Product description", height=180, key=keys["description"])
+    description_chars = len(str(st.session_state.get(keys["description"], "") or "").strip())
+    st.caption(f"Description: {description_chars}/2000 chars")
+
+    st.text_area("Search terms", height=100, key=keys["keywords"])
+    keywords_bytes = len(str(st.session_state.get(keys["keywords"], "") or "").encode("utf-8"))
+    st.caption(f"Search terms: {keywords_bytes}/249 bytes")
+
+    return get_review_content_edits(review_key_prefix)
 
 
 def initialize_review_edit_state(
@@ -4742,6 +5572,7 @@ def initialize_review_edit_state(
             "generated_sku_listing_code": listing_memory.get("generated_sku_listing_code", ""),
             "sku_listing_code": listing_memory.get("sku_listing_code", ""),
             "size_price_map": listing_memory.get("size_price_map", {}),
+            "price_input_mode": listing_memory.get("price_input_mode", ""),
         },
         sort_keys=True,
     )
@@ -4760,10 +5591,31 @@ def initialize_review_edit_state(
         get_saved_generated_sku_listing_code(listing_memory)
         or f"D{generate_unique_sku(5)}"
     )
+    st.session_state[keys["price_input_mode"]] = normalize_design_size_pricing_mode(
+        listing_memory.get("price_input_mode", ""),
+        default="Manual price by garment/size",
+    )
 
-    for size, price in dict(listing_memory.get("size_price_map", {})).items():
-        price_key = f"{review_key_prefix}_price_{safe_widget_key_part(size)}"
-        st.session_state[price_key] = float(price)
+    selected_variants = dict(listing_memory.get("selected_variants", {}))
+    saved_prices = dict(listing_memory.get("size_price_map", {}))
+    if has_design_size_pricing(profile, selected_variants):
+        variant_combos = build_variant_combinations(
+            profile,
+            {
+                "design": list(selected_variants.get("design", []) or []),
+                "size": list(selected_variants.get("size", []) or []),
+            },
+        )
+        for combo in variant_combos:
+            variant_price_key = build_variant_price_key(combo)
+            widget_key = f"{review_key_prefix}_price_{safe_widget_key_part(variant_price_key)}"
+            st.session_state[widget_key] = float(
+                get_variant_price_from_map(profile, saved_prices, combo, fallback=0) or 0
+            )
+    else:
+        for size, price in saved_prices.items():
+            price_key = f"{review_key_prefix}_price_{safe_widget_key_part(size)}"
+            st.session_state[price_key] = float(price)
 
     st.session_state[keys["context"]] = context
 
@@ -4790,12 +5642,59 @@ def get_review_sku_and_price_edits(
     parent_sku = build_parent_sku_from_context(profile, sku_decoration_code, sku_listing_code)
 
     selected_variants = dict(listing_memory.get("selected_variants", {}))
-    price_sizes = list(selected_variants.get("size", [])) or list(dict(listing_memory.get("size_price_map", {})).keys()) or ["default"]
+    existing_prices = dict(listing_memory.get("size_price_map", {}))
     size_price_map: dict[str, float] = {}
-    for size in price_sizes:
-        price_key = f"{review_key_prefix}_price_{safe_widget_key_part(size)}"
-        fallback_price = float(dict(listing_memory.get("size_price_map", {})).get(size, 0) or 0)
-        size_price_map[str(size)] = float(st.session_state.get(price_key, fallback_price))
+    price_input_mode = normalize_design_size_pricing_mode(st.session_state.get(keys["price_input_mode"], ""))
+    if has_design_size_pricing(profile, selected_variants):
+        variant_combos = build_variant_combinations(
+            profile,
+            {
+                "design": list(selected_variants.get("design", []) or []),
+                "size": list(selected_variants.get("size", []) or []),
+            },
+        )
+        if price_input_mode == "Use one price for all":
+            first_combo = variant_combos[0] if variant_combos else {}
+            fallback_price = float(get_variant_price_from_map(profile, existing_prices, first_combo, fallback=0) or 0)
+            shared_key = f"{review_key_prefix}_price_all"
+            shared_price = float(st.session_state.get(shared_key, fallback_price))
+            for combo in variant_combos:
+                size_price_map[build_variant_price_key(combo)] = shared_price
+        elif price_input_mode == "Use one price per cluster":
+            selected_designs = list(selected_variants.get("design", []) or [])
+            selected_sizes = list(selected_variants.get("size", []) or [])
+            design_size_map = profile.get("design_size_map", {})
+            for design in selected_designs:
+                valid_sizes = [
+                    size
+                    for size in selected_sizes
+                    if not design_size_map.get(design) or size in design_size_map.get(design, [])
+                ]
+                clusters: dict[str, list[str]] = {}
+                for size in valid_sizes:
+                    clusters.setdefault(get_design_size_price_cluster_label(design, size), []).append(size)
+                for cluster_label, cluster_sizes in clusters.items():
+                    first_combo = {"design": design, "size": cluster_sizes[0]}
+                    fallback_price = float(get_variant_price_from_map(profile, existing_prices, first_combo, fallback=0) or 0)
+                    cluster_key = (
+                        f"{review_key_prefix}_cluster_price_"
+                        f"{safe_widget_key_part(design)}_{safe_widget_key_part(cluster_label)}"
+                    )
+                    cluster_price = float(st.session_state.get(cluster_key, fallback_price))
+                    for size in cluster_sizes:
+                        size_price_map[build_variant_price_key({"design": design, "size": size})] = cluster_price
+        else:
+            for combo in variant_combos:
+                variant_price_key = build_variant_price_key(combo)
+                widget_key = f"{review_key_prefix}_price_{safe_widget_key_part(variant_price_key)}"
+                fallback_price = float(get_variant_price_from_map(profile, existing_prices, combo, fallback=0) or 0)
+                size_price_map[variant_price_key] = float(st.session_state.get(widget_key, fallback_price))
+    else:
+        price_sizes = list(selected_variants.get("size", [])) or list(existing_prices.keys()) or ["default"]
+        for size in price_sizes:
+            widget_key = f"{review_key_prefix}_price_{safe_widget_key_part(size)}"
+            fallback_price = float(existing_prices.get(size, 0) or 0)
+            size_price_map[str(size)] = float(st.session_state.get(widget_key, fallback_price))
 
     return {
         "sku_decoration_code": sku_decoration_code,
@@ -4804,6 +5703,7 @@ def get_review_sku_and_price_edits(
         "sku_listing_code": sku_listing_code,
         "parent_sku": parent_sku,
         "size_price_map": size_price_map,
+        "price_input_mode": price_input_mode if has_design_size_pricing(profile, selected_variants) else "",
     }
 
 
@@ -4819,6 +5719,7 @@ def apply_review_sku_and_price_edits(
         "sku_listing_code",
         "parent_sku",
         "size_price_map",
+        "price_input_mode",
     ]:
         payload[field_name] = edits.get(field_name, payload.get(field_name, ""))
     return payload
@@ -4858,21 +5759,148 @@ def render_review_sku_price_editor(
     st.caption(f"Parent SKU: `{edits['parent_sku']}`")
 
     selected_variants = dict(listing_memory.get("selected_variants", {}))
-    price_sizes = list(selected_variants.get("size", [])) or list(edits["size_price_map"].keys()) or ["default"]
-    st.markdown("**Price by size**")
-    price_cols = st.columns(min(4, max(1, len(price_sizes))))
-    for idx, size in enumerate(price_sizes):
-        price_key = f"{review_key_prefix}_price_{safe_widget_key_part(size)}"
-        if price_key not in st.session_state:
-            st.session_state[price_key] = float(edits["size_price_map"].get(str(size), 0) or 0)
-        with price_cols[idx % len(price_cols)]:
+    sku_length_report = build_child_sku_length_report(
+        profile,
+        edits["parent_sku"],
+        selected_variants,
+        sku_decoration_code=edits["sku_decoration_code"],
+        sku_listing_code=edits["sku_listing_code"],
+    )
+    st.caption(
+        f"Child SKU length: max `{sku_length_report['max_length']}/{MAX_AMAZON_SKU_LENGTH}` "
+        f"across `{sku_length_report['count']}` variant(s)."
+    )
+    if sku_length_report["oversized"]:
+        sample = ", ".join(
+            f"{row['sku']} ({row['length']})"
+            for row in sku_length_report["oversized"][:5]
+        )
+        st.error(
+            f"SKU is too long for review/export. Keep every child SKU <= {MAX_AMAZON_SKU_LENGTH} chars. "
+            f"Shorten the MPN/listing code. Too long: {sample}"
+        )
+    existing_prices = dict(listing_memory.get("size_price_map", {}))
+    if has_design_size_pricing(profile, selected_variants):
+        st.markdown("**Price by garment and size**")
+        pricing_modes = [
+            "Use one price for all",
+            "Use one price per cluster",
+            "Manual price by garment/size",
+        ]
+        if keys["price_input_mode"] not in st.session_state:
+            st.session_state[keys["price_input_mode"]] = normalize_design_size_pricing_mode(
+                listing_memory.get("price_input_mode", ""),
+            )
+        pricing_mode = st.radio(
+            "Pricing mode",
+            pricing_modes,
+            horizontal=True,
+            key=keys["price_input_mode"],
+        )
+
+        selected_designs = list(selected_variants.get("design", []) or [])
+        selected_sizes = list(selected_variants.get("size", []) or [])
+        design_size_map = profile.get("design_size_map", {})
+        variant_combos = build_variant_combinations(
+            profile,
+            {
+                "design": selected_designs,
+                "size": selected_sizes,
+            },
+        )
+
+        if pricing_mode == "Use one price for all":
+            first_combo = variant_combos[0] if variant_combos else {}
+            shared_key = f"{review_key_prefix}_price_all"
+            if shared_key not in st.session_state:
+                st.session_state[shared_key] = float(
+                    get_variant_price_from_map(profile, existing_prices, first_combo, fallback=0) or 0
+                )
             st.number_input(
-                str(size),
+                "Price for all garment/size combinations",
                 min_value=0.0,
                 step=0.5,
                 format="%.2f",
-                key=price_key,
+                key=shared_key,
             )
+        elif pricing_mode == "Use one price per cluster":
+            for design in selected_designs:
+                valid_sizes = [
+                    size
+                    for size in selected_sizes
+                    if not design_size_map.get(design) or size in design_size_map.get(design, [])
+                ]
+                if not valid_sizes:
+                    continue
+
+                clusters: dict[str, list[str]] = {}
+                for size in valid_sizes:
+                    clusters.setdefault(get_design_size_price_cluster_label(design, size), []).append(size)
+
+                with st.expander(f"{design} cluster prices", expanded=True):
+                    price_cols = st.columns(min(3, max(1, len(clusters))))
+                    for idx, (cluster_label, cluster_sizes) in enumerate(clusters.items()):
+                        first_combo = {"design": design, "size": cluster_sizes[0]}
+                        cluster_key = (
+                            f"{review_key_prefix}_cluster_price_"
+                            f"{safe_widget_key_part(design)}_{safe_widget_key_part(cluster_label)}"
+                        )
+                        if cluster_key not in st.session_state:
+                            st.session_state[cluster_key] = float(
+                                get_variant_price_from_map(profile, existing_prices, first_combo, fallback=0) or 0
+                            )
+                        with price_cols[idx % len(price_cols)]:
+                            st.number_input(
+                                f"{cluster_label} price",
+                                min_value=0.0,
+                                step=0.5,
+                                format="%.2f",
+                                key=cluster_key,
+                            )
+                            st.caption(", ".join(cluster_sizes))
+        else:
+            for design in selected_designs:
+                valid_sizes = [
+                    size
+                    for size in selected_sizes
+                    if not design_size_map.get(design) or size in design_size_map.get(design, [])
+                ]
+                if not valid_sizes:
+                    continue
+                with st.expander(f"{design} prices", expanded=True):
+                    price_cols = st.columns(min(4, max(1, len(valid_sizes))))
+                    for idx, size in enumerate(valid_sizes):
+                        combo = {"design": design, "size": size}
+                        variant_price_key = build_variant_price_key(combo)
+                        widget_key = f"{review_key_prefix}_price_{safe_widget_key_part(variant_price_key)}"
+                        if widget_key not in st.session_state:
+                            st.session_state[widget_key] = float(
+                                get_variant_price_from_map(profile, existing_prices, combo, fallback=0) or 0
+                            )
+                        with price_cols[idx % len(price_cols)]:
+                            st.number_input(
+                                str(size),
+                                min_value=0.0,
+                                step=0.5,
+                                format="%.2f",
+                                key=widget_key,
+                            )
+    else:
+        price_sizes = list(selected_variants.get("size", [])) or list(edits["size_price_map"].keys()) or ["default"]
+        st.markdown("**Price by size**")
+        price_cols = st.columns(min(4, max(1, len(price_sizes))))
+        for idx, size in enumerate(price_sizes):
+            price_key = f"{review_key_prefix}_price_{safe_widget_key_part(size)}"
+            if price_key not in st.session_state:
+                st.session_state[price_key] = float(edits["size_price_map"].get(str(size), 0) or 0)
+            with price_cols[idx % len(price_cols)]:
+                st.number_input(
+                    str(size),
+                    min_value=0.0,
+                    step=0.5,
+                    format="%.2f",
+                    key=price_key,
+                )
 
     edits = get_review_sku_and_price_edits(review_key_prefix, listing_memory, profile)
     render_variant_combinations_preview(
@@ -5122,6 +6150,11 @@ def render_ready_review_panel(
 ) -> None:
     folder_key = str(item.get("folder_name", "listing")).replace("/", "_").replace("\\", "_").replace(" ", "_")
     review_key_prefix = f"{key_prefix}_{folder_key}"
+    listing_memory = dict(item.get("listing_memory", {}) or {})
+    profile = item.get("profile")
+    memory_fingerprint = build_review_memory_fingerprint(listing_memory, profile) if listing_memory else "empty"
+    editor_key_prefix = f"{review_key_prefix}_{memory_fingerprint}"
+    st.session_state[f"{review_key_prefix}_active_editor_prefix"] = editor_key_prefix
     image_review_loaded = bool(st.session_state.get(f"{review_key_prefix}_load_image_review", False))
     quality_check_loaded = bool(st.session_state.get(f"{review_key_prefix}_run_full_quality", False))
 
@@ -5134,6 +6167,19 @@ def render_ready_review_panel(
         include_images=image_review_loaded or quality_check_loaded,
         include_quality=quality_check_loaded,
     )
+
+    reload_col, _ = st.columns([1, 4])
+    with reload_col:
+        if st.button(
+            "Reload from listing_inputs.json",
+            key=f"{review_key_prefix}_reload_listing_inputs",
+            width="stretch",
+        ):
+            clear_review_editor_state(review_key_prefix)
+            clear_cached_listing_memory(source_folder_path or "")
+            st.session_state.pop("ready_queue_items_cache", None)
+            st.session_state.pop("approved_queue_items_cache", None)
+            st.rerun()
 
     review_sections = ["Overview", "Content", "SKU & Price", "Images", "Quality"]
     active_review_section = st.radio(
@@ -5159,6 +6205,14 @@ def render_ready_review_panel(
             st.write(f"Quantity: {review_data['quantity']}")
             st.write(f"Pricing: {review_data['price_summary']}")
 
+        price_rows = build_review_price_rows(item.get("profile"), item.get("listing_memory", {}))
+        if price_rows:
+            missing_price_count = sum(1 for row in price_rows if row.get("Status") == "Missing")
+            if missing_price_count:
+                st.warning(f"{missing_price_count} price key(s) are missing or zero.")
+            with st.expander("Price overview", expanded=False):
+                st.dataframe(price_rows, width="stretch", hide_index=True)
+
         snapshot = review_data.get("review_snapshot", {}) or {}
         if snapshot:
             st.markdown("**Review snapshot**")
@@ -5178,25 +6232,60 @@ def render_ready_review_panel(
                 st.dataframe(workflow_events[-20:], hide_index=True, width="stretch")
 
     if active_review_section == "Content":
-        st.markdown("**Title**")
-        st.write(review_data["title"] or "-")
-        st.markdown("**Bullets**")
-        for bullet in review_data["bullet_points"]:
-            st.write(f"- {bullet}" if bullet else "-")
-        st.markdown("**Description**")
-        st.text_area("Description preview", value=review_data["product_description"], height=180, disabled=True)
-        st.markdown("**Keywords**")
-        st.text_area("Keywords preview", value=review_data["generic_keywords"], height=100, disabled=True)
+        if not profile or not listing_memory:
+            st.warning("This listing could not be loaded for content review.")
+        else:
+            st.caption("Edit content here using the current listing values as placeholders.")
+            content_edits = render_review_content_editor(
+                review_key_prefix=editor_key_prefix,
+                listing_memory=listing_memory,
+            )
+            if source_folder_path and st.button(
+                "Save content edits",
+                key=f"{review_key_prefix}_save_content_edits",
+                width="content",
+            ):
+                payload = apply_review_content_edits(listing_memory, content_edits)
+                try:
+                    save_listing_inputs_json_to_dropbox(
+                        profile=profile,
+                        payload=payload,
+                        folder_path=source_folder_path,
+                    )
+                    st.session_state.pop("ready_queue_items_cache", None)
+                    st.session_state.pop("approved_queue_items_cache", None)
+                    clear_review_editor_state(review_key_prefix)
+                    item["listing_memory"] = payload
+                    set_workflow_flash("success", "Saved content edits.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not save content edits: {exc}")
 
     if active_review_section == "SKU & Price":
-        profile = item.get("profile")
-        listing_memory = item.get("listing_memory", {})
         if not profile or not listing_memory:
             st.warning("This listing could not be loaded for SKU and price review.")
         else:
+            loaded_prices = dict(listing_memory.get("size_price_map", {}) or {})
+            positive_price_count = 0
+            for raw_price in loaded_prices.values():
+                try:
+                    if float(raw_price) > 0:
+                        positive_price_count += 1
+                except (TypeError, ValueError):
+                    pass
+            saved_listing_code = (
+                listing_memory.get("manual_sku_listing_code")
+                or listing_memory.get("sku_listing_code")
+                or listing_memory.get("generated_sku_listing_code")
+                or "-"
+            )
+            st.caption(
+                f"Loaded from listing_inputs.json: `{positive_price_count}/{len(loaded_prices)}` positive price key(s); "
+                f"saved listing code: `{saved_listing_code}`"
+            )
             st.caption("Reviewer edits here are saved when the listing is approved or denied.")
             review_edits = render_review_sku_price_editor(
-                review_key_prefix=review_key_prefix,
+                review_key_prefix=editor_key_prefix,
                 profile=profile,
                 listing_memory=listing_memory,
             )
@@ -5212,9 +6301,12 @@ def render_ready_review_panel(
                         payload=payload,
                         folder_path=source_folder_path,
                     )
-                    clear_cached_listing_memory()
+                    st.session_state.pop("ready_queue_items_cache", None)
+                    st.session_state.pop("approved_queue_items_cache", None)
+                    clear_review_editor_state(review_key_prefix)
                     item["listing_memory"] = payload
-                    st.success("Saved SKU and price edits.")
+                    set_workflow_flash("success", "Saved SKU and price edits.")
+                    st.rerun()
                 except Exception as exc:
                     st.error(f"Could not save SKU and price edits: {exc}")
 
@@ -5446,7 +6538,7 @@ def build_sku_manifest(
     size_price_map = dict(payload.get("size_price_map", {}))
     parent_sku = str(payload.get("parent_sku", "") or "").strip()
     variant_combos = build_variant_combinations(profile, selected_variants)
-    variant_combos = sort_variant_combinations_by_price(variant_combos, size_price_map)
+    variant_combos = sort_variant_combinations_by_price(profile, variant_combos, size_price_map)
     effective_profile = apply_sku_context_to_profile(
         profile,
         payload.get("sku_decoration_code", ""),
@@ -5459,7 +6551,7 @@ def build_sku_manifest(
         sku_details = build_child_sku_details(effective_profile, parent_sku, variant_values)
         seller_sku = sku_details["amazon_seller_sku"]
         size_value = str(variant_values.get("size", "") or "")
-        price_value = size_price_map.get(size_value, size_price_map.get("default", ""))
+        price_value = get_variant_price_from_map(profile, size_price_map, variant_values, fallback="")
 
         child_row: dict[str, Any] = {
             "amazon_seller_sku": seller_sku,
@@ -5734,7 +6826,7 @@ def generate_approved_listing(
             "timings": generation_timings,
         }
     except Exception as exc:
-        if moved_to_finished and finished_folder_path and path_exists(finished_folder_path):
+        if moved_to_finished and finished_folder_path:
             try:
                 move_dropbox_folder(finished_folder_path, approved_folder_path)
             except Exception as rollback_exc:
@@ -5800,6 +6892,11 @@ def process_ready_review_decision(
     payload = dict(listing_memory)
 
     if review_edit_prefix:
+        content_keys = get_review_content_state_keys(review_edit_prefix)
+        if st.session_state.get(content_keys["context"]):
+            content_edits = get_review_content_edits(review_edit_prefix)
+            payload = apply_review_content_edits(payload, content_edits)
+
         review_edits = get_review_sku_and_price_edits(
             review_edit_prefix,
             payload,
@@ -5974,6 +7071,7 @@ def render_review_queue_view(
             with panel_col1:
                 if st.button("Open review panel", key=f"{review_panel_open_key}_open_btn", width="stretch"):
                     st.session_state["active_perf_action_label"] = "open ready review panel"
+                    clear_review_editor_state(f"review_queue_{review_panel_key_suffix}")
                     st.session_state[review_panel_open_key] = True
             with panel_col2:
                 if st.session_state.get(review_panel_open_key, False):
@@ -5993,6 +7091,10 @@ def render_review_queue_view(
                     )
 
             review_edit_prefix = f"review_queue_{review_panel_key_suffix}"
+            active_review_edit_prefix = st.session_state.get(
+                f"{review_edit_prefix}_active_editor_prefix",
+                review_edit_prefix,
+            )
             if review_item.get("profile") and review_item.get("listing_memory"):
                 initialize_review_edit_state(
                     review_edit_prefix,
@@ -6043,7 +7145,7 @@ def render_review_queue_view(
                         dropbox_cfg,
                         reviewed_by,
                         approve=approve_clicked,
-                        review_edit_prefix=review_edit_prefix,
+                        review_edit_prefix=active_review_edit_prefix,
                     )
                     if approve_clicked:
                         st.session_state["last_approved_folder_path"] = result.get("target_path", "")
@@ -6122,6 +7224,7 @@ def render_approved_queue_view(
                 with panel_col1:
                     if st.button("Open approved review panel", key=f"{approved_panel_open_key}_open_btn", width="stretch"):
                         st.session_state["active_perf_action_label"] = "open approved review panel"
+                        clear_review_editor_state(f"approved_output_{approved_panel_key_suffix}")
                         st.session_state[approved_panel_open_key] = True
                 with panel_col2:
                     if st.session_state.get(approved_panel_open_key, False):
@@ -6141,6 +7244,105 @@ def render_approved_queue_view(
                         )
         else:
             st.caption("No approved listings available to review yet.")
+
+    st.markdown("### Return approved listings")
+    with st.container(border=True):
+        returnable_folder_options = [
+            item["folder_name"]
+            for item in queue_items
+            if item["profile"] and item["listing_memory"] and not item["load_error"]
+        ]
+        existing_return_selection = list(st.session_state.get("approved_queue_return_folders", []))
+        valid_return_selection = [
+            folder_name for folder_name in existing_return_selection
+            if folder_name in returnable_folder_options
+        ]
+        if valid_return_selection != existing_return_selection:
+            st.session_state["approved_queue_return_folders"] = valid_return_selection
+
+        with st.form("approved_queue_return_form"):
+            selected_return_folders = st.multiselect(
+                "Approved listings to move",
+                returnable_folder_options,
+                key="approved_queue_return_folders",
+            )
+            return_target_label = st.radio(
+                "Move selected listings to",
+                ["Review queue", "Stage folder"],
+                horizontal=True,
+                key="approved_queue_return_target",
+            )
+            return_actor = st.selectbox(
+                "Returned by",
+                WORKFLOW_ASSIGNEES,
+                key="approved_queue_return_actor",
+            )
+            return_reason = st.text_input(
+                "Reason",
+                key="approved_queue_return_reason",
+                placeholder="Needs price/content/image changes",
+            )
+            return_clicked = st.form_submit_button(
+                "Move selected approved listing(s)",
+                width="stretch",
+                disabled=not bool(returnable_folder_options),
+            )
+
+        if return_clicked:
+            if not selected_return_folders:
+                st.warning("Select at least one approved listing to move.")
+            elif not return_actor:
+                st.warning("Select who is returning these listings.")
+            else:
+                target_state = "ready" if return_target_label == "Review queue" else "stage"
+                action_label = (
+                    "return approved to review"
+                    if target_state == "ready"
+                    else "return approved to stage"
+                )
+                st.session_state["active_perf_action_label"] = action_label
+                st.session_state["pending_perf_action_label"] = action_label
+
+                return_results = [
+                    return_approved_listing(
+                        dropbox_cfg=dropbox_cfg,
+                        profiles=profiles,
+                        fallback_profile=profiles[0] if profiles else {},
+                        approved_folder_name=folder_name,
+                        target_state=target_state,
+                        actor=return_actor,
+                        reason=return_reason.strip(),
+                    )
+                    for folder_name in selected_return_folders
+                ]
+                success_results = [
+                    row for row in return_results
+                    if row.get("status") == "Success"
+                ]
+                failed_results = [
+                    row for row in return_results
+                    if row.get("status") == "Failed"
+                ]
+
+                st.session_state["approved_queue_return_results"] = return_results
+                st.session_state.pop("approved_queue_return_folders", None)
+                clear_runtime_caches()
+                set_workflow_flash(
+                    "success" if not failed_results else "warning",
+                    f"Moved {len(success_results)} of {len(selected_return_folders)} approved listing(s).",
+                    (
+                        "They are back in the review queue."
+                        if target_state == "ready" and not failed_results
+                        else "They are back in staging."
+                        if target_state == "stage" and not failed_results
+                        else f"{len(failed_results)} folder(s) failed."
+                    ),
+                )
+                st.rerun()
+
+        return_results = list(st.session_state.get("approved_queue_return_results", []))
+        if return_results:
+            st.dataframe(return_results, width="stretch", hide_index=True)
 
     st.markdown("### Generate output")
     with st.container(border=True):
@@ -7395,7 +8597,9 @@ def main() -> None:
             price_dimension_values,
             saved_prices=listing_memory.get("size_price_map", {}),
             profile=profile,
+            selected_variants=selected_variants,
         )
+        st.session_state["current_size_price_map"] = dict(size_price_map)
 
         st.subheader("Inventory setup")
         quantity = st.number_input(
@@ -7431,6 +8635,8 @@ def main() -> None:
         with review_col1:
             if st.button("Load / refresh review queue", key="load_review_queue_tab_btn", width="stretch"):
                 st.session_state["active_perf_action_label"] = "load review queue"
+                clear_cached_listing_memory()
+                st.session_state.pop("ready_queue_items_cache", None)
                 st.session_state["review_queue_tab_loaded"] = True
         with review_col2:
             if not st.session_state.get("review_queue_tab_loaded", False):
@@ -7611,6 +8817,8 @@ def main() -> None:
         with approved_col1:
             if st.button("Load / refresh approved output", key="load_approved_output_tab_btn", width="stretch"):
                 st.session_state["active_perf_action_label"] = "load approved output"
+                clear_cached_listing_memory()
+                st.session_state.pop("approved_queue_items_cache", None)
                 st.session_state["approved_output_tab_loaded"] = True
         with approved_col2:
             if not st.session_state.get("approved_output_tab_loaded", False):
@@ -7629,6 +8837,12 @@ def main() -> None:
 
     if not score_clicked and not ready_clicked:
         return
+
+    size_price_map = normalize_variant_price_map_for_selected_variants(
+        profile,
+        selected_variants,
+        st.session_state.get("current_size_price_map", size_price_map),
+    )
 
     if staged_folder_name and not image_mappings_loaded:
         image_resolution_reason = "submit_review" if ready_clicked else "score_check"
