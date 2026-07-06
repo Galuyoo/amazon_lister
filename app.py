@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 from datetime import datetime
 import hashlib
 import time
@@ -4445,6 +4445,49 @@ def validate_template_file(profile: dict[str, Any]) -> list[str]:
     return errors
 
 
+
+
+def write_listing_rows_to_workbook(
+    ws,
+    header_map: dict[str, int],
+    profile: dict[str, Any],
+    payload: dict[str, Any],
+    parent_row: int,
+    child_start_row: int,
+    parent_template_row: int | None = None,
+    child_template_row: int | None = None,
+) -> dict[str, int]:
+    parent_template_row = parent_template_row or parent_row
+    child_template_row = child_template_row or child_start_row
+
+    if parent_row != parent_template_row and st.session_state.get("copy_row_styles", True):
+        copy_row_format(ws, parent_template_row, parent_row)
+
+    write_parent_row(ws, header_map, payload, parent_row=parent_row)
+
+    if child_start_row != child_template_row and st.session_state.get("copy_row_styles", True):
+        copy_row_format(ws, child_template_row, child_start_row)
+
+    variants_written = write_child_rows(
+        ws,
+        header_map,
+        profile,
+        payload,
+        first_child_row=child_start_row,
+    )
+
+    if variants_written <= 0:
+        raise ValueError(f"No child variants were generated for parent SKU {payload.get('parent_sku', '')}.")
+
+    next_row = child_start_row + variants_written
+    return {
+        "parent_row": parent_row,
+        "child_start_row": child_start_row,
+        "variants_written": variants_written,
+        "next_row": next_row,
+    }
+
+
 def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Path, dict[str, float]]:
 
     template_path = resolve_template_path(profile)
@@ -4501,18 +4544,28 @@ def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Pa
             ],
         )
 
-    if layout["mode"] != "offer_only":
-        write_parent_row(ws, header_map, payload, parent_row=layout["parent_row"])
+    if layout["mode"] == "offer_only":
+        variants_written = write_child_rows(
+            ws,
+            header_map,
+            profile,
+            payload,
+            first_child_row=layout["first_child_row"],
+        )
+    else:
+        row_result = write_listing_rows_to_workbook(
+            ws,
+            header_map,
+            profile,
+            payload,
+            parent_row=layout["parent_row"],
+            child_start_row=layout["first_child_row"],
+            parent_template_row=layout["parent_row"],
+            child_template_row=layout["first_child_row"],
+        )
+        variants_written = row_result["variants_written"]
     t2 = time.perf_counter()
-
-    variants_written = write_child_rows(
-        ws,
-        header_map,
-        profile,
-        payload,
-        first_child_row=layout["first_child_row"],
-    )
-    t3 = time.perf_counter()
+    t3 = t2
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     output_name = build_output_workbook_name(profile, payload["parent_sku"])
@@ -4526,6 +4579,7 @@ def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Pa
 
     timings = {
         "load_workbook": t1 - t0,
+        "write_listing_rows": t2 - t1,
         "write_parent_row": t2 - t1,
         "write_child_rows": t3 - t2,
         "save_workbook": t4 - t3,
