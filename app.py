@@ -8,6 +8,7 @@ import random
 import string
 
 from copy import copy
+from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
 from utils.image_resolver import resolve_one
@@ -4589,6 +4590,245 @@ def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Pa
     return output_path, timings
 
 
+
+
+
+def build_combined_output_workbook_name(profile: dict[str, Any], payloads: list[dict[str, Any]]) -> str:
+    template_key = sanitize_sku(str(profile.get("template_key", "") or profile.get("_slug", "") or "template"))
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{template_key}_combined_{len(payloads)}_listings_{timestamp}.xlsm"
+
+
+def get_generation_template_identity(profile: dict[str, Any]) -> tuple[Any, ...]:
+    layout = get_workbook_layout(profile)
+    return (
+        str(profile.get("template_key", "") or "").strip(),
+        str(profile.get("_slug", "") or "").strip(),
+        str(profile.get("template_file", "") or "").strip(),
+        str(layout.get("mode", "") or "").strip(),
+        int(layout.get("header_row", HEADER_ROW)),
+        int(layout.get("parent_row", PARENT_ROW)),
+        int(layout.get("first_child_row", FIRST_CHILD_ROW)),
+    )
+
+
+def build_combined_workbook(profile: dict[str, Any], payloads: list[dict[str, Any]]) -> tuple[Path, dict[str, float]]:
+    if len(payloads) < 2:
+        raise ValueError("Select at least two approved listings to build one combined workbook.")
+
+    layout = get_workbook_layout(profile)
+    if layout["mode"] == "offer_only":
+        raise ValueError("Combined workbook generation is only for normal listing templates, not offer-only templates.")
+
+    template_path = resolve_template_path(profile)
+    if not template_path.exists():
+        raise FileNotFoundError(f"Template not found: {template_path}")
+
+    for payload in payloads:
+        quality_profile = apply_sku_context_to_profile(
+            profile,
+            payload.get("sku_decoration_code", ""),
+            payload.get("sku_listing_code", ""),
+        )
+        quality_report = validate_listing_quality(quality_profile, payload)
+        blockers = list(quality_report.get("blockers", []))
+        if blockers:
+            raise ValueError(
+                f"Score check failed for {payload.get('parent_sku', 'listing')}: "
+                + "; ".join(blockers)
+            )
+
+        stock_ready_report = validate_stock_ready_payload(quality_profile, payload)
+        if stock_ready_report.get("errors"):
+            raise ValueError(
+                f"Stock/SKU check failed for {payload.get('parent_sku', 'listing')}: "
+                + "; ".join(stock_ready_report["errors"])
+            )
+
+    parent_skus = [str(payload.get("parent_sku", "") or "") for payload in payloads]
+    duplicate_parent_skus = sorted([sku for sku, count in Counter(parent_skus).items() if sku and count > 1])
+    if duplicate_parent_skus:
+        raise ValueError("Duplicate parent SKUs in combined workbook: " + ", ".join(duplicate_parent_skus[:10]))
+
+    child_skus: list[str] = []
+    for payload in payloads:
+        sku_profile = apply_sku_context_to_profile(
+            profile,
+            payload.get("sku_decoration_code", ""),
+            payload.get("sku_listing_code", ""),
+        )
+        for combo in build_variant_combinations(profile, payload.get("selected_variants", {})):
+            child_skus.append(build_child_sku_details(sku_profile, payload["parent_sku"], combo)["amazon_seller_sku"])
+
+    duplicate_child_skus = sorted([sku for sku, count in Counter(child_skus).items() if sku and count > 1])
+    if duplicate_child_skus:
+        raise ValueError("Duplicate child SKUs in combined workbook: " + ", ".join(duplicate_child_skus[:10]))
+
+    t0 = time.perf_counter()
+    wb = load_workbook(template_path, keep_vba=True)
+    t1 = time.perf_counter()
+
+    ws = wb[SHEET_NAME]
+    header_map = build_header_map(ws, layout["header_row"])
+    dynamic_profile_fields = get_dynamic_profile_fields(profile, header_map)
+
+    current_parent_row = int(layout["parent_row"])
+    parent_template_row = int(layout["parent_row"])
+    child_template_row = int(layout["first_child_row"])
+    total_children = 0
+
+    for payload in payloads:
+        payload = dict(payload)
+        payload["dynamic_profile_fields"] = dynamic_profile_fields
+
+        row_result = write_listing_rows_to_workbook(
+            ws,
+            header_map,
+            profile,
+            payload,
+            parent_row=current_parent_row,
+            child_start_row=current_parent_row + 1,
+            parent_template_row=parent_template_row,
+            child_template_row=child_template_row,
+        )
+        total_children += row_result["variants_written"]
+        current_parent_row = row_result["next_row"]
+
+    t2 = time.perf_counter()
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_name = build_combined_output_workbook_name(profile, payloads)
+    output_path = OUTPUT_DIR / output_name
+    wb.save(output_path)
+    wb.close()
+    t3 = time.perf_counter()
+
+    return output_path, {
+        "load_workbook": t1 - t0,
+        "write_combined_rows": t2 - t1,
+        "save_workbook": t3 - t2,
+        "total_build": t3 - t0,
+        "combined_listing_count": float(len(payloads)),
+        "combined_child_count": float(total_children),
+    }
+
+
+def generate_approved_listings_combined(
+    selected_items: list[dict[str, Any]],
+    dropbox_cfg: dict[str, Any],
+) -> dict[str, Any]:
+    valid_items = [
+        item for item in selected_items
+        if item and item.get("profile") and item.get("listing_memory") and not item.get("load_error")
+    ]
+    if len(valid_items) < 2:
+        raise ValueError("Select at least two approved listings for one combined workbook.")
+
+    profile = valid_items[0]["profile"]
+    if str(profile.get("template_key", "") or "").strip().upper() == "CP":
+        raise ValueError("CP combined generation is disabled for now.")
+
+    identity = get_generation_template_identity(profile)
+    mismatched = [
+        item["folder_name"]
+        for item in valid_items
+        if get_generation_template_identity(item["profile"]) != identity
+    ]
+    if mismatched:
+        raise ValueError("All selected listings must use the same garment template: " + ", ".join(mismatched[:10]))
+
+    prepared_payloads: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
+    dropbox_overview = get_cached_dropbox_overview(profile, dropbox_cfg)
+
+    for item in valid_items:
+        folder_name = item["folder_name"]
+        try:
+            profile_i = item["profile"]
+            listing_memory = item["listing_memory"]
+
+            title = str(listing_memory.get("title", ""))
+            bullets = (list(listing_memory.get("bullet_points", [])) + ["", "", "", "", ""])[:5]
+            product_description = str(listing_memory.get("product_description", ""))
+            generic_keywords = str(listing_memory.get("generic_keywords", ""))
+            selected_variants = dict(listing_memory.get("selected_variants", {}))
+            size_price_map = {
+                str(size): float(price)
+                for size, price in dict(listing_memory.get("size_price_map", {})).items()
+            }
+
+            prep = prepare_generation_payload(
+                profile=profile_i,
+                title=title,
+                bullets=bullets,
+                product_description=product_description,
+                generic_keywords=generic_keywords,
+                selected_variants=selected_variants,
+                size_price_map=size_price_map,
+                sku_decoration_code=get_default_sku_decoration_code(profile_i, listing_memory),
+                sku_listing_code=str(listing_memory.get("sku_listing_code", "") or get_saved_generated_sku_listing_code(listing_memory)),
+                manual_sku_listing_code=str(listing_memory.get("manual_sku_listing_code", "") or ""),
+                generated_sku_listing_code=get_saved_generated_sku_listing_code(listing_memory),
+                quantity=int(listing_memory.get("quantity", 0)),
+                staged_folder_name=folder_name,
+                handling_time_days=normalize_handling_time_days(listing_memory.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)),
+                merchant_shipping_group_name=normalize_merchant_shipping_group(listing_memory.get("merchant_shipping_group_name", "")),
+                parent_main_image_choice=str(listing_memory.get("parent_main_image_choice", "") or ""),
+                parent_main_image_url=str(listing_memory.get("parent_main_image_url", "") or ""),
+            )
+            if prep.get("errors"):
+                raise ValueError("; ".join(prep["errors"]))
+
+            payload = dict(prep["payload"])
+            payload["assets_prepared_by"] = listing_memory.get("assets_prepared_by", "")
+            payload["content_prepared_by"] = listing_memory.get("content_prepared_by", "")
+            payload["reviewed_by"] = listing_memory.get("reviewed_by", "")
+            payload["prepared_at"] = listing_memory.get("prepared_at", "")
+            payload["reviewed_at"] = listing_memory.get("reviewed_at", "") or format_workflow_timestamp()
+            if isinstance(listing_memory.get("workflow_events"), list):
+                payload["workflow_events"] = list(listing_memory.get("workflow_events", []))
+
+            approved_folder_path = build_approved_folder_path(dropbox_cfg, folder_name)
+            selected_parent_main_image_label = str(payload.get("parent_main_image_choice", "") or "")
+            selected_parent_main_image_url = str(
+                payload.get("selected_parent_main_image_url", "")
+                or payload.get("parent_main_image_url", "")
+                or ""
+            )
+
+            parent_main_image_url, other_images, color_image_map, design_color_image_url_map = resolve_folder_image_urls(
+                profile_i,
+                payload["selected_variants"],
+                payload["colors"],
+                dropbox_overview,
+                approved_folder_path,
+                selected_parent_main_image_label=selected_parent_main_image_label,
+                selected_parent_main_image_url=selected_parent_main_image_url,
+            )
+
+            payload["parent_main_image_url"] = parent_main_image_url
+            payload["other_images"] = other_images
+            payload["color_image_map"] = color_image_map
+            payload["design_color_image_url_map"] = design_color_image_url_map
+
+            prepared_payloads.append(payload)
+        except Exception as exc:
+            raise ValueError(f"{folder_name}: {exc}") from exc
+
+    output_path, timings = build_combined_workbook(profile, prepared_payloads)
+    if not output_path.exists() or output_path.stat().st_size <= 0:
+        raise ValueError(f"Combined workbook was not created correctly: {output_path.name}")
+
+    return {
+        "folder_name": "Combined workbook",
+        "status": "Success",
+        "message": f"Generated one workbook for {len(prepared_payloads)} listing(s): {output_path.name}",
+        "output_path": str(output_path),
+        "output_name": output_path.name,
+        "timings": timings,
+    }
+
+
 def validate_payload(payload: dict[str, Any]) -> list[str]:
     errors: list[str] = []
 
@@ -7407,18 +7647,22 @@ def render_approved_queue_view(
                 key="approved_queue_selected_folders",
             )
 
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 generate_selected = st.form_submit_button("Generate selected", width="stretch")
             with col2:
+                generate_combined = st.form_submit_button("Generate selected as one workbook", width="stretch")
+            with col3:
                 generate_all = st.form_submit_button("Generate all approved", width="stretch")
 
     if generate_selected:
         st.session_state["pending_perf_action_label"] = "generate selected approved"
+    elif generate_combined:
+        st.session_state["pending_perf_action_label"] = "generate selected as one workbook"
     elif generate_all:
         st.session_state["pending_perf_action_label"] = "generate all approved"
 
-    target_folders = selected_approved_folders if generate_selected else [
+    target_folders = selected_approved_folders if (generate_selected or generate_combined) else [
         item["folder_name"] for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"]
     ] if generate_all else []
     if not target_folders:
@@ -7429,30 +7673,41 @@ def render_approved_queue_view(
     approved_generation_target_count = len(target_folders)
 
     results: list[dict[str, Any]] = []
-    for folder_name in target_folders:
-        item = approved_lookup.get(folder_name)
-        if not item:
-            results.append({
-                "folder_name": folder_name,
-                "status": "Failed",
-                "message": "Approved folder could not be loaded.",
-            })
-            continue
-
+    if generate_combined:
+        selected_items = [approved_lookup.get(folder_name) for folder_name in target_folders]
         try:
-            result = generate_approved_listing(
-                profile=item["profile"],
-                listing_memory=item["listing_memory"],
-                approved_folder_name=folder_name,
-                dropbox_cfg=dropbox_cfg,
-            )
-            results.append(result)
+            results.append(generate_approved_listings_combined(selected_items, dropbox_cfg))
         except Exception as exc:
             results.append({
-                "folder_name": folder_name,
+                "folder_name": "Combined workbook",
                 "status": "Failed",
                 "message": str(exc),
             })
+    else:
+        for folder_name in target_folders:
+            item = approved_lookup.get(folder_name)
+            if not item:
+                results.append({
+                    "folder_name": folder_name,
+                    "status": "Failed",
+                    "message": "Approved folder could not be loaded.",
+                })
+                continue
+
+            try:
+                result = generate_approved_listing(
+                    profile=item["profile"],
+                    listing_memory=item["listing_memory"],
+                    approved_folder_name=folder_name,
+                    dropbox_cfg=dropbox_cfg,
+                )
+                results.append(result)
+            except Exception as exc:
+                results.append({
+                    "folder_name": folder_name,
+                    "status": "Failed",
+                    "message": str(exc),
+                })
 
     approved_generation_elapsed_ms = round(
         (time.perf_counter() - approved_generation_started_at) * 1000,
@@ -7493,7 +7748,9 @@ def render_approved_queue_view(
         "run": len(perf_history) + 1,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "action": (
-            "generate selected approved actual"
+            "generate selected as one workbook actual"
+            if generate_combined
+            else "generate selected approved actual"
             if generate_selected
             else "generate all approved actual"
         ),
