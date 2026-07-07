@@ -1669,7 +1669,14 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
     if isinstance(payload.get("ignored_generations"), list):
         memory_payload["ignored_generations"] = list(payload.get("ignored_generations", []))
 
-    for field_name in ["generation_status", "ignored_at", "ignored_by", "ignored_reason"]:
+    for field_name in [
+        "generation_status",
+        "ignored_at",
+        "ignored_by",
+        "ignored_reason",
+        "finished_folder_sku",
+        "pending_finished_folder_path",
+    ]:
         if payload.get(field_name) not in (None, "", [], {}):
             memory_payload[field_name] = payload.get(field_name, "")
 
@@ -5730,6 +5737,41 @@ def get_review_edit_state_keys(review_key_prefix: str) -> dict[str, str]:
     }
 
 
+def has_complete_review_sku_price_state(
+    review_key_prefix: str,
+    listing_memory: dict[str, Any],
+    profile: dict[str, Any],
+) -> bool:
+    keys = get_review_edit_state_keys(review_key_prefix)
+    selected_variants = dict(listing_memory.get("selected_variants", {}))
+    saved_prices = dict(listing_memory.get("size_price_map", {}))
+
+    required_keys = [
+        keys["context"],
+        keys["sku_decoration_choice"],
+        keys["custom_sku_decoration_code"],
+        keys["manual_sku_listing_code"],
+        keys["generated_sku_listing_code"],
+        keys["price_input_mode"],
+    ]
+    if has_design_size_pricing(profile, selected_variants):
+        variant_combos = build_variant_combinations(
+            profile,
+            {
+                "design": list(selected_variants.get("design", []) or []),
+                "size": list(selected_variants.get("size", []) or []),
+            },
+        )
+        for combo in variant_combos:
+            variant_price_key = build_variant_price_key(combo)
+            required_keys.append(f"{review_key_prefix}_price_{safe_widget_key_part(variant_price_key)}")
+    else:
+        for size in saved_prices:
+            required_keys.append(f"{review_key_prefix}_price_{safe_widget_key_part(size)}")
+
+    return all(key in st.session_state for key in required_keys)
+
+
 def clear_review_editor_state(review_key_prefix: str) -> None:
     prefixes = [
         f"{review_key_prefix}_edit_",
@@ -5777,6 +5819,18 @@ def get_review_content_state_keys(review_key_prefix: str) -> dict[str, str]:
     }
 
 
+def has_complete_review_content_state(review_key_prefix: str) -> bool:
+    keys = get_review_content_state_keys(review_key_prefix)
+    required_keys = [
+        keys["context"],
+        keys["title"],
+        keys["description"],
+        keys["keywords"],
+        *[keys[f"bullet_{idx}"] for idx in range(1, 6)],
+    ]
+    return all(key in st.session_state for key in required_keys)
+
+
 def initialize_review_content_state(
     review_key_prefix: str,
     listing_memory: dict[str, Any],
@@ -5792,7 +5846,16 @@ def initialize_review_content_state(
         },
         sort_keys=True,
     )
-    if st.session_state.get(keys["context"]) == context:
+    required_content_keys = [
+        keys["title"],
+        keys["description"],
+        keys["keywords"],
+        *[keys[f"bullet_{idx}"] for idx in range(1, 6)],
+    ]
+    if (
+        st.session_state.get(keys["context"]) == context
+        and all(key in st.session_state for key in required_content_keys)
+    ):
         return
 
     st.session_state[keys["title"]] = str(listing_memory.get("title", "") or "")
@@ -5870,10 +5933,16 @@ def initialize_review_edit_state(
         },
         sort_keys=True,
     )
-    if st.session_state.get(keys["context"]) == context:
+    sku_decoration_code = get_default_sku_decoration_code(profile, listing_memory)
+    selected_variants = dict(listing_memory.get("selected_variants", {}))
+    saved_prices = dict(listing_memory.get("size_price_map", {}))
+
+    if (
+        st.session_state.get(keys["context"]) == context
+        and has_complete_review_sku_price_state(review_key_prefix, listing_memory, profile)
+    ):
         return
 
-    sku_decoration_code = get_default_sku_decoration_code(profile, listing_memory)
     st.session_state[keys["sku_decoration_choice"]] = (
         sku_decoration_code if sku_decoration_code in SKU_DECORATION_OPTIONS else "Custom"
     )
@@ -5890,8 +5959,6 @@ def initialize_review_edit_state(
         default="Manual price by garment/size",
     )
 
-    selected_variants = dict(listing_memory.get("selected_variants", {}))
-    saved_prices = dict(listing_memory.get("size_price_map", {}))
     if has_design_size_pricing(profile, selected_variants):
         variant_combos = build_variant_combinations(
             profile,
@@ -7033,7 +7100,6 @@ def generate_approved_listing(
 
     final_sku = ""
     finished_folder_path = ""
-    moved_to_finished = False
 
     try:
         step_started_at = time.perf_counter()
@@ -7045,27 +7111,20 @@ def generate_approved_listing(
         generation_timings["choose_finished_target"] = round(time.perf_counter() - step_started_at, 4)
 
         step_started_at = time.perf_counter()
-        moved_folder_path = move_dropbox_folder(approved_folder_path, finished_folder_path)
-        if not moved_folder_path:
-            raise RuntimeError("Dropbox returned an empty path after moving the folder to finished.")
-        finished_folder_path = moved_folder_path
-        moved_to_finished = True
-        generation_timings["move_approved_to_finished"] = round(time.perf_counter() - step_started_at, 4)
-
-        step_started_at = time.perf_counter()
         parent_main_image_url, other_images, color_image_map, design_color_image_url_map = resolve_folder_image_urls(
             profile,
             selected_variants,
             selected_colors,
             dropbox_overview,
-            finished_folder_path,
+            approved_folder_path,
             selected_parent_main_image_label=selected_parent_main_image_label,
             selected_parent_main_image_url=selected_parent_main_image_url,
         )
-        generation_timings["final_image_resolve"] = round(time.perf_counter() - step_started_at, 4)
+        generation_timings["image_resolve"] = round(time.perf_counter() - step_started_at, 4)
 
         payload = dict(generation_payload)
         payload["finished_folder_sku"] = final_sku
+        payload["pending_finished_folder_path"] = finished_folder_path
         payload["parent_main_image_url"] = parent_main_image_url
         payload["other_images"] = other_images
         payload["color_image_map"] = color_image_map
@@ -7084,7 +7143,7 @@ def generate_approved_listing(
         generated_artifact = save_generated_artifacts_to_dropbox(
             profile=profile,
             payload=payload,
-            finished_folder_path=finished_folder_path,
+            finished_folder_path=approved_folder_path,
             output_path=output_path,
         )
         generation_timings["save_generated_artifacts"] = round(time.perf_counter() - step_started_at, 4)
@@ -7094,40 +7153,126 @@ def generate_approved_listing(
             action="generate_approved_listing",
             actor=str(payload.get("reviewed_by", "") or ""),
             from_state="approved",
-            to_state="finished",
-            folder_path=finished_folder_path,
+            to_state="approved",
+            folder_path=approved_folder_path,
             details={
                 "output_name": output_path.name,
                 "workbook_dropbox_path": generated_artifact.get("workbook_dropbox_path", ""),
                 "sku_manifest_dropbox_path": generated_artifact.get("sku_manifest_dropbox_path", ""),
                 "child_sku_count": generated_artifact.get("child_sku_count", 0),
                 "missing_supplier_stock_key_count": generated_artifact.get("missing_supplier_stock_key_count", 0),
+                "pending_finished_folder_path": finished_folder_path,
             },
         )
 
         step_started_at = time.perf_counter()
-        save_listing_inputs_json_to_dropbox(profile=profile, payload=payload, folder_path=finished_folder_path)
-        generation_timings["save_finished_listing_inputs"] = round(time.perf_counter() - step_started_at, 4)
+        save_listing_inputs_json_to_dropbox(profile=profile, payload=payload, folder_path=approved_folder_path)
+        generation_timings["save_approved_listing_inputs"] = round(time.perf_counter() - step_started_at, 4)
 
         return {
             "folder_name": approved_folder_name,
             "status": "Success",
-            "message": f"Generated {output_path.name}",
+            "message": f"Generated {output_path.name}. Folder is still approved until you move it to Finished.",
             "output_path": str(output_path),
             "output_name": output_path.name,
-            "finished_folder_path": finished_folder_path,
+            "approved_folder_name": approved_folder_name,
+            "approved_folder_path": approved_folder_path,
+            "pending_finished_folder_path": finished_folder_path,
+            "pending_finished_folder_sku": final_sku,
+            "parent_sku": payload.get("parent_sku", ""),
             "generated_artifact": generated_artifact,
             "timings": generation_timings,
         }
     except Exception as exc:
-        if moved_to_finished and finished_folder_path:
-            try:
-                move_dropbox_folder(finished_folder_path, approved_folder_path)
-            except Exception as rollback_exc:
-                raise RuntimeError(
-                    f"{exc} The folder was already moved to finished and rollback to approved failed: {rollback_exc}"
-                ) from exc
         raise
+
+
+def move_generated_approved_listing_to_finished(
+    result: dict[str, Any],
+    profiles: list[dict[str, Any]],
+    dropbox_cfg: dict[str, Any],
+) -> dict[str, Any]:
+    approved_folder_name = str(result.get("approved_folder_name") or result.get("folder_name") or "").strip()
+    if not approved_folder_name or approved_folder_name == "Combined workbook":
+        raise ValueError("Only generated single approved listings can be moved to Finished.")
+
+    approved_folder_path = build_approved_folder_path(dropbox_cfg, approved_folder_name)
+    if not path_exists(approved_folder_path):
+        raise FileNotFoundError(f"Approved folder not found: {approved_folder_path}")
+
+    listing_memory = load_listing_memory_from_dropbox(approved_folder_path)
+    if not listing_memory:
+        raise ValueError(f"listing_inputs.json could not be loaded from {approved_folder_name}.")
+
+    profile = find_profile_for_listing_memory(profiles, listing_memory)
+    if not profile:
+        raise ValueError(f"Template profile could not be resolved for {approved_folder_name}.")
+
+    parent_sku = str(listing_memory.get("parent_sku") or result.get("parent_sku") or "").strip()
+    if not parent_sku:
+        raise ValueError(f"Parent SKU is missing for {approved_folder_name}.")
+
+    reuse_finished_folder_name = str(
+        listing_memory.get("finished_folder_sku")
+        or result.get("pending_finished_folder_sku")
+        or listing_memory.get("original_finished_folder_name")
+        or ""
+    ).strip()
+
+    final_sku, finished_folder_path = finalize_approved_dropbox_folder(
+        dropbox_cfg=dropbox_cfg,
+        approved_folder_name=approved_folder_name,
+        parent_sku=parent_sku,
+        reuse_finished_folder_name=reuse_finished_folder_name,
+    )
+
+    payload = dict(listing_memory)
+    payload["finished_folder_sku"] = final_sku
+    payload["pending_finished_folder_path"] = ""
+    generated_outputs = list(payload.get("generated_outputs", []))
+    if generated_outputs:
+        latest_output = dict(generated_outputs[-1])
+        old_workbook_name = Path(str(latest_output.get("workbook_dropbox_path", "") or result.get("output_name", ""))).name
+        old_manifest_name = Path(str(latest_output.get("sku_manifest_dropbox_path", "") or "sku_manifest.json")).name
+        latest_output["status"] = "finished"
+        latest_output["finished_at"] = format_workflow_timestamp()
+        latest_output["finished_folder_path"] = finished_folder_path
+        if old_workbook_name:
+            latest_output["workbook_dropbox_path"] = f"{finished_folder_path}/{old_workbook_name}"
+        if old_manifest_name:
+            latest_output["sku_manifest_dropbox_path"] = f"{finished_folder_path}/{old_manifest_name}"
+        generated_outputs[-1] = latest_output
+        payload["generated_outputs"] = generated_outputs
+
+    if isinstance(payload.get("sku_manifest"), dict):
+        sku_manifest = dict(payload.get("sku_manifest", {}))
+        sku_manifest["finished_folder_path"] = finished_folder_path
+        payload["sku_manifest"] = sku_manifest
+        upload_text_file(
+            f"{finished_folder_path}/sku_manifest.json",
+            json.dumps(sku_manifest, indent=2, ensure_ascii=False),
+        )
+
+    append_workflow_event(
+        payload,
+        action="move_generated_approved_to_finished",
+        actor=str(payload.get("reviewed_by", "") or ""),
+        from_state="approved",
+        to_state="finished",
+        folder_path=finished_folder_path,
+        details={
+            "old_approved_folder_name": approved_folder_name,
+            "output_name": result.get("output_name", ""),
+        },
+    )
+    save_listing_inputs_json_to_dropbox(profile=profile, payload=payload, folder_path=finished_folder_path)
+
+    return {
+        "folder_name": approved_folder_name,
+        "status": "Success",
+        "message": f"Moved to Finished: {Path(finished_folder_path).name}",
+        "finished_folder_path": finished_folder_path,
+    }
 
 
 def render_generation_results(results: list[dict[str, Any]], download_key_prefix: str) -> None:
@@ -7168,6 +7313,60 @@ def render_generation_results(results: list[dict[str, Any]], download_key_prefix
             )
 
 
+def render_move_generated_to_finished_controls(
+    results: list[dict[str, Any]],
+    profiles: list[dict[str, Any]],
+    dropbox_cfg: dict[str, Any],
+) -> None:
+    eligible_results = [
+        result for result in results
+        if result.get("status") == "Success"
+        and result.get("approved_folder_name")
+        and not result.get("finished_folder_path")
+    ]
+    if not eligible_results:
+        return
+
+    st.info("Generated workbooks are ready. Move these approved folders to Finished after you have downloaded the Excel files.")
+    if st.button(
+        "Move generated successful listing(s) to Finished",
+        key="move_generated_successful_to_finished",
+        width="stretch",
+    ):
+        move_results: list[dict[str, Any]] = []
+        for result in eligible_results:
+            try:
+                move_results.append(
+                    move_generated_approved_listing_to_finished(
+                        result=result,
+                        profiles=profiles,
+                        dropbox_cfg=dropbox_cfg,
+                    )
+                )
+            except Exception as exc:
+                move_results.append({
+                    "folder_name": result.get("approved_folder_name") or result.get("folder_name", ""),
+                    "status": "Failed",
+                    "message": str(exc),
+                })
+
+        st.session_state["approved_queue_move_generated_results"] = move_results
+        st.session_state["approved_queue_generation_results"] = [
+            result for result in results
+            if result not in eligible_results
+        ]
+        clear_runtime_caches()
+        set_workflow_flash(
+            "success" if all(row.get("status") == "Success" for row in move_results) else "warning",
+            f"Moved {sum(1 for row in move_results if row.get('status') == 'Success')} of {len(move_results)} generated listing(s) to Finished.",
+        )
+        st.rerun()
+
+    move_results = list(st.session_state.get("approved_queue_move_generated_results", []))
+    if move_results:
+        st.dataframe(move_results, width="stretch", hide_index=True)
+
+
 def process_ready_review_decision(
     review_item: dict[str, Any],
     dropbox_cfg: dict[str, Any],
@@ -7186,17 +7385,17 @@ def process_ready_review_decision(
     payload = dict(listing_memory)
 
     if review_edit_prefix:
-        content_keys = get_review_content_state_keys(review_edit_prefix)
-        if st.session_state.get(content_keys["context"]):
+        if has_complete_review_content_state(review_edit_prefix):
             content_edits = get_review_content_edits(review_edit_prefix)
             payload = apply_review_content_edits(payload, content_edits)
 
-        review_edits = get_review_sku_and_price_edits(
-            review_edit_prefix,
-            payload,
-            profile,
-        )
-        payload = apply_review_sku_and_price_edits(payload, review_edits)
+        if has_complete_review_sku_price_state(review_edit_prefix, payload, profile):
+            review_edits = get_review_sku_and_price_edits(
+                review_edit_prefix,
+                payload,
+                profile,
+            )
+            payload = apply_review_sku_and_price_edits(payload, review_edits)
 
     payload["reviewed_by"] = reviewed_by
     payload["reviewed_at"] = format_workflow_timestamp()
@@ -7491,6 +7690,7 @@ def render_approved_queue_view(
     else:
         st.info("No approved folders found.")
         render_generation_results(stored_results, "approved_download")
+        render_move_generated_to_finished_controls(stored_results, profiles, dropbox_cfg)
         return
 
     approved_lookup = {item["folder_name"]: item for item in queue_items}
@@ -7647,33 +7847,55 @@ def render_approved_queue_view(
                 key="approved_queue_selected_folders",
             )
 
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
             with col1:
                 generate_selected = st.form_submit_button("Generate selected", width="stretch")
             with col2:
-                generate_combined = st.form_submit_button("Generate selected as one workbook", width="stretch")
-            with col3:
                 generate_all = st.form_submit_button("Generate all approved", width="stretch")
 
     if generate_selected:
         st.session_state["pending_perf_action_label"] = "generate selected approved"
-    elif generate_combined:
-        st.session_state["pending_perf_action_label"] = "generate selected as one workbook"
     elif generate_all:
         st.session_state["pending_perf_action_label"] = "generate all approved"
 
-    target_folders = selected_approved_folders if (generate_selected or generate_combined) else [
+    target_folders = selected_approved_folders if generate_selected else [
         item["folder_name"] for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"]
     ] if generate_all else []
     if not target_folders:
         render_generation_results(stored_results, "approved_download")
+        render_move_generated_to_finished_controls(stored_results, profiles, dropbox_cfg)
         return
 
     approved_generation_started_at = time.perf_counter()
     approved_generation_target_count = len(target_folders)
 
     results: list[dict[str, Any]] = []
-    if generate_combined:
+    for folder_name in target_folders:
+        item = approved_lookup.get(folder_name)
+        if not item:
+            results.append({
+                "folder_name": folder_name,
+                "status": "Failed",
+                "message": "Approved folder could not be loaded.",
+            })
+            continue
+
+        try:
+            result = generate_approved_listing(
+                profile=item["profile"],
+                listing_memory=item["listing_memory"],
+                approved_folder_name=folder_name,
+                dropbox_cfg=dropbox_cfg,
+            )
+            results.append(result)
+        except Exception as exc:
+            results.append({
+                "folder_name": folder_name,
+                "status": "Failed",
+                "message": str(exc),
+            })
+
+    if len(target_folders) >= 2:
         selected_items = [approved_lookup.get(folder_name) for folder_name in target_folders]
         try:
             results.append(generate_approved_listings_combined(selected_items, dropbox_cfg))
@@ -7681,33 +7903,8 @@ def render_approved_queue_view(
             results.append({
                 "folder_name": "Combined workbook",
                 "status": "Failed",
-                "message": str(exc),
+                "message": f"Separate workbooks were generated. Combined workbook was skipped: {exc}",
             })
-    else:
-        for folder_name in target_folders:
-            item = approved_lookup.get(folder_name)
-            if not item:
-                results.append({
-                    "folder_name": folder_name,
-                    "status": "Failed",
-                    "message": "Approved folder could not be loaded.",
-                })
-                continue
-
-            try:
-                result = generate_approved_listing(
-                    profile=item["profile"],
-                    listing_memory=item["listing_memory"],
-                    approved_folder_name=folder_name,
-                    dropbox_cfg=dropbox_cfg,
-                )
-                results.append(result)
-            except Exception as exc:
-                results.append({
-                    "folder_name": folder_name,
-                    "status": "Failed",
-                    "message": str(exc),
-                })
 
     approved_generation_elapsed_ms = round(
         (time.perf_counter() - approved_generation_started_at) * 1000,
@@ -7748,9 +7945,7 @@ def render_approved_queue_view(
         "run": len(perf_history) + 1,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "action": (
-            "generate selected as one workbook actual"
-            if generate_combined
-            else "generate selected approved actual"
+            "generate selected approved actual"
             if generate_selected
             else "generate all approved actual"
         ),
