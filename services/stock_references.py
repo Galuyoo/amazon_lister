@@ -44,6 +44,14 @@ def slugify_part(value: str) -> str:
     return safe.strip("-")
 
 
+def build_size_sku_part(value: str) -> str:
+    text = str(value or "").strip()
+    match = re.fullmatch(r"(\d+)(?:\s*[-/]\s*\d+)?\s*(?:years?|yrs?)", text, flags=re.IGNORECASE)
+    if match:
+        return f"{match.group(1)}Y"
+    return slugify_part(text)
+
+
 def lookup_mapping(mapping: dict[str, Any], key: str) -> str:
     key = str(key or "")
     if key in mapping:
@@ -295,7 +303,7 @@ def build_legacy_child_sku(
 
     if "size" in variant_values:
         size_value = variant_values["size"]
-        size_code = lookup_mapping(size_map, size_value) or slugify_part(size_value)
+        size_code = lookup_mapping(size_map, size_value) or build_size_sku_part(size_value)
 
     if include_design and "design" in variant_values:
         design_value = variant_values["design"]
