@@ -303,7 +303,7 @@ def build_legacy_child_sku(
 
     if "size" in variant_values:
         size_value = variant_values["size"]
-        size_code = lookup_mapping(size_map, size_value) or build_size_sku_part(size_value)
+        size_code = build_size_sku_part(lookup_mapping(size_map, size_value) or size_value)
 
     if include_design and "design" in variant_values:
         design_value = variant_values["design"]
