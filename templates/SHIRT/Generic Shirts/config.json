@@ -1,0 +1,303 @@
+{
+  "label": "Generic Shirts",
+  "template_key": "GENERIC_SHIRTS",
+  "parent_sku": "SHIRT",
+  "include_template_code_in_parent_sku": false,
+  "feed_product_type": "shirt",
+  "recommended_browse_nodes": "1731028031",
+  "product_category": "apparel",
+  "brand_name": "sloganitto",
+  "manufacturer": "Generic",
+  "department_name": "unisex-adult",
+  "target_gender": "unisex",
+  "age_range_description": "Adult",
+  "material_type": "Cotton",
+  "style_name": "Custom Printed T Shirt",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "t-shirt",
+  "care_instructions": "Machine Wash",
+  "fit_type": "Regular",
+  "theme": "Custom Printed T Shirt",
+  "country_of_origin": "Great Britain",
+  "variant_dimensions": [
+    {
+      "name": "design",
+      "label": "Garment",
+      "options": [
+        "Adult T-Shirt",
+        "Kids T-Shirt"
+      ]
+    },
+    {
+      "name": "color",
+      "label": "Colour",
+      "options": [
+        "Beige",
+        "Bottle Green",
+        "Black",
+        "Brown",
+        "Charcoal",
+        "French Navy",
+        "Heather Grey",
+        "Hot Pink",
+        "Kelly Green",
+        "Maroon",
+        "Navy",
+        "Orange",
+        "Purple",
+        "Red",
+        "Royal",
+        "Sky",
+        "Sapphire Blue",
+        "White",
+        "Yellow",
+        "Military Green"
+      ]
+    },
+    {
+      "name": "size",
+      "label": "Size",
+      "options": [
+        "XS",
+        "S",
+        "M",
+        "L",
+        "XL",
+        "2XL",
+        "3XL",
+        "4XL",
+        "5XL",
+        "6XL",
+        "1-2 Years",
+        "3-4 Years",
+        "5-6 Years",
+        "7-8 Years",
+        "9-11 Years",
+        "12-13 Years"
+      ]
+    }
+  ],
+  "colors": [
+    "Beige",
+    "Bottle Green",
+    "Black",
+    "Brown",
+    "Charcoal",
+    "French Navy",
+    "Heather Grey",
+    "Hot Pink",
+    "Kelly Green",
+    "Maroon",
+    "Navy",
+    "Orange",
+    "Purple",
+    "Red",
+    "Royal",
+    "Sky",
+    "Sapphire Blue",
+    "White",
+    "Yellow",
+    "Military Green"
+  ],
+  "sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL",
+    "3XL",
+    "4XL",
+    "5XL",
+    "6XL",
+    "1-2 Years",
+    "3-4 Years",
+    "5-6 Years",
+    "7-8 Years",
+    "9-11 Years",
+    "12-13 Years"
+  ],
+  "design_sku_map": {
+    "Adult T-Shirt": "T01",
+    "Kids T-Shirt": "T02"
+  },
+  "design_size_map": {
+    "Adult T-Shirt": [
+      "XS",
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL",
+      "3XL",
+      "4XL",
+      "5XL",
+      "6XL"
+    ],
+    "Kids T-Shirt": [
+      "1-2 Years",
+      "3-4 Years",
+      "5-6 Years",
+      "7-8 Years",
+      "9-11 Years",
+      "12-13 Years"
+    ]
+  },
+  "size_display_prefix_by_design": {
+    "Adult T-Shirt": "Adult T-Shirt",
+    "Kids T-Shirt": "Kids T-Shirt"
+  },
+  "size_code_map": {
+    "XS": "XS",
+    "S": "S",
+    "M": "M",
+    "L": "L",
+    "XL": "XL",
+    "2XL": "2XL",
+    "3XL": "3XL",
+    "4XL": "4XL",
+    "5XL": "5XL",
+    "6XL": "6XL",
+    "1-2 Years": "1Y",
+    "3-4 Years": "3Y",
+    "5-6 Years": "5Y",
+    "7-8 Years": "7Y",
+    "9-11 Years": "9Y",
+    "12-13 Years": "12Y"
+  },
+  "color_sku_map": {
+    "Beige": "BEIG",
+    "Bottle Green": "BOTT",
+    "Black": "BLAC",
+    "Brown": "BRWN",
+    "Charcoal": "CHAR",
+    "French Navy": "FNAV",
+    "Heather Grey": "HGRE",
+    "Hot Pink": "HPNK",
+    "Kelly Green": "KGRN",
+    "Maroon": "MARN",
+    "Navy": "NAVY",
+    "Orange": "ORNG",
+    "Purple": "PURP",
+    "Red": "REDD",
+    "Royal": "ROYL",
+    "Sky": "SKYY",
+    "Sapphire Blue": "SAPP",
+    "White": "WHIT",
+    "Yellow": "YELL",
+    "Military Green": "MGRN"
+  },
+  "color_size_map": {
+    "Beige": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Bottle Green": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Black": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Brown": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Charcoal": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "French Navy": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Heather Grey": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Hot Pink": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Kelly Green": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Maroon": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Navy": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Orange": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Purple": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "Red": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Royal": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Sky": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Sapphire Blue": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"],
+    "White": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Yellow": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "1-2 Years", "3-4 Years", "5-6 Years", "7-8 Years", "9-11 Years", "12-13 Years"],
+    "Military Green": ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"]
+  },
+  "design_field_overrides": {
+    "Adult T-Shirt": {
+      "feed_product_type": "shirt",
+      "item_type_name": "t-shirt",
+      "style_name": "Custom Printed Adult T Shirt",
+      "theme": "Custom Printed T Shirt",
+      "material_type": "Cotton",
+      "outer_material_type": "Natural",
+      "material_type1": "100% Cotton",
+      "fabric_type": "Cotton",
+      "apparel_size_system": "UK",
+      "apparel_size_class": "Alpha",
+      "shirt_size_system": "UK",
+      "shirt_size_class": "Alpha",
+      "age_range_description": "Adult",
+      "department_name": "unisex-adult",
+      "target_gender": "unisex"
+    },
+    "Kids T-Shirt": {
+      "feed_product_type": "shirt",
+      "item_type_name": "t-shirt",
+      "style_name": "Custom Printed Kids T Shirt",
+      "theme": "Custom Printed Kids T Shirt",
+      "material_type": "Cotton",
+      "outer_material_type": "Natural",
+      "material_type1": "100% Cotton",
+      "fabric_type": "Cotton",
+      "apparel_size_system": "UK",
+      "apparel_size_class": "Age",
+      "shirt_size_system": "UK",
+      "shirt_size_class": "Age",
+      "age_range_description": "Child",
+      "department_name": "unisex-child",
+      "target_gender": "unisex"
+    }
+  },
+  "extra_parent_fields": {
+    "outer_material_type": "Natural",
+    "material_type1": "100% Cotton",
+    "fabric_type": "Cotton",
+    "weave_type": "Knit",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Alpha",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+  "extra_child_fields": {
+    "outer_material_type": "Natural",
+    "material_type1": "100% Cotton",
+    "fabric_type": "Cotton",
+    "weave_type": "Knit",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE"
+  },
+  "field_aliases": {
+    "apparel_size_system": [
+      "shirt_size_system",
+      "tops_size_system",
+      "outerwear_size_system"
+    ],
+    "apparel_size_class": [
+      "shirt_size_class",
+      "tops_size_class",
+      "outerwear_size_class"
+    ],
+    "apparel_size": [
+      "shirt_size",
+      "tops_size_value",
+      "outerwear_size_value"
+    ],
+    "apparel_body_type": [
+      "shirt_body_type",
+      "tops_body_type",
+      "outerwear_body_type"
+    ],
+    "apparel_height_type": [
+      "shirt_height_type",
+      "tops_height_type",
+      "outerwear_height_type"
+    ],
+    "outer_material_type": [
+      "material_type",
+      "material_type1",
+      "fabric_type"
+    ]
+  }
+}
