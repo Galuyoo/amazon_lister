@@ -2267,6 +2267,9 @@ def render_listing_task_panel(
                 st.caption(str(active_task.get("notes", "")))
 
         task_sections = ["Use task", "Create task"]
+        pending_task_section = st.session_state.pop("pending_listing_task_section", "")
+        if pending_task_section in task_sections:
+            st.session_state["listing_task_section"] = pending_task_section
         st.session_state.setdefault("listing_task_section", task_sections[0])
         task_section = st.segmented_control(
             "Listing task section",
@@ -2559,28 +2562,44 @@ def render_listing_task_panel(
                 st.info("No template families are available.")
                 return
 
-            task_family = st.selectbox(
-                "Template family",
-                families,
-                key="task_create_family",
+            expected_stage_folder = st.text_input(
+                "Expected staged folder",
+                key="task_create_expected_stage_folder",
+                placeholder="Example: UC301 BENMAN, THMRS T01, RL100 DESIGN",
+                help="The app detects the template from this folder name. Include the garment/template code.",
             )
-            task_family_profiles = [
-                profile for profile in profiles
-                if profile.get("_family_slug") == task_family
-            ]
-            task_family_labels = [
-                profile.get("label", profile.get("_slug", ""))
-                for profile in task_family_profiles
-            ]
-            task_template_label = st.selectbox(
-                "Garment template",
-                task_family_labels,
-                key="task_create_template",
+            new_garment_request = st.checkbox(
+                "New garment, needs to be added to the system",
+                key="task_create_new_garment_request",
+                help="Use this only when the garment/template does not exist yet. The task will be saved as Blocked.",
             )
-            task_profile = task_family_profiles[task_family_labels.index(task_template_label)]
+
+            detected_matches = find_template_matches_for_staged_folder(expected_stage_folder, profiles)
+            task_profile: dict[str, Any] | None = None
+            if new_garment_request:
+                st.warning("This will create a blocked task. Add the garment template before an operator can apply it.")
+            elif not expected_stage_folder.strip():
+                st.info("Enter the expected staged folder name first so the app can detect the template.")
+            elif len(detected_matches) == 1:
+                task_profile = detected_matches[0]
+                st.success(
+                    "Detected template: "
+                    f"`{task_profile.get('_family_slug', '')}` / "
+                    f"`{task_profile.get('label', task_profile.get('_slug', ''))}`"
+                )
+            elif len(detected_matches) > 1:
+                st.error(
+                    "The folder name matches multiple templates. Make the folder name more specific before creating the task."
+                )
+                st.caption(", ".join(match.get("label", match.get("_slug", "")) for match in detected_matches))
+            else:
+                st.error(
+                    "No existing template was detected from the folder name. "
+                    "Add a known garment code to the folder name, or tick the new-garment checkbox."
+                )
 
             selected_variants_for_task: dict[str, list[str]] = {}
-            if task_profile.get("variant_dimensions"):
+            if task_profile and task_profile.get("variant_dimensions"):
                 for dim in task_profile.get("variant_dimensions", []):
                     dim_name = str(dim.get("name", "") or "").strip()
                     dim_options = list(dim.get("options", []) or [])
@@ -2593,7 +2612,7 @@ def render_listing_task_panel(
                         placeholder=f"Leave blank for all {dim_name} options",
                     )
                     selected_variants_for_task[dim_name] = selected_values or list(dim_options)
-            else:
+            elif task_profile:
                 task_color_options = get_profile_color_options(task_profile)
                 selected_task_colors = st.multiselect(
                     "Colours",
@@ -2611,6 +2630,8 @@ def render_listing_task_panel(
                     "color": selected_task_colors or list(task_color_options),
                     "size": selected_task_sizes or list(task_profile.get("sizes", []) or []),
                 }
+            else:
+                selected_variants_for_task = {}
 
             mpn_listing_code = st.text_input(
                 "MPN / listing code",
@@ -2620,11 +2641,6 @@ def render_listing_task_panel(
             task_title = st.text_input(
                 "Title or title guidance",
                 key="task_create_title",
-            )
-            expected_stage_folder = st.text_input(
-                "Expected staged folder (optional)",
-                key="task_create_expected_stage_folder",
-                placeholder="Use when the folder already exists or has a planned name",
             )
             assigned_operator = st.selectbox(
                 "Assigned operator",
@@ -2641,11 +2657,12 @@ def render_listing_task_panel(
                 ["Normal", "High", "Low"],
                 key="task_create_priority",
             )
+            default_decoration_code = get_default_sku_decoration_code(task_profile) if task_profile else "PRINT"
             sku_decoration_code = st.selectbox(
                 "Decoration code",
                 SKU_DECORATION_OPTIONS,
-                index=SKU_DECORATION_OPTIONS.index(get_default_sku_decoration_code(task_profile))
-                if get_default_sku_decoration_code(task_profile) in SKU_DECORATION_OPTIONS
+                index=SKU_DECORATION_OPTIONS.index(default_decoration_code)
+                if default_decoration_code in SKU_DECORATION_OPTIONS
                 else 0,
                 key="task_create_sku_decoration_code",
             )
@@ -2654,10 +2671,13 @@ def render_listing_task_panel(
                 MERCHANT_SHIPPING_GROUP_OPTIONS,
                 key="task_create_merchant_shipping_group_name",
             )
-            pricing_mode, task_price_values = render_task_pricing_inputs(
-                task_profile,
-                selected_variants_for_task,
-            )
+            if task_profile:
+                pricing_mode, task_price_values = render_task_pricing_inputs(
+                    task_profile,
+                    selected_variants_for_task,
+                )
+            else:
+                pricing_mode, task_price_values = "", {}
             quantity = st.number_input(
                 "Quantity",
                 min_value=0,
@@ -2686,16 +2706,25 @@ def render_listing_task_panel(
                 if not assigned_operator:
                     st.warning("Choose an assigned operator before creating the task.")
                     return
+                if not expected_stage_folder.strip():
+                    st.warning("Enter the expected staged folder name before creating the task.")
+                    return
+                if not task_profile and not new_garment_request:
+                    st.warning("The folder name must detect exactly one existing garment template before creating the task.")
+                    return
+                if new_garment_request and not notes.strip():
+                    st.warning("Add notes explaining the new garment/template that needs to be added.")
+                    return
 
                 task = {
                     "task_id": "",
-                    "status": "New",
+                    "status": "Blocked" if new_garment_request else "New",
                     "priority": priority,
                     "assigned_operator": assigned_operator,
                     "assets_prepared_by": assets_prepared_by or assigned_operator,
-                    "template_family": task_profile.get("_family_slug", ""),
-                    "template_key": task_profile.get("template_key", task_profile.get("_slug", "")),
-                    "template_label": task_profile.get("label", task_profile.get("_slug", "")),
+                    "template_family": task_profile.get("_family_slug", "") if task_profile else "",
+                    "template_key": task_profile.get("template_key", task_profile.get("_slug", "")) if task_profile else "",
+                    "template_label": task_profile.get("label", task_profile.get("_slug", "")) if task_profile else "New garment needed",
                     "mpn_listing_code": listing_code,
                     "title": task_title,
                     "expected_stage_folder": expected_stage_folder.strip(),
@@ -2705,13 +2734,14 @@ def render_listing_task_panel(
                         selected_variants_for_task,
                         pricing_mode,
                         task_price_values,
-                    ),
+                    ) if task_profile else {},
                     "price_input_mode": pricing_mode,
-                    "use_same_price_for_all_sizes": pricing_mode == "Use one price for all",
+                    "use_same_price_for_all_sizes": bool(task_profile) and pricing_mode == "Use one price for all",
                     "sku_decoration_code": sku_decoration_code,
                     "merchant_shipping_group_name": normalize_merchant_shipping_group(merchant_shipping_group_name),
                     "quantity": int(quantity),
                     "notes": notes,
+                    "new_garment_request": bool(new_garment_request),
                     "created_by": "",
                 }
 
@@ -2735,7 +2765,9 @@ def render_listing_task_panel(
                     return
 
                 st.session_state["listing_task_records_cache"] = load_listing_tasks_from_dropbox(dropbox_cfg)
-                st.session_state["listing_task_section"] = "Use task"
+                st.session_state["pending_listing_task_section"] = "Use task"
+                if new_garment_request:
+                    st.session_state["listing_task_status_filter"] = ["Blocked"]
                 st.session_state["open_listing_tasks_panel_once"] = True
                 set_workflow_flash(
                     "success",
@@ -7412,12 +7444,22 @@ def find_template_matches_for_staged_folder(
     for profile in profiles:
         template_key = str(profile.get("template_key", "")).strip()
         parent_sku = str(profile.get("parent_sku", "")).strip()
+        design_codes = [
+            str(code).strip()
+            for code in dict(profile.get("design_sku_map", {}) or {}).values()
+            if str(code).strip()
+        ]
 
         score = 0
         if bounded_match(template_key):
             score = 2
         elif bounded_match(parent_sku):
             score = 1
+        elif not profile.get("split_listing_groups") and any(
+            bounded_match(code)
+            for code in design_codes
+        ):
+            score = 2
 
         if score <= 0:
             continue
