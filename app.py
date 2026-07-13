@@ -229,6 +229,16 @@ def capture_rerun_cause() -> None:
                     "after": after[:220],
                 })
 
+        if previous.get("staged_folder_select") != current.get("staged_folder_select"):
+            active_task = st.session_state.get("active_listing_task", {})
+            active_task_folder = ""
+            if isinstance(active_task, dict):
+                active_task_folder = str(active_task.get("expected_stage_folder", "") or "")
+            if current.get("staged_folder_select", "") != active_task_folder:
+                st.session_state.pop("task_locked_template_key", None)
+                st.session_state.pop("task_locked_template_family", None)
+                st.session_state.pop("task_locked_template_label", None)
+
         st.session_state["current_rerun_changed_keys"] = changed_keys[:80]
     except Exception as exc:
         st.session_state["current_rerun_changed_keys"] = [{
@@ -1746,6 +1756,9 @@ def build_listing_memory_from_task(task: dict[str, Any], profile: dict[str, Any]
 def apply_listing_task_to_session(task: dict[str, Any], profile: dict[str, Any]) -> None:
     st.session_state["template_family_select"] = profile.get("_family_slug", "")
     st.session_state["listing_template_select"] = profile.get("label", profile.get("_slug", ""))
+    st.session_state["task_locked_template_key"] = profile.get("template_key", profile.get("_slug", ""))
+    st.session_state["task_locked_template_family"] = profile.get("_family_slug", "")
+    st.session_state["task_locked_template_label"] = profile.get("label", profile.get("_slug", ""))
     listing_memory = build_listing_memory_from_task(task, profile)
     apply_listing_memory_to_session(listing_memory, profile)
     expected_stage_folder = str(task.get("expected_stage_folder", "") or "").strip()
@@ -10722,6 +10735,9 @@ def main() -> None:
         st.session_state.pop("applied_listing_memory_key_v2", None)
         st.session_state.pop("initialized_listing_context_key", None)
         st.session_state.pop("last_loaded_listing_memory_signature", None)
+        st.session_state.pop("task_locked_template_key", None)
+        st.session_state.pop("task_locked_template_family", None)
+        st.session_state.pop("task_locked_template_label", None)
 
     folder_source = st.session_state.get("folder_source_mode", "Use staged folder")
     initial_staged_folder_name = st.session_state.get("staged_folder_select", "") if folder_source == "Use staged folder" else ""
@@ -10740,10 +10756,24 @@ def main() -> None:
             listing_memory = {}
             authoritative_profile = None
 
+    locked_profile: dict[str, Any] | None = None
+    locked_template_key = str(st.session_state.get("task_locked_template_key", "") or "").strip()
+    if initial_staged_folder_name and not authoritative_profile and locked_template_key:
+        for candidate in profiles:
+            if locked_template_key in {
+                str(candidate.get("template_key", "") or "").strip(),
+                str(candidate.get("_slug", "") or "").strip(),
+            }:
+                locked_profile = candidate
+                break
+        if locked_profile:
+            st.session_state["template_family_select"] = locked_profile.get("_family_slug", "")
+            st.session_state["listing_template_select"] = locked_profile.get("label", locked_profile.get("_slug", ""))
+
     current_folder_source_mode = st.session_state.get("folder_source_mode", "Use staged folder")
     current_detect_folder = st.session_state.get("staged_folder_select", "") if current_folder_source_mode == "Use staged folder" else ""
 
-    if current_detect_folder and not authoritative_profile:
+    if current_detect_folder and not authoritative_profile and not locked_profile:
         last_detect_folder = st.session_state.get("last_detected_template_folder", "")
         if last_detect_folder != current_detect_folder:
             matches = find_template_matches_for_staged_folder(current_detect_folder, profiles)
@@ -10779,10 +10809,22 @@ def main() -> None:
 
     detection_message = st.session_state.get("template_detection_message", "")
     detection_level = st.session_state.get("template_detection_level", "")
+    if locked_profile and not authoritative_profile:
+        detection_message = (
+            f"Using task template `{locked_profile.get('label', locked_profile.get('_slug', ''))}` "
+            f"for staged folder `{initial_staged_folder_name}`."
+        )
+        detection_level = "info"
 
     if authoritative_profile:
         selected_family = authoritative_profile.get("_family_slug", "")
         selected_label = authoritative_profile.get("label", authoritative_profile.get("_slug", ""))
+        st.session_state.pop("task_locked_template_key", None)
+        st.session_state.pop("task_locked_template_family", None)
+        st.session_state.pop("task_locked_template_label", None)
+    elif locked_profile:
+        selected_family = locked_profile.get("_family_slug", "")
+        selected_label = locked_profile.get("label", locked_profile.get("_slug", ""))
     else:
         selected_family = st.session_state.get("template_family_select", families[0] if families else "")
     if families and selected_family not in families:
@@ -10796,7 +10838,7 @@ def main() -> None:
 
     family_labels = [profile.get("label", profile["_slug"]) for profile in family_profiles]
 
-    if not authoritative_profile:
+    if not authoritative_profile and not locked_profile:
         selected_label = st.session_state.get("listing_template_select", family_labels[0] if family_labels else "")
     if family_labels and selected_label not in family_labels:
         selected_label = family_labels[0]
