@@ -18,8 +18,12 @@
   "item_type_name": "t-shirt",
   "care_instructions": "Machine Wash",
   "fit_type": "Regular",
+  "collar_style": "Crew Neck",
+  "neck_style": "Crew Neck",
   "theme": "Custom Printed T Shirt",
   "country_of_origin": "Great Britain",
+  "age_apparel_body_type": "Regular",
+  "age_apparel_height_type": "Regular",
   "variant_dimensions": [
     {
       "name": "design",
@@ -118,6 +122,7 @@
     "9-11 Years",
     "12-13 Years"
   ],
+  "design_sku_position": "after_listing_code",
   "design_sku_map": {
     "Adult T-Shirt": "T01",
     "Kids T-Shirt": "T02"
@@ -224,9 +229,13 @@
       "apparel_size_class": "Alpha",
       "shirt_size_system": "UK",
       "shirt_size_class": "Alpha",
+      "shirt_body_type": "Regular",
+      "shirt_height_type": "Regular",
       "age_range_description": "Adult",
       "department_name": "unisex-adult",
-      "target_gender": "unisex"
+      "target_gender": "unisex",
+      "collar_style": "Crew Neck",
+      "neck_style": "Crew Neck"
     },
     "Kids T-Shirt": {
       "feed_product_type": "shirt",
@@ -241,9 +250,13 @@
       "apparel_size_class": "Age",
       "shirt_size_system": "UK",
       "shirt_size_class": "Age",
+      "shirt_body_type": "Regular",
+      "shirt_height_type": "Regular",
       "age_range_description": "Child",
       "department_name": "unisex-child",
-      "target_gender": "unisex"
+      "target_gender": "unisex",
+      "collar_style": "Crew Neck",
+      "neck_style": "Crew Neck"
     }
   },
   "extra_parent_fields": {
@@ -255,6 +268,8 @@
     "apparel_size_class": "Alpha",
     "apparel_body_type": "Regular",
     "apparel_height_type": "Regular",
+    "shirt_body_type": "Regular",
+    "shirt_height_type": "Regular",
     "batteries_required": "FALSE",
     "are_batteries_included": "FALSE"
   },
@@ -265,6 +280,8 @@
     "weave_type": "Knit",
     "apparel_body_type": "Regular",
     "apparel_height_type": "Regular",
+    "shirt_body_type": "Regular",
+    "shirt_height_type": "Regular",
     "batteries_required": "FALSE",
     "are_batteries_included": "FALSE"
   },

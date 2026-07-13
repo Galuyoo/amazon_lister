@@ -435,6 +435,7 @@ def build_clear_child_sku(
     design_code = resolve_variant_design_code(profile, variant_values)
     if design_code and sku_code_contains_trailing_segment(decoration_code, design_code):
         design_code = ""
+    design_code_position = str(profile.get("design_sku_position", "") or "").strip().lower()
     variant_sku = build_legacy_child_sku(
         profile,
         parent_sku,
@@ -445,6 +446,21 @@ def build_clear_child_sku(
         variant_sku,
         [decoration_code, design_code],
     )
+
+    if design_code and design_code_position in {"after_listing_code", "after_mpn", "after_parent"}:
+        listing_code = sanitize_sku_part(
+            profile.get("sku_listing_code")
+            or profile.get("listing_code")
+            or profile.get("design_or_listing_code")
+            or ""
+        )
+        if listing_code and variant_sku.lower().startswith(f"{listing_code}-".lower()):
+            variant_tail = variant_sku[len(listing_code) + 1:]
+            return "-".join(
+                part
+                for part in [decoration_code, listing_code, design_code, variant_tail]
+                if str(part or "").strip()
+            )
 
     return "-".join(
         part

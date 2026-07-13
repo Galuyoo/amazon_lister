@@ -110,6 +110,38 @@
     "Adult Sweatshirt": "S01",
     "Kids Sweatshirt": "S02"
   },
+  "split_listing_groups": [
+    {
+      "key": "shirt",
+      "label": "Shirts",
+      "title_prefix": "Shirt",
+      "parent_sku_suffix": "T",
+      "designs": [
+        "Adult T-Shirt",
+        "Kids T-Shirt"
+      ]
+    },
+    {
+      "key": "hoodie",
+      "label": "Hoodies",
+      "title_prefix": "Hoodie",
+      "parent_sku_suffix": "H",
+      "designs": [
+        "Adult Hoodie",
+        "Kids Hoodie"
+      ]
+    },
+    {
+      "key": "sweatshirt",
+      "label": "Sweatshirts",
+      "title_prefix": "Sweatshirt",
+      "parent_sku_suffix": "S",
+      "designs": [
+        "Adult Sweatshirt",
+        "Kids Sweatshirt"
+      ]
+    }
+  ],
   "color_sku_map": {
     "Black": "BK",
     "Navy": "NY",

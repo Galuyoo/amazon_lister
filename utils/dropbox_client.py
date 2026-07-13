@@ -119,6 +119,25 @@ def move_dropbox_folder(from_path: str, to_path: str) -> str:
     except ApiError as exc:
         raise ValueError(f"Dropbox folder move failed from {from_path} to {to_path}: {exc}") from exc
 
+
+def copy_dropbox_folder(from_path: str, to_path: str) -> str:
+    dbx = get_dropbox_client()
+    try:
+        result = dbx.files_copy_v2(from_path=from_path, to_path=to_path, autorename=False)
+        return result.metadata.path_display
+    except ApiError as exc:
+        raise ValueError(f"Dropbox folder copy failed from {from_path} to {to_path}: {exc}") from exc
+
+
+def delete_dropbox_path(path: str) -> str:
+    dbx = get_dropbox_client()
+    try:
+        result = dbx.files_delete_v2(path)
+        return result.metadata.path_display
+    except ApiError as exc:
+        raise ValueError(f"Dropbox delete failed for {path}: {exc}") from exc
+
+
 def path_exists(path: str) -> bool:
     dbx = get_dropbox_client()
     try:
@@ -188,6 +207,15 @@ def upload_binary_file(path: str, content: bytes) -> str:
         return result.path_display
     except ApiError as exc:
         raise ValueError(f"Dropbox binary upload failed for {path}: {exc}") from exc
+
+
+def download_binary_file(path: str) -> bytes:
+    dbx = get_dropbox_client()
+    try:
+        _, response = dbx.files_download(path)
+        return response.content
+    except ApiError as exc:
+        raise ValueError(f"Dropbox binary download failed for {path}: {exc}") from exc
 
 
 def download_text_file(path: str) -> str:

@@ -1,11 +1,13 @@
 from __future__ import annotations
-from datetime import datetime
+from datetime import date, datetime, timedelta
 import hashlib
+import io
 import time
 import json
 import re
 import random
 import string
+import zipfile
 
 from copy import copy
 from collections import Counter
@@ -32,10 +34,13 @@ from utils.dropbox_client import (
     list_folder_files,
     list_folder_names,
     create_folder_if_missing,
+    copy_dropbox_folder,
+    delete_dropbox_path,
     move_dropbox_folder,
     path_exists,
     upload_text_file,
     upload_binary_file,
+    download_binary_file,
     download_text_file,
 )
 
@@ -1286,6 +1291,8 @@ def apply_apparel_size_fields(
     size_value: str,
     *,
     is_apparel: bool,
+    age_body_type: str = "",
+    age_height_type: str = "",
 ) -> dict[str, Any]:
     if not is_apparel:
         return values
@@ -1293,8 +1300,8 @@ def apply_apparel_size_fields(
     normalized_size = normalize_size(size_value) if size_value else ""
     size_class = get_apparel_size_class(normalized_size)
     shirt_size, shirt_size_to = get_amazon_shirt_size_range(normalized_size)
-    height_type = "" if size_class == "Age" else "Regular"
-    body_type = "" if size_class == "Age" else "Regular"
+    height_type = str(age_height_type or "") if size_class == "Age" else "Regular"
+    body_type = str(age_body_type or "") if size_class == "Age" else "Regular"
 
     size_values = {
         "apparel_size_system": "UK",
@@ -1367,6 +1374,1375 @@ def build_ready_folder_path(dropbox_cfg: dict[str, Any], ready_folder_name: str)
 def build_approved_folder_path(dropbox_cfg: dict[str, Any], approved_folder_name: str) -> str:
     approved_root = dropbox_cfg.get("approved_root", "").rstrip("/")
     return f"{approved_root}/{approved_folder_name}"
+
+
+def build_listing_tasks_root(dropbox_cfg: dict[str, Any]) -> str:
+    configured_root = str(dropbox_cfg.get("tasks_root", "") or "").rstrip("/")
+    if configured_root:
+        return configured_root
+
+    stage_root = str(dropbox_cfg.get("stage_root", "") or "").rstrip("/")
+    if not stage_root:
+        return ""
+    parent_root = stage_root.rsplit("/", 1)[0] if "/" in stage_root else ""
+    return f"{parent_root}/tasks" if parent_root else f"{stage_root}_tasks"
+
+
+def build_listing_task_path(dropbox_cfg: dict[str, Any], task_id: str) -> str:
+    tasks_root = build_listing_tasks_root(dropbox_cfg)
+    return f"{tasks_root}/{sanitize_sku(task_id)}.json"
+
+
+def delete_dropbox_path_if_present(path: str) -> bool:
+    path = str(path or "").strip()
+    if not path:
+        return False
+    try:
+        delete_dropbox_path(path)
+        return True
+    except Exception as exc:
+        message = str(exc)
+        if "not_found" in message or "path_lookup" in message:
+            return False
+        raise
+
+
+def remove_listing_task_from_session_cache(task: dict[str, Any]) -> None:
+    task_id = str(task.get("task_id", "") or "").strip()
+    task_path = str(task.get("task_path", "") or "").strip()
+    cached_tasks = list(st.session_state.get("listing_task_records_cache", []))
+    kept_tasks = []
+    for cached_task in cached_tasks:
+        cached_task_id = str(cached_task.get("task_id", "") or "").strip()
+        cached_task_path = str(cached_task.get("task_path", "") or "").strip()
+        same_task_id = bool(task_id and cached_task_id == task_id)
+        same_task_path = bool(task_path and cached_task_path == task_path)
+        if not same_task_id and not same_task_path:
+            kept_tasks.append(cached_task)
+    st.session_state["listing_task_records_cache"] = kept_tasks
+    st.session_state.pop("listing_task_select", None)
+
+
+def build_unique_listing_task_id(dropbox_cfg: dict[str, Any], seed: str) -> str:
+    seed = sanitize_sku(str(seed or "listing-task")).upper()[:48] or "LISTING-TASK"
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    base_task_id = f"TASK-{timestamp}-{seed}"
+    task_id = base_task_id
+    counter = 2
+    while path_exists(build_listing_task_path(dropbox_cfg, task_id)):
+        task_id = f"{base_task_id}-{counter}"
+        counter += 1
+    return task_id
+
+
+def save_listing_task_to_dropbox(dropbox_cfg: dict[str, Any], task: dict[str, Any]) -> str:
+    tasks_root = build_listing_tasks_root(dropbox_cfg)
+    if not tasks_root:
+        raise ValueError("Task root could not be resolved from Dropbox config.")
+    create_folder_if_missing(tasks_root)
+    task_id = str(task.get("task_id", "") or "").strip()
+    if not task_id:
+        task_id = build_unique_listing_task_id(
+            dropbox_cfg,
+            str(task.get("mpn_listing_code", "") or task.get("title", "") or task.get("template_key", "")),
+        )
+        task["task_id"] = task_id
+    task["updated_at"] = format_workflow_timestamp()
+    if not task.get("created_at"):
+        task["created_at"] = task["updated_at"]
+
+    task_path = build_listing_task_path(dropbox_cfg, task_id)
+    task["task_path"] = task_path
+    upload_text_file(task_path, json.dumps(task, indent=2, ensure_ascii=False))
+    return task_path
+
+
+def save_listing_task_attachment(
+    dropbox_cfg: dict[str, Any],
+    task_id: str,
+    file_name: str,
+    content: bytes,
+) -> str:
+    tasks_root = build_listing_tasks_root(dropbox_cfg)
+    if not tasks_root:
+        raise ValueError("Task root could not be resolved from Dropbox config.")
+    attachment_root = f"{tasks_root}/_attachments/{sanitize_sku(task_id)}"
+    create_folder_if_missing(tasks_root)
+    create_folder_if_missing(f"{tasks_root}/_attachments")
+    create_folder_if_missing(attachment_root)
+    safe_file_name = sanitize_sku(Path(file_name).stem) or "reference-image"
+    suffix = Path(file_name).suffix.lower() or ".png"
+    return upload_binary_file(f"{attachment_root}/{safe_file_name}{suffix}", content)
+
+
+def get_task_reference_image_paths(task: dict[str, Any], *, limit: int = 3) -> list[str]:
+    paths: list[str] = []
+    raw_paths = task.get("reference_image_paths", [])
+    if isinstance(raw_paths, list):
+        paths.extend(str(path).strip() for path in raw_paths if str(path).strip())
+    legacy_path = str(task.get("reference_image_path", "") or "").strip()
+    if legacy_path:
+        paths.append(legacy_path)
+
+    unique_paths: list[str] = []
+    for path in paths:
+        if path not in unique_paths:
+            unique_paths.append(path)
+    return unique_paths[:limit]
+
+
+def set_task_reference_image_paths(task: dict[str, Any], paths: list[str]) -> None:
+    clean_paths = [
+        str(path).strip()
+        for path in list(paths or [])
+        if str(path).strip()
+    ][:3]
+    task["reference_image_paths"] = clean_paths
+    task["reference_image_path"] = clean_paths[0] if clean_paths else ""
+
+
+def load_listing_tasks_from_dropbox(dropbox_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    tasks_root = build_listing_tasks_root(dropbox_cfg)
+    if not tasks_root:
+        return []
+    create_folder_if_missing(tasks_root)
+    task_paths = [
+        path for path in list_folder_files(tasks_root)
+        if str(path).lower().endswith(".json")
+    ]
+    tasks: list[dict[str, Any]] = []
+    for task_path in task_paths:
+        try:
+            task = json.loads(download_text_file(task_path))
+        except Exception:
+            continue
+        if not isinstance(task, dict):
+            continue
+        task.setdefault("task_path", task_path)
+        task.setdefault("task_id", Path(task_path).stem)
+        tasks.append(task)
+
+    def sort_key(task: dict[str, Any]) -> str:
+        return str(task.get("updated_at") or task.get("created_at") or "")
+
+    return sorted(tasks, key=sort_key, reverse=True)
+
+
+LISTING_TASK_STATUS_OPTIONS = ["New", "In progress", "Done", "Blocked"]
+
+
+def normalize_listing_task_status(status: Any) -> str:
+    normalized = str(status or "New").strip().lower()
+    if normalized in {"", "new", "open"}:
+        return "New"
+    if normalized in {"in progress", "progress", "started", "in review", "approved", "finished"}:
+        return "In progress"
+    if normalized in {"done", "complete", "completed"}:
+        return "Done"
+    if normalized == "blocked":
+        return "Blocked"
+    return "New"
+
+
+def is_listing_task_after_review_start(task: dict[str, Any]) -> bool:
+    if normalize_listing_task_status(task.get("status")) == "Done":
+        return True
+    if str(task.get("ready_folder_path", "") or "").strip():
+        return True
+    if str(task.get("approved_folder_path", "") or "").strip():
+        return True
+    if str(task.get("finished_folder_path", "") or "").strip():
+        return True
+    for field_name in ["ready_folder_paths", "approved_folder_paths", "finished_folder_paths"]:
+        if any(str(path).strip() for path in list(task.get(field_name, []) or [])):
+            return True
+    return False
+
+
+def sanitize_stage_folder_name(value: str) -> str:
+    safe = str(value or "").strip()
+    for ch in ['\\', '/', ':', '*', '?', '"', '<', '>', '|']:
+        safe = safe.replace(ch, "-")
+    while "  " in safe:
+        safe = safe.replace("  ", " ")
+    return safe.strip(" .-")
+
+
+def build_default_stage_folder_name_for_task(profile: dict[str, Any], task: dict[str, Any]) -> str:
+    template_code = str(
+        profile.get("template_key")
+        or profile.get("_slug")
+        or profile.get("label")
+        or "template"
+    ).strip()
+    listing_code = str(task.get("mpn_listing_code", "") or task.get("title", "") or "").strip()
+    return sanitize_stage_folder_name(" ".join(part for part in [template_code, listing_code] if part)) or "listing-task"
+
+
+def build_unique_stage_folder_name(dropbox_cfg: dict[str, Any], base_name: str) -> str:
+    base_name = sanitize_stage_folder_name(base_name) or "listing-task"
+    candidate = base_name
+    counter = 2
+    while path_exists(build_stage_folder_path(dropbox_cfg, candidate)):
+        candidate = f"{base_name}-{counter}"
+        counter += 1
+    return candidate
+
+
+def create_or_update_staged_folder_from_task(
+    dropbox_cfg: dict[str, Any],
+    profile: dict[str, Any],
+    task: dict[str, Any],
+) -> dict[str, Any]:
+    expected_stage_folder = sanitize_stage_folder_name(task.get("expected_stage_folder", ""))
+    if not expected_stage_folder:
+        expected_stage_folder = build_unique_stage_folder_name(
+            dropbox_cfg,
+            build_default_stage_folder_name_for_task(profile, task),
+        )
+        task["expected_stage_folder"] = expected_stage_folder
+
+    stage_folder_path = build_stage_folder_path(dropbox_cfg, expected_stage_folder)
+    folder_existed = path_exists(stage_folder_path)
+    create_folder_if_missing(stage_folder_path)
+    create_folder_if_missing(f"{stage_folder_path.rstrip('/')}/resources")
+
+    listing_memory = build_listing_memory_from_task(task, profile)
+    append_workflow_event(
+        listing_memory,
+        action="apply_listing_task_to_stage",
+        actor=str(task.get("assigned_operator", "") or ""),
+        from_state="task",
+        to_state="stage",
+        folder_path=stage_folder_path,
+        details={
+            "task_id": task.get("task_id", ""),
+            "folder_created": not folder_existed,
+        },
+    )
+    listing_memory_path = save_listing_inputs_json_to_dropbox(
+        profile=profile,
+        payload=listing_memory,
+        folder_path=stage_folder_path,
+    )
+    return {
+        "folder_name": expected_stage_folder,
+        "folder_path": stage_folder_path,
+        "listing_memory_path": listing_memory_path,
+        "created": not folder_existed,
+    }
+
+
+def format_listing_task_label(task: dict[str, Any]) -> str:
+    code = str(task.get("mpn_listing_code", "") or "-").strip()
+    template = str(task.get("template_label", "") or task.get("template_key", "") or "-").strip()
+    assignee = str(task.get("assigned_operator", "") or "Unassigned").strip()
+    status = normalize_listing_task_status(task.get("status"))
+    return f"{code} | {template} | {assignee} | {status}"
+
+
+def find_profile_for_listing_task(profiles: list[dict[str, Any]], task: dict[str, Any]) -> dict[str, Any] | None:
+    family = str(task.get("template_family", "") or "").strip()
+    template_key = str(task.get("template_key", "") or "").strip()
+    template_label = str(task.get("template_label", "") or "").strip()
+
+    for candidate in profiles:
+        if family and str(candidate.get("_family_slug", "")) != family:
+            continue
+        if template_key and template_key in {
+            str(candidate.get("template_key", "")),
+            str(candidate.get("_slug", "")),
+        }:
+            return candidate
+        if template_label and template_label == str(candidate.get("label", candidate.get("_slug", ""))):
+            return candidate
+
+    return None
+
+
+def build_listing_memory_from_task(task: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+    selected_variants = task.get("selected_variants", {})
+    if not isinstance(selected_variants, dict):
+        selected_variants = {}
+    selected_variants = {
+        key: list(value)
+        for key, value in selected_variants.items()
+        if isinstance(value, list)
+    }
+
+    bullet_points = list(task.get("bullet_points", []) or [])
+    bullet_points = (bullet_points + ["", "", "", "", ""])[:5]
+    decoration_code = str(task.get("sku_decoration_code", "") or get_default_sku_decoration_code(profile)).strip()
+    listing_code = sanitize_sku(str(task.get("mpn_listing_code", "") or "")).upper()
+
+    return {
+        "template_label": profile.get("label", profile.get("_slug", "")),
+        "template_slug": profile.get("_slug", ""),
+        "template_key": profile.get("template_key", ""),
+        "title": str(task.get("title", "") or ""),
+        "product_description": str(task.get("product_description", "") or ""),
+        "generic_keywords": str(task.get("generic_keywords", "") or ""),
+        "bullet_points": bullet_points,
+        "selected_variants": selected_variants,
+        "size_price_map": dict(task.get("size_price_map", {}) or {}),
+        "price_input_mode": str(task.get("price_input_mode", "") or ""),
+        "use_same_price_for_all_sizes": bool(task.get("use_same_price_for_all_sizes", False)),
+        "sku_decoration_code": decoration_code,
+        "manual_sku_listing_code": listing_code,
+        "generated_sku_listing_code": listing_code,
+        "sku_listing_code": listing_code,
+        "quantity": int(task.get("quantity", 100) or 100),
+        "handling_time_days": normalize_handling_time_days(task.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)),
+        "merchant_shipping_group_name": normalize_merchant_shipping_group(task.get("merchant_shipping_group_name", "")),
+        "assets_prepared_by": str(task.get("assets_prepared_by", "") or task.get("assigned_operator", "") or ""),
+        "content_prepared_by": str(task.get("content_prepared_by", "") or ""),
+        "parent_main_image_choice": "Automatic (recommended)",
+        "listing_task_id": task.get("task_id", ""),
+        "listing_task_status": normalize_listing_task_status(task.get("status")),
+        "listing_task_notes": task.get("notes", ""),
+        "listing_task_path": task.get("task_path", ""),
+        "listing_task_reference_image_path": task.get("reference_image_path", ""),
+        "listing_task_reference_image_paths": get_task_reference_image_paths(task),
+    }
+
+
+def apply_listing_task_to_session(task: dict[str, Any], profile: dict[str, Any]) -> None:
+    st.session_state["template_family_select"] = profile.get("_family_slug", "")
+    st.session_state["listing_template_select"] = profile.get("label", profile.get("_slug", ""))
+    listing_memory = build_listing_memory_from_task(task, profile)
+    apply_listing_memory_to_session(listing_memory, profile)
+    expected_stage_folder = str(task.get("expected_stage_folder", "") or "").strip()
+    if expected_stage_folder:
+        st.session_state["folder_source_mode"] = "Use staged folder"
+        st.session_state["staged_folder_select"] = expected_stage_folder
+    st.session_state["active_listing_task"] = build_active_listing_task_state(task)
+    st.session_state.pop("applied_listing_memory_key_v2", None)
+    st.session_state.pop("initialized_listing_context_key", None)
+
+
+def update_active_listing_task_after_submit(
+    dropbox_cfg: dict[str, Any],
+    *,
+    ready_folder_path: str = "",
+    ready_folder_paths: list[str] | None = None,
+) -> None:
+    active_task = st.session_state.get("active_listing_task", {})
+    if not isinstance(active_task, dict) or not active_task.get("task_id"):
+        return
+
+    task_path = str(active_task.get("task_path", "") or "").strip()
+    task: dict[str, Any] = dict(active_task)
+    if task_path:
+        try:
+            loaded_task = json.loads(download_text_file(task_path))
+            if isinstance(loaded_task, dict):
+                task = loaded_task
+        except Exception:
+            task = dict(active_task)
+
+    task["status"] = "In progress"
+    task["submitted_for_review_at"] = format_workflow_timestamp()
+    if ready_folder_path:
+        task["ready_folder_path"] = ready_folder_path
+        task["ready_folder_name"] = Path(ready_folder_path).name
+    if ready_folder_paths:
+        task["ready_folder_paths"] = list(ready_folder_paths)
+        task["ready_folder_names"] = [Path(path).name for path in ready_folder_paths]
+
+    try:
+        save_listing_task_to_dropbox(dropbox_cfg, task)
+        st.session_state["active_listing_task"] = build_active_listing_task_state(task)
+        st.session_state.pop("listing_task_records_cache", None)
+    except Exception:
+        return
+
+
+def update_linked_listing_task_after_finished(
+    dropbox_cfg: dict[str, Any],
+    payload: dict[str, Any],
+    finished_folder_path: str,
+) -> None:
+    task_path = str(payload.get("listing_task_path", "") or "").strip()
+    if not task_path:
+        return
+
+    try:
+        task = json.loads(download_text_file(task_path))
+    except Exception:
+        return
+    if not isinstance(task, dict):
+        return
+
+    finished_paths = [
+        str(path).strip()
+        for path in list(task.get("finished_folder_paths", []) or [])
+        if str(path).strip()
+    ]
+    if finished_folder_path and finished_folder_path not in finished_paths:
+        finished_paths.append(finished_folder_path)
+    task["finished_folder_paths"] = finished_paths
+    task["finished_folder_path"] = finished_folder_path
+    task["finished_at"] = format_workflow_timestamp()
+
+    ready_paths = [
+        str(path).strip()
+        for path in list(task.get("ready_folder_paths", []) or [])
+        if str(path).strip()
+    ]
+    task["status"] = "Done" if not ready_paths or len(finished_paths) >= len(ready_paths) else "In progress"
+
+    try:
+        save_listing_task_to_dropbox(dropbox_cfg, task)
+        st.session_state.pop("listing_task_records_cache", None)
+    except Exception:
+        return
+
+
+def build_task_price_map(
+    profile: dict[str, Any],
+    selected_variants: dict[str, list[str]],
+    pricing_mode: str,
+    price_values: dict[str, float],
+) -> dict[str, float]:
+    pricing_mode = str(pricing_mode or "Use one price for all")
+    all_price = float(price_values.get("all", 0.0))
+
+    if profile.get("variant_dimensions"):
+        price_map: dict[str, float] = {}
+        for combo in build_variant_combinations(profile, selected_variants):
+            price_key = build_variant_price_key(combo)
+            design = str(combo.get("design", "") or "")
+            size = str(combo.get("size", "") or "")
+            cluster = get_design_size_price_cluster_label(design, size)
+            price_map[price_key] = float(
+                price_values.get(price_key)
+                if pricing_mode == "Manual price by size"
+                else price_values.get(f"{design}|{cluster}")
+                if pricing_mode == "Use cluster prices"
+                else all_price
+            )
+        return price_map
+
+    price_map: dict[str, float] = {}
+    for size in selected_variants.get("size", []):
+        cluster = get_design_size_price_cluster_label("", size)
+        price_map[size] = float(
+            price_values.get(size)
+            if pricing_mode == "Manual price by size"
+            else price_values.get(cluster)
+            if pricing_mode == "Use cluster prices"
+            else all_price
+        )
+    return price_map
+
+
+def render_task_pricing_inputs(
+    profile: dict[str, Any],
+    selected_variants: dict[str, list[str]],
+) -> tuple[str, dict[str, float]]:
+    pricing_modes = [
+        "Use one price for all",
+        "Use cluster prices",
+        "Manual price by size",
+    ]
+    pricing_mode = st.selectbox(
+        "Pricing template",
+        pricing_modes,
+        key="task_create_pricing_mode",
+    )
+    price_values: dict[str, float] = {}
+
+    if pricing_mode == "Use one price for all":
+        price_values["all"] = st.number_input(
+            "Price for all selected variants",
+            min_value=0.0,
+            value=12.99,
+            step=0.50,
+            key="task_create_price_all",
+        )
+        return pricing_mode, price_values
+
+    if profile.get("variant_dimensions"):
+        combos = build_variant_combinations(profile, selected_variants)
+        if not combos:
+            st.caption("Select variants before pricing.")
+            return pricing_mode, price_values
+
+        if pricing_mode == "Use cluster prices":
+            clusters: dict[str, list[str]] = {}
+            for combo in combos:
+                design = str(combo.get("design", "") or "")
+                size = str(combo.get("size", "") or "")
+                cluster = get_design_size_price_cluster_label(design, size)
+                clusters.setdefault(f"{design}|{cluster}", []).append(size)
+
+            cols = st.columns(3)
+            for idx, (cluster_key, sizes) in enumerate(clusters.items()):
+                design, cluster = cluster_key.split("|", 1)
+                with cols[idx % 3]:
+                    price_values[cluster_key] = st.number_input(
+                        f"{design} {cluster}",
+                        min_value=0.0,
+                        value=12.99,
+                        step=0.50,
+                        key=f"task_create_cluster_price_{sanitize_sku(cluster_key)}",
+                    )
+                    st.caption(", ".join(sorted(set(sizes))))
+            return pricing_mode, price_values
+
+        unique_price_keys = []
+        for combo in combos:
+            price_key = build_variant_price_key(combo)
+            if price_key not in unique_price_keys:
+                unique_price_keys.append(price_key)
+        for price_key in unique_price_keys:
+            price_values[price_key] = st.number_input(
+                price_key,
+                min_value=0.0,
+                value=12.99,
+                step=0.50,
+                key=f"task_create_manual_price_{sanitize_sku(price_key)}",
+            )
+        return pricing_mode, price_values
+
+    selected_sizes = list(selected_variants.get("size", []) or [])
+    if pricing_mode == "Use cluster prices":
+        clusters: dict[str, list[str]] = {}
+        for size in selected_sizes:
+            clusters.setdefault(get_design_size_price_cluster_label("", size), []).append(size)
+
+        cols = st.columns(3)
+        for idx, (cluster, sizes) in enumerate(clusters.items()):
+            with cols[idx % 3]:
+                price_values[cluster] = st.number_input(
+                    f"{cluster} price",
+                    min_value=0.0,
+                    value=12.99,
+                    step=0.50,
+                    key=f"task_create_cluster_price_{sanitize_sku(cluster)}",
+                )
+                st.caption(", ".join(sizes))
+        return pricing_mode, price_values
+
+    cols = st.columns(4)
+    for idx, size in enumerate(selected_sizes):
+        with cols[idx % 4]:
+            price_values[size] = st.number_input(
+                f"{size} price",
+                min_value=0.0,
+                value=12.99,
+                step=0.50,
+                key=f"task_create_manual_price_{sanitize_sku(size)}",
+            )
+    return pricing_mode, price_values
+
+
+def summarize_task_prices(task: dict[str, Any]) -> str:
+    price_map = dict(task.get("size_price_map", {}) or {})
+    if not price_map:
+        return "-"
+    unique_prices = sorted({
+        float(value)
+        for value in price_map.values()
+        if isinstance(value, (int, float)) or str(value).replace(".", "", 1).isdigit()
+    })
+    if len(unique_prices) == 1:
+        return f"{unique_prices[0]:.2f} all"
+    preview_items = list(price_map.items())[:4]
+    preview = ", ".join(f"{key}: {float(value):.2f}" for key, value in preview_items)
+    if len(price_map) > len(preview_items):
+        preview += f", +{len(price_map) - len(preview_items)} more"
+    return preview
+
+
+def summarize_task_variants(task: dict[str, Any], max_items_per_dimension: int = 6) -> str:
+    selected_variants = task.get("selected_variants", {})
+    if not isinstance(selected_variants, dict) or not selected_variants:
+        return "-"
+
+    parts: list[str] = []
+    for dimension, values in selected_variants.items():
+        if not isinstance(values, list):
+            continue
+        clean_values = [str(value) for value in values if str(value or "").strip()]
+        preview = ", ".join(clean_values[:max_items_per_dimension])
+        if len(clean_values) > max_items_per_dimension:
+            preview += f", +{len(clean_values) - max_items_per_dimension} more"
+        parts.append(f"{str(dimension).title()}: {preview or '-'}")
+    return " | ".join(parts) or "-"
+
+
+def build_active_listing_task_state(task: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task_id": task.get("task_id", ""),
+        "task_path": task.get("task_path", ""),
+        "mpn_listing_code": task.get("mpn_listing_code", ""),
+        "status": normalize_listing_task_status(task.get("status")),
+        "assigned_operator": task.get("assigned_operator", ""),
+        "template_label": task.get("template_label", ""),
+        "priority": task.get("priority", ""),
+        "expected_stage_folder": task.get("expected_stage_folder", ""),
+        "notes": task.get("notes", ""),
+        "title": task.get("title", ""),
+        "selected_variants": dict(task.get("selected_variants", {}) or {}),
+        "size_price_map": dict(task.get("size_price_map", {}) or {}),
+        "merchant_shipping_group_name": normalize_merchant_shipping_group(task.get("merchant_shipping_group_name", "")),
+        "sku_decoration_code": task.get("sku_decoration_code", ""),
+        "reference_image_path": task.get("reference_image_path", ""),
+        "reference_image_paths": get_task_reference_image_paths(task),
+    }
+
+
+def build_task_completeness_rows(
+    task: dict[str, Any],
+    profile: dict[str, Any] | None,
+    dropbox_cfg: dict[str, Any],
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+
+    def add(item: str, ok: bool, detail: str, *, warning: bool = False) -> None:
+        rows.append({
+            "item": item,
+            "status": "OK" if ok else "Warning" if warning else "Missing",
+            "detail": detail,
+        })
+
+    listing_code = sanitize_sku(str(task.get("mpn_listing_code", "") or "")).upper()
+    add("MPN/listing code", bool(listing_code), listing_code or "Add an MPN before applying.")
+
+    template_label = str(task.get("template_label", "") or task.get("template_key", "") or "").strip()
+    add("Template", bool(profile), template_label or "No matching template found.")
+
+    assigned_operator = str(task.get("assigned_operator", "") or "").strip()
+    add("Assigned operator", bool(assigned_operator), assigned_operator or "Assign an operator.")
+
+    selected_variants = task.get("selected_variants", {})
+    has_variants = isinstance(selected_variants, dict) and any(
+        isinstance(values, list) and values
+        for values in selected_variants.values()
+    )
+    variant_summary = ", ".join(
+        f"{key}: {len(values)}"
+        for key, values in dict(selected_variants or {}).items()
+        if isinstance(values, list)
+    )
+    add("Variants", has_variants, variant_summary or "Choose colours/sizes/garments.")
+
+    price_map = dict(task.get("size_price_map", {}) or {})
+    valid_prices = [
+        float(value)
+        for value in price_map.values()
+        if isinstance(value, (int, float)) or str(value).replace(".", "", 1).isdigit()
+    ]
+    add("Prices", bool(valid_prices) and all(price > 0 for price in valid_prices), summarize_task_prices(task) or "Add prices.")
+
+    decoration_code = str(task.get("sku_decoration_code", "") or "").strip()
+    add("Decoration code", bool(decoration_code), decoration_code or "Pick PRINT/EMB/PERSO/PLAIN.")
+
+    shipping_template = normalize_merchant_shipping_group(task.get("merchant_shipping_group_name", ""))
+    add("Shipping template", bool(shipping_template), shipping_template or "Optional, defaults blank.", warning=not bool(shipping_template))
+
+    expected_stage_folder = str(task.get("expected_stage_folder", "") or "").strip()
+    if expected_stage_folder:
+        stage_path = build_stage_folder_path(dropbox_cfg, expected_stage_folder)
+        stage_detail = stage_path if path_exists(stage_path) else "Will be created on Apply."
+    else:
+        stage_detail = "Will be auto-named and created on Apply."
+    add("Staged folder", True, stage_detail)
+
+    reference_image_paths = get_task_reference_image_paths(task)
+    add(
+        "MPN/reference image",
+        bool(reference_image_paths),
+        f"{len(reference_image_paths)} file(s)" if reference_image_paths else "Optional but recommended.",
+        warning=not bool(reference_image_paths),
+    )
+
+    notes = str(task.get("notes", "") or "").strip()
+    add("Notes/content brief", bool(notes), "Added" if notes else "Optional, but helps avoid miscommunication.", warning=not bool(notes))
+
+    return rows
+
+
+def render_task_completeness(task: dict[str, Any], profile: dict[str, Any] | None, dropbox_cfg: dict[str, Any]) -> None:
+    rows = build_task_completeness_rows(task, profile, dropbox_cfg)
+    missing_count = sum(1 for row in rows if row["status"] == "Missing")
+    warning_count = sum(1 for row in rows if row["status"] == "Warning")
+    status_label = "Ready" if missing_count == 0 else "Needs info"
+    st.write(f"Task readiness: `{status_label}`")
+    if warning_count:
+        st.caption(f"{warning_count} optional/recommended item(s) can still be improved.")
+    st.dataframe(rows, width="stretch", hide_index=True)
+
+
+def render_active_task_sidebar_card() -> None:
+    active_task = st.session_state.get("active_listing_task", {})
+    if not isinstance(active_task, dict) or not active_task.get("task_id"):
+        return
+
+    st.sidebar.markdown("### Active task")
+    st.sidebar.write(f"MPN: `{active_task.get('mpn_listing_code', '-') or '-'}`")
+    st.sidebar.write(f"Template: `{active_task.get('template_label', '-') or '-'}`")
+    st.sidebar.write(f"Status: `{normalize_listing_task_status(active_task.get('status'))}`")
+    st.sidebar.write(f"Operator: `{active_task.get('assigned_operator', '-') or '-'}`")
+
+    with st.sidebar.expander("Task details", expanded=False):
+        st.write(f"Priority: `{active_task.get('priority', '-') or '-'}`")
+        st.write(f"Shipping: `{active_task.get('merchant_shipping_group_name', '-') or '-'}`")
+        st.write(f"Decoration: `{active_task.get('sku_decoration_code', '-') or '-'}`")
+        st.write(f"Folder: `{active_task.get('expected_stage_folder', '-') or '-'}`")
+        st.write(f"Variants: `{summarize_task_variants(active_task)}`")
+        st.write(f"Pricing: `{summarize_task_prices(active_task)}`")
+        if active_task.get("title"):
+            st.write("Title/guidance:")
+            st.caption(str(active_task.get("title", "")))
+        if active_task.get("notes"):
+            st.write("Notes:")
+            st.caption(str(active_task.get("notes", "")))
+
+        for ref_idx, reference_image_path in enumerate(get_task_reference_image_paths(active_task), start=1):
+            reference_image_name = Path(reference_image_path).name or f"mpn-image-{ref_idx}"
+            try:
+                st.image(dropbox_preview_url(reference_image_path), width=110)
+            except Exception:
+                st.caption(f"MPN {ref_idx}")
+            try:
+                reference_image_bytes = download_binary_file(reference_image_path)
+            except Exception:
+                st.caption(f"MPN {ref_idx} unavailable")
+                continue
+
+            reference_suffix = Path(reference_image_name).suffix.lower()
+            reference_mime = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+            }.get(reference_suffix, "application/octet-stream")
+            st.download_button(
+                f"Download MPN {ref_idx}",
+                data=reference_image_bytes,
+                file_name=reference_image_name,
+                mime=reference_mime,
+                key=f"sidebar_task_download_mpn_{ref_idx}_{safe_widget_key_part(reference_image_path)}",
+                width="stretch",
+            )
+
+
+def build_task_from_current_listing(
+    profile: dict[str, Any],
+    *,
+    title: str,
+    bullets: list[str],
+    product_description: str,
+    generic_keywords: str,
+    selected_variants: dict[str, list[str]],
+    size_price_map: dict[str, float],
+    sku_decoration_code: str,
+    sku_listing_code: str,
+    staged_folder_name: str,
+    quantity: int,
+    handling_time_days: int,
+    merchant_shipping_group_name: str,
+    assets_prepared_by: str,
+    content_prepared_by: str,
+    notes: str = "",
+) -> dict[str, Any]:
+    listing_code = sanitize_sku(str(sku_listing_code or "")).upper()
+    return {
+        "task_id": "",
+        "status": "In progress" if staged_folder_name else "New",
+        "priority": "Normal",
+        "assigned_operator": assets_prepared_by or content_prepared_by or "",
+        "assets_prepared_by": assets_prepared_by,
+        "content_prepared_by": content_prepared_by,
+        "template_family": profile.get("_family_slug", ""),
+        "template_key": profile.get("template_key", profile.get("_slug", "")),
+        "template_label": profile.get("label", profile.get("_slug", "")),
+        "mpn_listing_code": listing_code,
+        "title": title,
+        "bullet_points": (list(bullets or []) + ["", "", "", "", ""])[:5],
+        "product_description": product_description,
+        "generic_keywords": generic_keywords,
+        "expected_stage_folder": staged_folder_name,
+        "selected_variants": {
+            key: list(values)
+            for key, values in dict(selected_variants or {}).items()
+            if isinstance(values, list)
+        },
+        "size_price_map": dict(size_price_map or {}),
+        "price_input_mode": st.session_state.get("design_size_pricing_mode", ""),
+        "use_same_price_for_all_sizes": len(set(str(value) for value in dict(size_price_map or {}).values())) == 1,
+        "sku_decoration_code": sku_decoration_code,
+        "merchant_shipping_group_name": normalize_merchant_shipping_group(merchant_shipping_group_name),
+        "quantity": int(quantity or 0),
+        "handling_time_days": normalize_handling_time_days(handling_time_days),
+        "notes": notes,
+        "created_by": content_prepared_by or assets_prepared_by or "",
+    }
+
+
+def update_task_linked_listing_inputs(
+    dropbox_cfg: dict[str, Any],
+    profiles: list[dict[str, Any]],
+    task: dict[str, Any],
+) -> None:
+    candidate_paths: list[str] = []
+    expected_stage_folder = str(task.get("expected_stage_folder", "") or "").strip()
+    if expected_stage_folder:
+        candidate_paths.append(build_stage_folder_path(dropbox_cfg, expected_stage_folder))
+    for field_name in ["ready_folder_path", "approved_folder_path", "finished_folder_path"]:
+        folder_path = str(task.get(field_name, "") or "").strip()
+        if folder_path:
+            candidate_paths.append(folder_path)
+    for field_name in ["ready_folder_paths", "approved_folder_paths", "finished_folder_paths"]:
+        for folder_path in list(task.get(field_name, []) or []):
+            if str(folder_path).strip():
+                candidate_paths.append(str(folder_path).strip())
+
+    for folder_path in dict.fromkeys(candidate_paths):
+        if not folder_path or not path_exists(folder_path):
+            continue
+        existing_memory = load_listing_memory_from_dropbox(folder_path)
+        profile = find_profile_for_listing_memory(profiles, existing_memory) if existing_memory else None
+        if not profile:
+            profile = find_profile_for_listing_task(profiles, task)
+        if not profile:
+            continue
+
+        updated_memory = dict(existing_memory)
+        listing_code = sanitize_sku(str(task.get("mpn_listing_code", "") or "")).upper()
+        if listing_code:
+            sku_decoration_code = str(
+                updated_memory.get("sku_decoration_code")
+                or task.get("sku_decoration_code")
+                or get_default_sku_decoration_code(profile)
+            )
+            updated_memory["manual_sku_listing_code"] = listing_code
+            updated_memory["generated_sku_listing_code"] = listing_code
+            updated_memory["sku_listing_code"] = listing_code
+            updated_memory["sku_decoration_code"] = sku_decoration_code
+            updated_memory["base_parent_sku"] = str(get_default(profile, "parent_sku", "")).strip()
+            updated_memory["parent_sku"] = build_parent_sku_from_context(
+                profile,
+                sku_decoration_code,
+                listing_code,
+            )
+
+        for field_name, task_value in {
+            "listing_task_id": task.get("task_id", ""),
+        "listing_task_path": task.get("task_path", ""),
+        "listing_task_notes": task.get("notes", ""),
+        "listing_task_reference_image_path": task.get("reference_image_path", ""),
+        "listing_task_reference_image_paths": get_task_reference_image_paths(task),
+        "listing_task_status": normalize_listing_task_status(task.get("status")),
+        }.items():
+            if task_value:
+                updated_memory[field_name] = task_value
+
+        save_listing_inputs_json_to_dropbox(
+            profile=profile,
+            payload=updated_memory,
+            folder_path=folder_path,
+        )
+
+
+def render_listing_task_panel(
+    profiles: list[dict[str, Any]],
+    families: list[str],
+    dropbox_cfg: dict[str, Any],
+    staged_folder_names: list[str],
+) -> None:
+    tasks_root = build_listing_tasks_root(dropbox_cfg)
+    with st.expander("Listing tasks", expanded=bool(st.session_state.pop("open_listing_tasks_panel_once", False))):
+        st.caption(f"Task store: `{tasks_root or '-'}`")
+        st.caption("Tasks are intake briefs. Apply a task to create/update a staged folder; after that, the staged listing owns the workflow.")
+        active_task = st.session_state.get("active_listing_task", {})
+        if active_task:
+            st.success(
+                "Active task: "
+                f"`{active_task.get('mpn_listing_code', active_task.get('task_id', ''))}`"
+            )
+            if active_task.get("notes"):
+                st.caption(str(active_task.get("notes", "")))
+
+        task_sections = ["Use task", "Create task"]
+        st.session_state.setdefault("listing_task_section", task_sections[0])
+        task_section = st.segmented_control(
+            "Listing task section",
+            task_sections,
+            key="listing_task_section",
+            selection_mode="single",
+            width="stretch",
+            label_visibility="collapsed",
+        )
+        if task_section not in task_sections:
+            task_section = task_sections[0]
+
+        if task_section == "Use task":
+            load_col, clear_col = st.columns([1, 1])
+            with load_col:
+                if st.button("Load / refresh tasks", key="load_listing_tasks_btn", width="stretch"):
+                    try:
+                        st.session_state["listing_task_records_cache"] = load_listing_tasks_from_dropbox(dropbox_cfg)
+                        st.session_state["listing_task_load_error"] = ""
+                        st.session_state["open_listing_tasks_panel_once"] = True
+                    except Exception as exc:
+                        st.session_state["listing_task_records_cache"] = []
+                        st.session_state["listing_task_load_error"] = str(exc)
+                        st.session_state["open_listing_tasks_panel_once"] = True
+                    st.rerun()
+            with clear_col:
+                if st.button("Clear active task", key="clear_active_listing_task_btn", width="stretch"):
+                    st.session_state.pop("active_listing_task", None)
+                    st.rerun()
+
+            load_error = st.session_state.get("listing_task_load_error", "")
+            if load_error:
+                st.error(load_error)
+
+            task_records = list(st.session_state.get("listing_task_records_cache", []))
+            if not task_records:
+                st.info("Load tasks to pick an assigned listing brief.")
+                return
+
+            status_filter = st.multiselect(
+                "Task status",
+                LISTING_TASK_STATUS_OPTIONS,
+                default=["New", "In progress"],
+                key="listing_task_status_filter",
+            )
+            filtered_tasks = [
+                task for task in task_records
+                if not status_filter or normalize_listing_task_status(task.get("status")) in status_filter
+            ]
+            if not filtered_tasks:
+                st.caption("No tasks match the selected status filter.")
+                return
+
+            selected_task_index = st.selectbox(
+                "Task",
+                range(len(filtered_tasks)),
+                format_func=lambda idx: format_listing_task_label(filtered_tasks[idx]),
+                key="listing_task_select",
+            )
+            selected_task = filtered_tasks[selected_task_index]
+            selected_task_profile = find_profile_for_listing_task(profiles, selected_task)
+            with st.container(border=True):
+                task_detail_col, task_image_col = st.columns([5, 1], vertical_alignment="top")
+                with task_detail_col:
+                    st.write(f"MPN/listing code: `{selected_task.get('mpn_listing_code', '-')}`")
+                    st.write(f"Title/guidance: `{selected_task.get('title', '-') or '-'}`")
+                    st.write(f"Assigned operator: `{selected_task.get('assigned_operator', '-') or '-'}`")
+                    st.write(f"Assets prepared by: `{selected_task.get('assets_prepared_by', '-') or '-'}`")
+                    st.write(f"Priority: `{selected_task.get('priority', 'Normal') or 'Normal'}`")
+                    st.write(f"Shipping template: `{selected_task.get('merchant_shipping_group_name', '') or '-'}`")
+                    st.write(f"Decoration code: `{selected_task.get('sku_decoration_code', '') or '-'}`")
+                    st.write(f"Variants: `{summarize_task_variants(selected_task)}`")
+                    st.write(f"Pricing: `{summarize_task_prices(selected_task)}`")
+                    st.write(f"Quantity: `{selected_task.get('quantity', '-')}`")
+                    st.write(f"Expected staged folder: `{selected_task.get('expected_stage_folder', '-') or '-'}`")
+                    if selected_task.get("notes"):
+                        st.caption(str(selected_task.get("notes", "")))
+                with task_image_col:
+                    reference_image_paths = get_task_reference_image_paths(selected_task)
+                    for ref_idx, reference_image_path in enumerate(reference_image_paths, start=1):
+                        try:
+                            st.image(dropbox_preview_url(reference_image_path), width=110)
+                        except Exception:
+                            st.caption(f"MPN {ref_idx}")
+                        try:
+                            reference_image_bytes = download_binary_file(reference_image_path)
+                        except Exception:
+                            st.caption(f"MPN {ref_idx} unavailable")
+                            continue
+
+                        reference_image_name = Path(reference_image_path).name or f"mpn-image-{ref_idx}"
+                        reference_suffix = Path(reference_image_name).suffix.lower()
+                        reference_mime = {
+                            ".png": "image/png",
+                            ".jpg": "image/jpeg",
+                            ".jpeg": "image/jpeg",
+                            ".webp": "image/webp",
+                        }.get(reference_suffix, "application/octet-stream")
+                        st.download_button(
+                            f"Download {ref_idx}",
+                            data=reference_image_bytes,
+                            file_name=reference_image_name,
+                            mime=reference_mime,
+                            key=(
+                                f"task_download_mpn_{selected_task.get('task_id', selected_task_index)}_"
+                                f"{ref_idx}_{safe_widget_key_part(reference_image_path)}"
+                            ),
+                        )
+
+                with st.expander("Task readiness", expanded=False):
+                    render_task_completeness(selected_task, selected_task_profile, dropbox_cfg)
+
+                task_after_review = is_listing_task_after_review_start(selected_task)
+                with st.expander("Edit selected task", expanded=False):
+                    edit_mpn = st.text_input(
+                        "MPN / listing code",
+                        value=str(selected_task.get("mpn_listing_code", "") or ""),
+                        key=f"task_edit_mpn_{selected_task.get('task_id', selected_task_index)}",
+                    )
+                    current_status = normalize_listing_task_status(selected_task.get("status"))
+                    edit_status = st.selectbox(
+                        "Task status",
+                        LISTING_TASK_STATUS_OPTIONS,
+                        index=LISTING_TASK_STATUS_OPTIONS.index(current_status)
+                        if current_status in LISTING_TASK_STATUS_OPTIONS
+                        else 0,
+                        key=f"task_edit_status_{selected_task.get('task_id', selected_task_index)}",
+                    )
+                    if not task_after_review:
+                        priority_options = ["Normal", "High", "Low"]
+                        current_priority = str(selected_task.get("priority", "Normal") or "Normal")
+                        edit_priority = st.selectbox(
+                            "Priority",
+                            priority_options,
+                            index=priority_options.index(current_priority) if current_priority in priority_options else 0,
+                            key=f"task_edit_priority_{selected_task.get('task_id', selected_task_index)}",
+                        )
+                        current_shipping = normalize_merchant_shipping_group(
+                            selected_task.get("merchant_shipping_group_name", "")
+                        )
+                        edit_shipping = st.selectbox(
+                            "Merchant shipping group",
+                            MERCHANT_SHIPPING_GROUP_OPTIONS,
+                            index=MERCHANT_SHIPPING_GROUP_OPTIONS.index(current_shipping)
+                            if current_shipping in MERCHANT_SHIPPING_GROUP_OPTIONS
+                            else 0,
+                            key=f"task_edit_shipping_{selected_task.get('task_id', selected_task_index)}",
+                        )
+                        current_decoration = str(selected_task.get("sku_decoration_code", "") or "").strip()
+                        edit_decoration = st.selectbox(
+                            "Decoration code",
+                            SKU_DECORATION_OPTIONS,
+                            index=SKU_DECORATION_OPTIONS.index(current_decoration)
+                            if current_decoration in SKU_DECORATION_OPTIONS
+                            else 0,
+                            key=f"task_edit_decoration_{selected_task.get('task_id', selected_task_index)}",
+                        )
+                        edit_reference_image = st.file_uploader(
+                            "Replace reference / MPN image(s)",
+                            type=["png", "jpg", "jpeg", "webp"],
+                            accept_multiple_files=True,
+                            key=f"task_edit_reference_image_{selected_task.get('task_id', selected_task_index)}",
+                        )
+                    else:
+                        st.caption("This task is already in review or finished, so only the MPN/listing code can be changed.")
+                        edit_priority = selected_task.get("priority", "Normal")
+                        edit_shipping = selected_task.get("merchant_shipping_group_name", "")
+                        edit_decoration = selected_task.get("sku_decoration_code", "")
+                        edit_reference_image = []
+
+                    if st.button(
+                        "Save task edits",
+                        key=f"task_save_edits_{selected_task.get('task_id', selected_task_index)}",
+                        width="stretch",
+                    ):
+                        updated_task = dict(selected_task)
+                        updated_task["mpn_listing_code"] = sanitize_sku(edit_mpn).upper()
+                        updated_task["status"] = normalize_listing_task_status(edit_status)
+                        if not updated_task["mpn_listing_code"]:
+                            st.warning("MPN/listing code cannot be blank.")
+                            return
+
+                        if not task_after_review:
+                            updated_task["priority"] = edit_priority
+                            updated_task["merchant_shipping_group_name"] = normalize_merchant_shipping_group(edit_shipping)
+                            updated_task["sku_decoration_code"] = edit_decoration
+                            if edit_reference_image:
+                                uploaded_paths = []
+                                for uploaded_file in list(edit_reference_image)[:3]:
+                                    uploaded_paths.append(
+                                        save_listing_task_attachment(
+                                            dropbox_cfg=dropbox_cfg,
+                                            task_id=str(updated_task.get("task_id", "")),
+                                            file_name=str(uploaded_file.name),
+                                            content=uploaded_file.getvalue(),
+                                        )
+                                    )
+                                set_task_reference_image_paths(updated_task, uploaded_paths)
+
+                        try:
+                            save_listing_task_to_dropbox(dropbox_cfg, updated_task)
+                        except Exception as exc:
+                            st.error(f"Could not save task edits: {exc}")
+                            return
+
+                        st.session_state["listing_task_records_cache"] = load_listing_tasks_from_dropbox(dropbox_cfg)
+                        if active_task.get("task_id") == updated_task.get("task_id"):
+                            st.session_state["active_listing_task"] = build_active_listing_task_state(updated_task)
+                        st.session_state["open_listing_tasks_panel_once"] = True
+                        set_workflow_flash("success", "Saved task edits.")
+                        st.rerun()
+
+                    delete_task_confirmed = st.checkbox(
+                        "Confirm delete this task",
+                        key=f"task_delete_confirm_{selected_task.get('task_id', selected_task_index)}",
+                    )
+                    if st.button(
+                        "Delete selected task",
+                        key=f"task_delete_{selected_task.get('task_id', selected_task_index)}",
+                        width="stretch",
+                        disabled=not delete_task_confirmed,
+                    ):
+                        task_path = str(selected_task.get("task_path", "") or "").strip()
+                        if not task_path:
+                            st.warning("This task does not have a saved task path.")
+                            return
+                        try:
+                            task_deleted = delete_dropbox_path_if_present(task_path)
+                            attachment_root = (
+                                f"{build_listing_tasks_root(dropbox_cfg)}/_attachments/"
+                                f"{sanitize_sku(str(selected_task.get('task_id', '')))}"
+                            )
+                            attachments_deleted = delete_dropbox_path_if_present(attachment_root)
+                        except Exception as exc:
+                            st.error(f"Could not delete task: {exc}")
+                            return
+
+                        if active_task.get("task_id") == selected_task.get("task_id"):
+                            st.session_state.pop("active_listing_task", None)
+                        remove_listing_task_from_session_cache(selected_task)
+                        try:
+                            st.session_state["listing_task_records_cache"] = load_listing_tasks_from_dropbox(dropbox_cfg)
+                            st.session_state["listing_task_load_error"] = ""
+                        except Exception as exc:
+                            st.session_state["listing_task_load_error"] = str(exc)
+                        detail = []
+                        detail.append("Task file deleted." if task_deleted else "Task file was already gone.")
+                        if attachments_deleted:
+                            detail.append("Attachments deleted.")
+                        set_workflow_flash("success", "Deleted selected task.", " ".join(detail))
+                        st.rerun()
+
+            if st.button("Apply selected task", key="apply_listing_task_btn", width="stretch"):
+                task_profile = selected_task_profile
+                if not task_profile:
+                    st.error("Could not match this task to a template profile.")
+                    return
+
+                task_to_apply = dict(selected_task)
+                if normalize_listing_task_status(task_to_apply.get("status")) == "New":
+                    task_to_apply["status"] = "In progress"
+
+                try:
+                    staged_result = create_or_update_staged_folder_from_task(
+                        dropbox_cfg=dropbox_cfg,
+                        profile=task_profile,
+                        task=task_to_apply,
+                    )
+                    task_to_apply["expected_stage_folder"] = staged_result["folder_name"]
+                    save_listing_task_to_dropbox(dropbox_cfg, task_to_apply)
+                    st.session_state["listing_task_records_cache"] = load_listing_tasks_from_dropbox(dropbox_cfg)
+                except Exception as exc:
+                    st.error(f"Could not create staged folder from task: {exc}")
+                    return
+
+                apply_listing_task_to_session(task_to_apply, task_profile)
+                st.session_state["folder_source_mode"] = "Use staged folder"
+                st.session_state["staged_folder_select"] = staged_result["folder_name"]
+                st.session_state.pop("open_listing_tasks_panel_once", None)
+                clear_runtime_caches()
+                set_workflow_flash(
+                    "success",
+                    f"Applied task and {'created' if staged_result['created'] else 'updated'} staged folder {staged_result['folder_name']}.",
+                    f"Saved listing inputs to {staged_result['listing_memory_path']}.",
+                )
+                st.rerun()
+
+        if task_section == "Create task":
+            if not families:
+                st.info("No template families are available.")
+                return
+
+            task_family = st.selectbox(
+                "Template family",
+                families,
+                key="task_create_family",
+            )
+            task_family_profiles = [
+                profile for profile in profiles
+                if profile.get("_family_slug") == task_family
+            ]
+            task_family_labels = [
+                profile.get("label", profile.get("_slug", ""))
+                for profile in task_family_profiles
+            ]
+            task_template_label = st.selectbox(
+                "Garment template",
+                task_family_labels,
+                key="task_create_template",
+            )
+            task_profile = task_family_profiles[task_family_labels.index(task_template_label)]
+
+            selected_variants_for_task: dict[str, list[str]] = {}
+            if task_profile.get("variant_dimensions"):
+                for dim in task_profile.get("variant_dimensions", []):
+                    dim_name = str(dim.get("name", "") or "").strip()
+                    dim_options = list(dim.get("options", []) or [])
+                    if not dim_name or not dim_options:
+                        continue
+                    selected_values = st.multiselect(
+                        f"{dim_name.title()} options",
+                        dim_options,
+                        key=f"task_create_variant_{dim_name}",
+                        placeholder=f"Leave blank for all {dim_name} options",
+                    )
+                    selected_variants_for_task[dim_name] = selected_values or list(dim_options)
+            else:
+                task_color_options = get_profile_color_options(task_profile)
+                selected_task_colors = st.multiselect(
+                    "Colours",
+                    task_color_options,
+                    key="task_create_colours",
+                    placeholder="Leave blank for all colours",
+                )
+                selected_task_sizes = st.multiselect(
+                    "Sizes",
+                    list(task_profile.get("sizes", []) or []),
+                    key="task_create_sizes",
+                    placeholder="Leave blank for all sizes",
+                )
+                selected_variants_for_task = {
+                    "color": selected_task_colors or list(task_color_options),
+                    "size": selected_task_sizes or list(task_profile.get("sizes", []) or []),
+                }
+
+            mpn_listing_code = st.text_input(
+                "MPN / listing code",
+                key="task_create_mpn_listing_code",
+                placeholder="Example: NMYR",
+            )
+            task_title = st.text_input(
+                "Title or title guidance",
+                key="task_create_title",
+            )
+            expected_stage_folder = st.text_input(
+                "Expected staged folder (optional)",
+                key="task_create_expected_stage_folder",
+                placeholder="Use when the folder already exists or has a planned name",
+            )
+            assigned_operator = st.selectbox(
+                "Assigned operator",
+                WORKFLOW_ASSIGNEES,
+                key="task_create_assigned_operator",
+            )
+            assets_prepared_by = st.selectbox(
+                "Assets prepared by",
+                WORKFLOW_ASSIGNEES,
+                key="task_create_assets_prepared_by",
+            )
+            priority = st.selectbox(
+                "Priority",
+                ["Normal", "High", "Low"],
+                key="task_create_priority",
+            )
+            sku_decoration_code = st.selectbox(
+                "Decoration code",
+                SKU_DECORATION_OPTIONS,
+                index=SKU_DECORATION_OPTIONS.index(get_default_sku_decoration_code(task_profile))
+                if get_default_sku_decoration_code(task_profile) in SKU_DECORATION_OPTIONS
+                else 0,
+                key="task_create_sku_decoration_code",
+            )
+            merchant_shipping_group_name = st.selectbox(
+                "Merchant shipping group (optional)",
+                MERCHANT_SHIPPING_GROUP_OPTIONS,
+                key="task_create_merchant_shipping_group_name",
+            )
+            pricing_mode, task_price_values = render_task_pricing_inputs(
+                task_profile,
+                selected_variants_for_task,
+            )
+            quantity = st.number_input(
+                "Quantity",
+                min_value=0,
+                value=100,
+                step=1,
+                key="task_create_quantity",
+            )
+            notes = st.text_area(
+                "Notes / content brief",
+                key="task_create_notes",
+                placeholder="Image instructions, design notes, pricing notes, deadline, or anything the operator should know.",
+            )
+            reference_image = st.file_uploader(
+                "Reference / MPN image(s) (optional, max 3)",
+                type=["png", "jpg", "jpeg", "webp"],
+                accept_multiple_files=True,
+                key="task_create_reference_image",
+            )
+            create_task_clicked = st.button("Create listing task", key="create_listing_task_btn", width="stretch")
+
+            if create_task_clicked:
+                listing_code = sanitize_sku(mpn_listing_code).upper()
+                if not listing_code:
+                    st.warning("Enter an MPN/listing code before creating the task.")
+                    return
+                if not assigned_operator:
+                    st.warning("Choose an assigned operator before creating the task.")
+                    return
+
+                task = {
+                    "task_id": "",
+                    "status": "New",
+                    "priority": priority,
+                    "assigned_operator": assigned_operator,
+                    "assets_prepared_by": assets_prepared_by or assigned_operator,
+                    "template_family": task_profile.get("_family_slug", ""),
+                    "template_key": task_profile.get("template_key", task_profile.get("_slug", "")),
+                    "template_label": task_profile.get("label", task_profile.get("_slug", "")),
+                    "mpn_listing_code": listing_code,
+                    "title": task_title,
+                    "expected_stage_folder": expected_stage_folder.strip(),
+                    "selected_variants": selected_variants_for_task,
+                    "size_price_map": build_task_price_map(
+                        task_profile,
+                        selected_variants_for_task,
+                        pricing_mode,
+                        task_price_values,
+                    ),
+                    "price_input_mode": pricing_mode,
+                    "use_same_price_for_all_sizes": pricing_mode == "Use one price for all",
+                    "sku_decoration_code": sku_decoration_code,
+                    "merchant_shipping_group_name": normalize_merchant_shipping_group(merchant_shipping_group_name),
+                    "quantity": int(quantity),
+                    "notes": notes,
+                    "created_by": "",
+                }
+
+                try:
+                    task_path = save_listing_task_to_dropbox(dropbox_cfg, task)
+                    if reference_image:
+                        uploaded_paths = []
+                        for uploaded_file in list(reference_image)[:3]:
+                            uploaded_paths.append(
+                                save_listing_task_attachment(
+                                    dropbox_cfg=dropbox_cfg,
+                                    task_id=str(task.get("task_id", "")),
+                                    file_name=str(uploaded_file.name),
+                                    content=uploaded_file.getvalue(),
+                                )
+                            )
+                        set_task_reference_image_paths(task, uploaded_paths)
+                        task_path = save_listing_task_to_dropbox(dropbox_cfg, task)
+                except Exception as exc:
+                    st.error(f"Could not create task: {exc}")
+                    return
+
+                st.session_state["listing_task_records_cache"] = load_listing_tasks_from_dropbox(dropbox_cfg)
+                st.session_state["listing_task_section"] = "Use task"
+                st.session_state["open_listing_tasks_panel_once"] = True
+                set_workflow_flash(
+                    "success",
+                    f"Created listing task {task.get('task_id', '')}.",
+                    task_path,
+                )
+                st.rerun()
 
 
 def restage_finished_dropbox_folder(
@@ -1676,6 +3052,17 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
         "ignored_reason",
         "finished_folder_sku",
         "pending_finished_folder_path",
+        "cp_source_folder",
+        "cp_source_folder_path",
+        "cp_split_group",
+        "cp_split_group_label",
+        "cp_split_source_ready_folder",
+        "listing_task_id",
+        "listing_task_status",
+        "listing_task_notes",
+        "listing_task_path",
+        "listing_task_reference_image_path",
+        "listing_task_reference_image_paths",
     ]:
         if payload.get(field_name) not in (None, "", [], {}):
             memory_payload[field_name] = payload.get(field_name, "")
@@ -1793,6 +3180,13 @@ def apply_listing_memory_to_session(listing_memory: dict[str, Any], profile: dic
     st.session_state["product_description"] = listing_memory.get("product_description", "")
     st.session_state["generic_keywords"] = listing_memory.get("generic_keywords", "")
     st.session_state["use_same_price_for_all_sizes"] = listing_memory.get("use_same_price_for_all_sizes", False)
+    saved_price_mode = str(listing_memory.get("price_input_mode", "") or "")
+    if saved_price_mode == "Use cluster prices":
+        st.session_state["design_size_pricing_mode"] = "Use one price per cluster"
+    elif saved_price_mode == "Manual price by size":
+        st.session_state["design_size_pricing_mode"] = "Manual price by garment/size"
+    elif saved_price_mode == "Use one price for all":
+        st.session_state["design_size_pricing_mode"] = "Use one price for all"
     sku_decoration_code = get_default_sku_decoration_code(profile, listing_memory)
     st.session_state["sku_decoration_choice"] = sku_decoration_code if sku_decoration_code in SKU_DECORATION_OPTIONS else "Custom"
     st.session_state["custom_sku_decoration_code"] = "" if sku_decoration_code in SKU_DECORATION_OPTIONS else sku_decoration_code
@@ -1885,6 +3279,248 @@ def move_staged_dropbox_folder_to_ready(
         if not moved_path:
             raise RuntimeError("Dropbox returned an empty path after moving the folder to ready.")
         return moved_path
+
+
+def is_split_listing_profile(profile: dict[str, Any]) -> bool:
+    groups = profile.get("split_listing_groups", [])
+    return isinstance(groups, list) and any(isinstance(group, dict) for group in groups)
+
+
+def get_split_listing_groups(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    for group in profile.get("split_listing_groups", []) or []:
+        if not isinstance(group, dict):
+            continue
+        designs = [
+            str(design or "").strip()
+            for design in list(group.get("designs", []) or [])
+            if str(design or "").strip()
+        ]
+        key = sanitize_sku(str(group.get("key", "") or group.get("label", "") or "")).lower()
+        suffix = sanitize_sku(str(group.get("parent_sku_suffix", "") or key or "")).upper()
+        title_prefix = str(group.get("title_prefix", "") or group.get("label", "") or "").strip()
+        if not key or not suffix or not title_prefix or not designs:
+            continue
+        groups.append({
+            "key": key,
+            "label": str(group.get("label", "") or title_prefix).strip(),
+            "title_prefix": title_prefix,
+            "parent_sku_suffix": suffix,
+            "designs": designs,
+        })
+    return groups
+
+
+def build_split_listing_parent_sku(parent_sku: str, suffix: str) -> str:
+    parent_sku = sanitize_sku(str(parent_sku or "")).upper()
+    suffix = sanitize_sku(str(suffix or "")).upper()
+    return "-".join(part for part in [parent_sku, suffix] if part)
+
+
+def build_unique_ready_folder_name(dropbox_cfg: dict[str, Any], base_name: str) -> str:
+    base_name = sanitize_sku(str(base_name or ""))
+    if not base_name:
+        raise ValueError("Ready folder name is required.")
+
+    candidate = base_name
+    counter = 1
+    while path_exists(build_ready_folder_path(dropbox_cfg, candidate)):
+        candidate = f"{base_name}-{counter}"
+        counter += 1
+    return candidate
+
+
+def build_split_listing_payloads(
+    profile: dict[str, Any],
+    payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    selected_variants = dict(payload.get("selected_variants", {}) or {})
+    selected_designs = list(selected_variants.get("design", []) or [])
+    selected_colors = list(selected_variants.get("color", []) or [])
+    selected_sizes = list(selected_variants.get("size", []) or [])
+    base_title = str(payload.get("title", "") or "").strip()
+    base_parent_sku = str(payload.get("parent_sku", "") or "").strip()
+    source_price_map = dict(payload.get("size_price_map", {}) or {})
+    split_payloads: list[dict[str, Any]] = []
+
+    for group in get_split_listing_groups(profile):
+        group_designs = [
+            design for design in group["designs"]
+            if not selected_designs or design in selected_designs
+        ]
+        if not group_designs:
+            continue
+
+        candidate_variants = {
+            "design": group_designs,
+            "color": selected_colors,
+            "size": selected_sizes,
+        }
+        valid_combos = build_variant_combinations(profile, candidate_variants)
+        if not valid_combos:
+            continue
+
+        group_colors = [
+            color for color in selected_colors
+            if any(combo.get("color") == color for combo in valid_combos)
+        ]
+        group_sizes = [
+            size for size in selected_sizes
+            if any(combo.get("size") == size for combo in valid_combos)
+        ]
+        group_variants = {
+            "design": group_designs,
+            "color": group_colors,
+            "size": group_sizes,
+        }
+        group_price_map: dict[str, Any] = {}
+        for combo in valid_combos:
+            price_key = build_variant_price_key(combo)
+            if price_key in source_price_map:
+                group_price_map[price_key] = source_price_map[price_key]
+                continue
+            resolved_price = get_variant_price_from_map(profile, source_price_map, combo, fallback="")
+            if resolved_price not in ("", None):
+                group_price_map[price_key] = resolved_price
+
+        split_payload = dict(payload)
+        split_payload["selected_variants"] = group_variants
+        split_payload["colors"] = group_colors
+        split_payload["sizes"] = group_sizes
+        split_payload["size_price_map"] = group_price_map
+        split_payload["title"] = " ".join(
+            part for part in [group["title_prefix"], base_title] if str(part or "").strip()
+        ).strip()
+        split_payload["parent_sku"] = build_split_listing_parent_sku(
+            base_parent_sku,
+            group["parent_sku_suffix"],
+        )
+        split_payload["base_parent_sku"] = str(payload.get("base_parent_sku", "") or base_parent_sku)
+        split_payload["cp_split_group"] = group["key"]
+        split_payload["cp_split_group_label"] = group["label"]
+        split_payload["cp_split_source_ready_folder"] = ""
+        split_payloads.append(split_payload)
+
+    return split_payloads
+
+
+def copy_staged_folder_to_ready_listing(
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+    ready_folder_name: str,
+) -> str:
+    stage_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+    ready_folder_name = build_unique_ready_folder_name(dropbox_cfg, ready_folder_name)
+    ready_folder_path = build_ready_folder_path(dropbox_cfg, ready_folder_name)
+    create_folder_if_missing(dropbox_cfg.get("ready_root", "").rstrip("/"))
+    copied_path = copy_dropbox_folder(stage_path, ready_folder_path)
+    if not copied_path:
+        raise RuntimeError("Dropbox returned an empty path after copying the staged folder to ready.")
+    return copied_path
+
+
+def archive_submitted_cp_source_folder(
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+) -> str:
+    stage_root = dropbox_cfg.get("stage_root", "").rstrip("/")
+    archive_root = f"{stage_root}/_submitted_cp_sources"
+    create_folder_if_missing(archive_root)
+
+    source_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+    base_name = sanitize_sku(staged_folder_name) or "CP-source"
+    archive_name = base_name
+    counter = 1
+    while path_exists(f"{archive_root}/{archive_name}"):
+        archive_name = f"{base_name}-{counter}"
+        counter += 1
+
+    archived_path = move_dropbox_folder(source_path, f"{archive_root}/{archive_name}")
+    if not archived_path:
+        raise RuntimeError("Dropbox returned an empty path after archiving the CP source folder.")
+    return archived_path
+
+
+def submit_split_listing_for_review(
+    profile: dict[str, Any],
+    payload: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+    quality_report: dict[str, Any],
+    preview_errors: list[str],
+) -> dict[str, Any]:
+    stage_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+    split_payloads = build_split_listing_payloads(profile, payload)
+    split_groups = get_split_listing_groups(profile)
+    if len(split_payloads) != len(split_groups):
+        expected_labels = ", ".join(group["label"] for group in split_groups)
+        created_labels = ", ".join(str(row.get("cp_split_group_label", "")) for row in split_payloads)
+        raise ValueError(
+            "CP split must create every configured listing group before review. "
+            f"Expected: {expected_labels}. Created: {created_labels or 'none'}. "
+            "Check selected garments, colours, sizes, and staged images."
+        )
+
+    created_ready_paths: list[str] = []
+    created_rows: list[dict[str, str]] = []
+    source_folder_name = str(staged_folder_name or "").strip()
+    source_actor = str(payload.get("content_prepared_by", "") or payload.get("assets_prepared_by", "") or "")
+
+    for split_payload in split_payloads:
+        ready_folder_name = build_unique_ready_folder_name(dropbox_cfg, split_payload["parent_sku"])
+        ready_folder_path = copy_staged_folder_to_ready_listing(
+            dropbox_cfg=dropbox_cfg,
+            staged_folder_name=staged_folder_name,
+            ready_folder_name=ready_folder_name,
+        )
+        final_ready_folder_name = Path(ready_folder_path).name
+
+        split_payload["cp_source_folder"] = source_folder_name
+        split_payload["cp_source_folder_path"] = stage_folder_path
+        split_payload["cp_split_source_ready_folder"] = final_ready_folder_name
+        split_payload["prepared_at"] = payload.get("prepared_at", format_workflow_timestamp())
+        split_payload["reviewed_at"] = payload.get("reviewed_at", "")
+        split_payload["review_snapshot"] = build_review_snapshot(
+            profile=profile,
+            payload=split_payload,
+            dropbox_cfg=dropbox_cfg,
+            folder_path=ready_folder_path,
+            quality_report=quality_report,
+            preview_errors=preview_errors,
+        )
+        append_workflow_event(
+            split_payload,
+            action="submit_cp_split_for_review",
+            actor=source_actor,
+            from_state="_stage",
+            to_state="ready",
+            folder_path=ready_folder_path,
+            details={
+                "cp_source_folder": source_folder_name,
+                "cp_split_group": split_payload.get("cp_split_group", ""),
+                "cp_split_group_label": split_payload.get("cp_split_group_label", ""),
+                "parent_sku": split_payload.get("parent_sku", ""),
+            },
+        )
+        listing_memory_path = save_listing_inputs_json_to_dropbox(
+            profile=profile,
+            payload=split_payload,
+            folder_path=ready_folder_path,
+        )
+        created_ready_paths.append(ready_folder_path)
+        created_rows.append({
+            "group": str(split_payload.get("cp_split_group_label", "")),
+            "ready_folder": final_ready_folder_name,
+            "parent_sku": str(split_payload.get("parent_sku", "")),
+            "listing_inputs": listing_memory_path,
+        })
+
+    archived_path = archive_submitted_cp_source_folder(dropbox_cfg, staged_folder_name)
+    return {
+        "ready_paths": created_ready_paths,
+        "created_rows": created_rows,
+        "archived_path": archived_path,
+    }
 
 
 def move_ready_dropbox_folder_to_approved(
@@ -2257,6 +3893,245 @@ def is_image_file(path: str) -> bool:
     suffix = Path(path).suffix.lower()
     return suffix in {".png", ".jpg", ".jpeg", ".webp"}
 
+
+def is_ignored_zip_member(parts: list[str]) -> bool:
+    if not parts:
+        return True
+    filename = parts[-1]
+    return (
+        any(part == "__MACOSX" for part in parts)
+        or filename in {".DS_Store", "Thumbs.db"}
+        or filename.startswith("._")
+    )
+
+
+def inspect_stage_images_zip(zip_bytes: bytes, staged_folder_path: str) -> dict[str, Any]:
+    stage_root = staged_folder_path.rstrip("/")
+    resources_root = f"{stage_root}/resources"
+    plan: dict[str, Any] = {
+        "mockups": [],
+        "resources": [],
+        "skipped": [],
+    }
+
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+        member_parts: list[list[str]] = []
+        for member in archive.infolist():
+            if member.is_dir():
+                continue
+            normalized_name = member.filename.replace("\\", "/").lstrip("/")
+            parts = [part for part in normalized_name.split("/") if part and part != "."]
+            if parts and not is_ignored_zip_member(parts):
+                member_parts.append(parts)
+        wrapper_folder = ""
+        if member_parts and all(len(parts) > 1 for parts in member_parts):
+            first_parts = {parts[0] for parts in member_parts}
+            if len(first_parts) == 1 and next(iter(first_parts)).lower() != "resources":
+                wrapper_folder = next(iter(first_parts))
+
+        for member in archive.infolist():
+            raw_name = member.filename
+            normalized_name = raw_name.replace("\\", "/").lstrip("/")
+            parts = [part for part in normalized_name.split("/") if part and part != "."]
+
+            if member.is_dir() or is_ignored_zip_member(parts):
+                continue
+            if wrapper_folder and parts and parts[0] == wrapper_folder:
+                parts = parts[1:]
+
+            if not parts or any(part == ".." for part in parts) or (parts and ":" in parts[0]):
+                plan["skipped"].append({
+                    "file": raw_name,
+                    "reason": "Unsafe ZIP path",
+                })
+                continue
+
+            filename = parts[-1]
+            if not is_image_file(filename):
+                plan["skipped"].append({
+                    "file": raw_name,
+                    "reason": "Not a supported image file",
+                })
+                continue
+
+            if parts[0].lower() == "resources":
+                if len(parts) < 2:
+                    plan["skipped"].append({
+                        "file": raw_name,
+                        "reason": "Resource filename missing",
+                    })
+                    continue
+                plan["resources"].append({
+                    "source": raw_name,
+                    "filename": filename,
+                    "destination": f"{resources_root}/{filename}",
+                })
+                continue
+
+            if len(parts) > 1:
+                plan["skipped"].append({
+                    "file": raw_name,
+                    "reason": "Nested image is not inside resources/",
+                })
+                continue
+
+            plan["mockups"].append({
+                "source": raw_name,
+                "filename": filename,
+                "destination": f"{stage_root}/{filename}",
+            })
+
+    return plan
+
+
+def count_stage_image_files(folder_path: str) -> int:
+    if not folder_path:
+        return 0
+    try:
+        return len([path for path in list_folder_files(folder_path) if is_image_file(path)])
+    except Exception:
+        return 0
+
+
+def upload_stage_images_zip(
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+    zip_bytes: bytes,
+) -> dict[str, Any]:
+    staged_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+    resources_folder_path = f"{staged_folder_path.rstrip('/')}/resources"
+    plan = inspect_stage_images_zip(zip_bytes, staged_folder_path)
+
+    before_mockups = count_stage_image_files(staged_folder_path)
+    before_resources = count_stage_image_files(resources_folder_path)
+
+    create_folder_if_missing(staged_folder_path)
+    create_folder_if_missing(resources_folder_path)
+
+    uploaded: list[dict[str, str]] = []
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+        for item in [*plan["mockups"], *plan["resources"]]:
+            upload_binary_file(item["destination"], archive.read(item["source"]))
+            uploaded.append({
+                "source": item["source"],
+                "destination": item["destination"],
+            })
+
+    after_mockups = count_stage_image_files(staged_folder_path)
+    after_resources = count_stage_image_files(resources_folder_path)
+
+    return {
+        "staged_folder_path": staged_folder_path,
+        "resources_folder_path": resources_folder_path,
+        "planned_mockups": len(plan["mockups"]),
+        "planned_resources": len(plan["resources"]),
+        "skipped": plan["skipped"],
+        "uploaded": uploaded,
+        "before_mockups": before_mockups,
+        "before_resources": before_resources,
+        "after_mockups": after_mockups,
+        "after_resources": after_resources,
+    }
+
+
+def render_stage_images_zip_upload(
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+) -> None:
+    with st.expander("Upload staged images from ZIP", expanded=False):
+        if not staged_folder_name:
+            st.info("Select or create a staged folder before uploading images.")
+            return
+
+        staged_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+        resources_folder_path = f"{staged_folder_path.rstrip('/')}/resources"
+        existing_mockups = count_stage_image_files(staged_folder_path)
+        existing_resources = count_stage_image_files(resources_folder_path)
+
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("Current mockups", existing_mockups)
+        metric_cols[1].metric("Current resources", existing_resources)
+        metric_cols[2].write(f"Folder: `{staged_folder_name}`")
+        metric_cols[3].write("Overwrites same filenames")
+
+        uploaded_zip = st.file_uploader(
+            "Upload ZIP with mockup images in the root and resource images inside resources/",
+            type=["zip"],
+            key="stage_images_zip_upload",
+            help="Root images become staged variant/mockup images. Files inside resources/ become secondary resource images.",
+        )
+        if not uploaded_zip:
+            return
+
+        zip_bytes = uploaded_zip.getvalue()
+        try:
+            plan = inspect_stage_images_zip(zip_bytes, staged_folder_path)
+        except zipfile.BadZipFile:
+            st.error("That file is not a valid ZIP archive.")
+            return
+
+        preview_cols = st.columns(3)
+        preview_cols[0].metric("ZIP mockup images", len(plan["mockups"]))
+        preview_cols[1].metric("ZIP resource images", len(plan["resources"]))
+        preview_cols[2].metric("Skipped files", len(plan["skipped"]))
+
+        if plan["mockups"]:
+            with st.expander("Mockup files to upload", expanded=False):
+                st.dataframe(
+                    [{"filename": item["filename"], "destination": item["destination"]} for item in plan["mockups"]],
+                    width="stretch",
+                    hide_index=True,
+                )
+
+        if plan["resources"]:
+            with st.expander("Resource files to upload", expanded=False):
+                st.dataframe(
+                    [{"filename": item["filename"], "destination": item["destination"]} for item in plan["resources"]],
+                    width="stretch",
+                    hide_index=True,
+                )
+
+        if plan["skipped"]:
+            with st.expander("Skipped ZIP files", expanded=False):
+                st.dataframe(plan["skipped"], width="stretch", hide_index=True)
+
+        can_upload = bool(plan["mockups"] or plan["resources"])
+        if st.button(
+            "Upload ZIP images to staged folder",
+            key="upload_stage_images_zip_button",
+            width="stretch",
+            disabled=not can_upload,
+        ):
+            try:
+                result = upload_stage_images_zip(dropbox_cfg, staged_folder_name, zip_bytes)
+            except Exception as exc:
+                st.error(f"ZIP upload failed: {exc}")
+                return
+
+            clear_runtime_caches()
+            st.session_state["load_image_mappings_now"] = True
+            st.session_state["stage_images_zip_upload_result"] = result
+            set_workflow_flash(
+                "success",
+                f"Uploaded {len(result['uploaded'])} image file(s) to {staged_folder_name}.",
+                (
+                    f"Mockups: {result['before_mockups']} -> {result['after_mockups']}. "
+                    f"Resources: {result['before_resources']} -> {result['after_resources']}."
+                ),
+            )
+            st.rerun()
+
+        result = st.session_state.get("stage_images_zip_upload_result")
+        if result and result.get("staged_folder_path") == staged_folder_path:
+            st.success(
+                "Last ZIP upload: "
+                f"{len(result.get('uploaded', []))} uploaded, "
+                f"{len(result.get('skipped', []))} skipped. "
+                f"Mockups {result.get('before_mockups', 0)} -> {result.get('after_mockups', 0)}, "
+                f"resources {result.get('before_resources', 0)} -> {result.get('after_resources', 0)}."
+            )
+
+
 def build_design_color_preview_paths(
     profile: dict[str, Any],
     dropbox_cfg: dict[str, Any],
@@ -2317,6 +4192,47 @@ def render_design_color_grid(
             else:
                 st.warning("Not found")
                 st.code(path, language=None)
+
+
+def build_design_color_display_entries(
+    selected_variants: dict[str, list[str]],
+    color_image_map: dict[str, str],
+    design_color_image_url_map: dict[str, dict[str, str]],
+) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    selected_colors = list(selected_variants.get("color", []) or [])
+    selected_designs = list(selected_variants.get("design", []) or [])
+    for color in selected_colors:
+        for design in selected_designs:
+            image_url = resolve_child_variant_image_url(
+                {"color": color, "design": design},
+                color_image_map=color_image_map,
+                design_color_image_url_map=design_color_image_url_map,
+            )
+            entries.append({
+                "label": f"{color} / {design}",
+                "path": image_url,
+                "exists": bool(image_url),
+                "direct_url": image_url,
+            })
+    return entries
+
+
+def has_distinct_design_color_images(
+    selected_variants: dict[str, list[str]],
+    color_image_map: dict[str, str],
+    design_color_image_url_map: dict[str, dict[str, str]],
+) -> bool:
+    selected_colors = list(selected_variants.get("color", []) or [])
+    selected_designs = list(selected_variants.get("design", []) or [])
+    for color in selected_colors:
+        color_url = color_image_map.get(color, "")
+        for design in selected_designs:
+            design_url = design_color_image_url_map.get(color, {}).get(design, "")
+            if design_url and design_url != color_url:
+                return True
+    return False
+
 
 def render_variant_combinations_preview(
     profile: dict[str, Any],
@@ -3299,10 +5215,21 @@ def get_cached_preview_image_data(
             else "",
         ))
     staged_variant_entries.extend(resolve_display_entries(fallback_variant_entries))
-    design_color_preview_entries = resolve_display_entries([
-        (f"{row['color']} / {row['design']}", row.get("path", ""))
-        for row in design_color_preview_rows
-    ])
+    design_color_preview_entries = build_design_color_display_entries(
+        selected_variants,
+        preview_color_image_map,
+        preview_design_color_image_url_map,
+    )
+    if not design_color_preview_entries:
+        design_color_preview_entries = resolve_display_entries([
+            (f"{row['color']} / {row['design']}", row.get("path", ""))
+            for row in design_color_preview_rows
+        ])
+    show_design_color_image_grid = has_distinct_design_color_images(
+        selected_variants,
+        preview_color_image_map,
+        preview_design_color_image_url_map,
+    )
 
     data = {
         "staged_preview_paths": staged_preview_paths,
@@ -3311,6 +5238,7 @@ def get_cached_preview_image_data(
         "staged_resource_entries": staged_resource_entries,
         "design_color_preview_rows": design_color_preview_rows,
         "design_color_preview_entries": design_color_preview_entries,
+        "show_design_color_image_grid": show_design_color_image_grid,
         "color_image_map": preview_color_image_map,
         "design_color_image_url_map": preview_design_color_image_url_map,
         "full_color_image_map": full_color_image_map,
@@ -3592,6 +5520,14 @@ def render_active_product_context(
     image_mapping_detail: str = "",
 ) -> None:
     st.subheader("Active product context")
+    active_task = st.session_state.get("active_listing_task", {})
+    if isinstance(active_task, dict) and active_task.get("task_id"):
+        task_bits = [
+            str(active_task.get("mpn_listing_code", "") or active_task.get("task_id", "")),
+            str(active_task.get("assigned_operator", "") or "Unassigned"),
+            normalize_listing_task_status(active_task.get("status")),
+        ]
+        st.caption("Task: " + " | ".join(f"`{bit}`" for bit in task_bits if bit))
     col1, col2 = st.columns(2)
     with col1:
         st.write(f"Staged folder: `{active_staged_folder_name or '-'}`")
@@ -3879,6 +5815,8 @@ def build_design_size_price_inputs(
 def get_design_size_price_cluster_label(design: str, size: str) -> str:
     design_normalized = str(design or "").strip().lower()
     size_normalized = str(size or "").strip().upper()
+    if size_normalized in {"ONE SIZE", "OS", "ONE-SIZE"}:
+        return "One Size"
     if "kid" in design_normalized or is_child_size_label(size):
         return "Kids"
     if size_normalized in {"3XL", "4XL", "5XL", "6XL", "7XL", "8XL"}:
@@ -4253,7 +6191,13 @@ def write_child_rows(
         field_aliases = data.get("field_aliases", {})
         extra_child_fields = data.get("extra_child_fields", {})
         values = prepare_row_values(values, field_aliases, extra_child_fields)
-        values = apply_apparel_size_fields(values, normalized_size, is_apparel=is_apparel)
+        values = apply_apparel_size_fields(
+            values,
+            normalized_size,
+            is_apparel=is_apparel,
+            age_body_type=str(data.get("age_apparel_body_type", "") or ""),
+            age_height_type=str(data.get("age_apparel_height_type", "") or ""),
+        )
         values["size_name"] = normalized_display_size
         if is_apparel:
             values["apparel_size"] = normalized_display_size
@@ -7321,50 +9265,508 @@ def render_move_generated_to_finished_controls(
     eligible_results = [
         result for result in results
         if result.get("status") == "Success"
-        and result.get("approved_folder_name")
-        and not result.get("finished_folder_path")
+        and result.get("finished_folder_path")
     ]
     if not eligible_results:
         return
 
-    st.info("Generated workbooks are ready. Move these approved folders to Finished after you have downloaded the Excel files.")
+    st.caption("Generated folders are already in Finished. Bring them back only if the workbook needs another edit.")
     if st.button(
-        "Move generated successful listing(s) to Finished",
-        key="move_generated_successful_to_finished",
+        "Bring generated listing(s) back to Approved",
+        key="bring_back_generated_successful_from_finished",
         width="stretch",
     ):
-        move_results: list[dict[str, Any]] = []
+        bring_back_results: list[dict[str, Any]] = []
         for result in eligible_results:
+            finished_folder_name = str(
+                result.get("finished_folder_name")
+                or Path(str(result.get("finished_folder_path", ""))).name
+            ).strip()
             try:
-                move_results.append(
-                    move_generated_approved_listing_to_finished(
-                        result=result,
-                        profiles=profiles,
+                bring_back_results.append(
+                    restage_finished_listing_for_review(
                         dropbox_cfg=dropbox_cfg,
+                        profiles=profiles,
+                        finished_folder_name=finished_folder_name,
+                        target_state="approved",
                     )
                 )
             except Exception as exc:
-                move_results.append({
-                    "folder_name": result.get("approved_folder_name") or result.get("folder_name", ""),
+                bring_back_results.append({
+                    "folder_name": finished_folder_name or result.get("folder_name", ""),
                     "status": "Failed",
                     "message": str(exc),
                 })
 
-        st.session_state["approved_queue_move_generated_results"] = move_results
+        st.session_state["approved_queue_bring_back_results"] = bring_back_results
         st.session_state["approved_queue_generation_results"] = [
             result for result in results
             if result not in eligible_results
         ]
         clear_runtime_caches()
         set_workflow_flash(
-            "success" if all(row.get("status") == "Success" for row in move_results) else "warning",
-            f"Moved {sum(1 for row in move_results if row.get('status') == 'Success')} of {len(move_results)} generated listing(s) to Finished.",
+            "success" if all(row.get("status") == "Success" for row in bring_back_results) else "warning",
+            f"Brought back {sum(1 for row in bring_back_results if row.get('status') == 'Success')} of {len(bring_back_results)} generated listing(s).",
         )
         st.rerun()
 
-    move_results = list(st.session_state.get("approved_queue_move_generated_results", []))
-    if move_results:
-        st.dataframe(move_results, width="stretch", hide_index=True)
+    bring_back_results = list(st.session_state.get("approved_queue_bring_back_results", []))
+    if bring_back_results:
+        st.dataframe(bring_back_results, width="stretch", hide_index=True)
+
+
+def parse_workflow_date(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    for fmt in [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y%m%d_%H%M%S",
+        "%Y-%m-%dT%H:%M:%S",
+    ]:
+        try:
+            return datetime.strptime(text[:len(fmt)], fmt)
+        except ValueError:
+            continue
+
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def is_generated_output_in_range(
+    output: dict[str, Any],
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> bool:
+    output_date = (
+        parse_workflow_date(output.get("created_at"))
+        or parse_workflow_date(output.get("finished_at"))
+    )
+    if not output_date:
+        return False
+    output_day = output_date.date()
+    if start_date and output_day < start_date:
+        return False
+    if end_date and output_day > end_date:
+        return False
+    return True
+
+
+def build_generated_excel_history_rows(
+    approved_items: list[dict[str, Any]],
+    finished_folder_names: list[str],
+    profiles: list[dict[str, Any]],
+    dropbox_cfg: dict[str, Any],
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen_workbooks: set[str] = set()
+
+    def append_outputs(folder_name: str, folder_state: str, listing_memory: dict[str, Any]) -> None:
+        for output in list(listing_memory.get("generated_outputs", []) or []):
+            if not isinstance(output, dict) or not is_generated_output_in_range(output, start_date, end_date):
+                continue
+
+            workbook_path = str(output.get("workbook_dropbox_path", "") or "").strip()
+            workbook_name = str(output.get("workbook_name", "") or Path(workbook_path).name).strip()
+            if not workbook_path or workbook_path in seen_workbooks:
+                continue
+
+            seen_workbooks.add(workbook_path)
+            rows.append({
+                "created_at": output.get("created_at", ""),
+                "folder": folder_name,
+                "state": folder_state,
+                "workbook_name": workbook_name,
+                "workbook_dropbox_path": workbook_path,
+                "status": output.get("status", "generated"),
+                "child_sku_count": output.get("child_sku_count", 0),
+            })
+
+    for item in approved_items:
+        listing_memory = dict(item.get("listing_memory", {}) or {})
+        if listing_memory:
+            append_outputs(str(item.get("folder_name", "") or ""), "Approved", listing_memory)
+
+    for folder_name in finished_folder_names:
+        folder_path = build_finished_folder_path(dropbox_cfg, folder_name)
+        try:
+            listing_memory = load_listing_memory_from_dropbox(folder_path)
+        except Exception:
+            continue
+        if listing_memory:
+            append_outputs(folder_name, "Finished", listing_memory)
+
+    rows.sort(key=lambda row: str(row.get("created_at", "")), reverse=True)
+    return rows
+
+
+def render_generated_excel_history(
+    approved_items: list[dict[str, Any]],
+    finished_folder_names: list[str],
+    profiles: list[dict[str, Any]],
+    dropbox_cfg: dict[str, Any],
+) -> None:
+    st.caption("Load generated Excel files from approved and finished listing records.")
+
+    range_options = ["Today", "Last 7 days", "Last 30 days", "All time"]
+    history_range = st.selectbox(
+        "Generated history range",
+        range_options,
+        key="generated_excel_history_range",
+    )
+    today = datetime.now().date()
+    if history_range == "Today":
+        start_date = today
+    elif history_range == "Last 7 days":
+        start_date = today - timedelta(days=6)
+    elif history_range == "Last 30 days":
+        start_date = today - timedelta(days=29)
+    else:
+        start_date = None
+    end_date = today if history_range != "All time" else None
+
+    if st.button(
+        "Load generated Excel history",
+        key="load_today_generated_excel_history",
+        width="stretch",
+    ):
+        st.session_state["today_generated_excel_history"] = build_generated_excel_history_rows(
+            approved_items=approved_items,
+            finished_folder_names=finished_folder_names,
+            profiles=profiles,
+            dropbox_cfg=dropbox_cfg,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    rows = list(st.session_state.get("today_generated_excel_history", []))
+    if not rows:
+        st.caption("No generated Excel history loaded yet.")
+        return
+
+    st.dataframe(
+        [
+            {
+                "created_at": row.get("created_at", ""),
+                "folder": row.get("folder", ""),
+                "state": row.get("state", ""),
+                "workbook": row.get("workbook_name", ""),
+                "status": row.get("status", ""),
+                "children": row.get("child_sku_count", 0),
+            }
+            for row in rows
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+
+    finished_history_folders = sorted({
+        str(row.get("folder", "") or "")
+        for row in rows
+        if row.get("state") == "Finished" and str(row.get("folder", "") or "").strip()
+    })
+    if finished_history_folders:
+        selected_history_folders = st.multiselect(
+            "Finished folders to bring back",
+            finished_history_folders,
+            key="generated_history_bring_back_folders",
+        )
+        if st.button(
+            "Bring selected history folders back to Approved",
+            key="generated_history_bring_back_btn",
+            width="stretch",
+            disabled=not bool(selected_history_folders),
+        ):
+            bring_back_results = []
+            for folder_name in selected_history_folders:
+                try:
+                    bring_back_results.append(
+                        restage_finished_listing_for_review(
+                            dropbox_cfg=dropbox_cfg,
+                            profiles=profiles,
+                            finished_folder_name=folder_name,
+                            target_state="approved",
+                        )
+                    )
+                except Exception as exc:
+                    bring_back_results.append({
+                        "folder_name": folder_name,
+                        "status": "Failed",
+                        "message": str(exc),
+                    })
+            st.session_state["generated_history_bring_back_results"] = bring_back_results
+            st.session_state.pop("today_generated_excel_history", None)
+            clear_runtime_caches()
+            set_workflow_flash(
+                "success" if all(row.get("status") == "Success" for row in bring_back_results) else "warning",
+                f"Brought back {sum(1 for row in bring_back_results if row.get('status') == 'Success')} of {len(bring_back_results)} history folder(s).",
+            )
+            st.rerun()
+
+    history_bring_back_results = list(st.session_state.get("generated_history_bring_back_results", []))
+    if history_bring_back_results:
+        st.dataframe(history_bring_back_results, width="stretch", hide_index=True)
+
+    st.markdown("**Downloads**")
+    for idx, row in enumerate(rows, start=1):
+        workbook_path = str(row.get("workbook_dropbox_path", "") or "")
+        workbook_name = str(row.get("workbook_name", "") or Path(workbook_path).name)
+        workbook_cache_key = (
+            f"today_generated_excel_bytes_{safe_widget_key_part(workbook_path)}"
+        )
+        try:
+            if workbook_cache_key not in st.session_state:
+                st.session_state[workbook_cache_key] = download_binary_file(workbook_path)
+            workbook_bytes = st.session_state[workbook_cache_key]
+        except Exception as exc:
+            st.warning(f"Could not load {workbook_name}: {exc}")
+            continue
+
+        st.download_button(
+            label=f"Download {workbook_name}",
+            data=workbook_bytes,
+            file_name=workbook_name,
+            mime="application/vnd.ms-excel.sheet.macroEnabled.12",
+            key=f"today_generated_excel_download_{idx}_{safe_widget_key_part(workbook_name)}",
+            width="stretch",
+        )
+
+
+def render_finished_generation_tools(
+    dropbox_cfg: dict[str, Any],
+    profiles: list[dict[str, Any]],
+    fallback_profile: dict[str, Any],
+    finished_folder_names: list[str],
+) -> None:
+    st.caption("Bring finished work back for edits, or mark a bad generation as ignored without deleting files.")
+
+    existing_finished_restage_selection = list(st.session_state.get("finished_output_restage_selected", []))
+    valid_finished_restage_selection = [
+        folder_name for folder_name in existing_finished_restage_selection
+        if folder_name in finished_folder_names
+    ]
+    if valid_finished_restage_selection != existing_finished_restage_selection:
+        st.session_state["finished_output_restage_selected"] = valid_finished_restage_selection
+
+    with st.form("finished_output_restaging_form"):
+        selected_finished_folders_to_restage = st.multiselect(
+            "Finished folders to bring back",
+            finished_folder_names,
+            key="finished_output_restage_selected",
+        )
+        restage_selected_finished = st.form_submit_button(
+            "Move selected back to approved",
+            width="stretch",
+            disabled=not bool(finished_folder_names),
+        )
+
+    if restage_selected_finished:
+        if not selected_finished_folders_to_restage:
+            st.warning("Select at least one finished folder to bring back.")
+        else:
+            restage_action_label = (
+                "restage finished folder"
+                if len(selected_finished_folders_to_restage) == 1
+                else "bulk restage finished folders"
+            )
+            st.session_state["active_perf_action_label"] = restage_action_label
+            st.session_state["pending_perf_action_label"] = restage_action_label
+
+            restage_results = [
+                restage_finished_listing_for_review(
+                    dropbox_cfg=dropbox_cfg,
+                    profiles=profiles,
+                    fallback_profile=fallback_profile,
+                    finished_folder_name=finished_folder_name,
+                    target_state="approved",
+                )
+                for finished_folder_name in selected_finished_folders_to_restage
+            ]
+            success_results = [
+                row for row in restage_results
+                if row.get("status") == "Success"
+            ]
+            failed_results = [
+                row for row in restage_results
+                if row.get("status") == "Failed"
+            ]
+
+            st.session_state["finished_restage_results"] = restage_results
+
+            if len(selected_finished_folders_to_restage) == 1 and len(success_results) == 1:
+                flash_title = f"Moved back to approved: {success_results[0].get('new_approved_folder_name', '')}"
+                flash_detail = success_results[0].get("warning", "")
+            else:
+                flash_title = f"Moved {len(success_results)} of {len(selected_finished_folders_to_restage)} selected finished folders back to approved."
+                flash_detail = "Use the approved queue to generate them again."
+                if failed_results:
+                    flash_detail = f"{len(failed_results)} folder(s) failed. " + flash_detail
+
+            clear_runtime_caches()
+            set_workflow_flash(
+                "success" if not failed_results else "warning",
+                flash_title,
+                flash_detail,
+            )
+            st.rerun()
+
+    finished_restage_results = list(st.session_state.get("finished_restage_results", []))
+    if finished_restage_results:
+        success_count = sum(1 for row in finished_restage_results if row.get("status") == "Success")
+        failed_count = sum(1 for row in finished_restage_results if row.get("status") == "Failed")
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Selected", len(finished_restage_results))
+        col_b.metric("Success", success_count)
+        col_c.metric("Failed", failed_count)
+        st.dataframe(finished_restage_results, width="stretch", hide_index=True)
+
+    st.divider()
+    st.markdown("**Ignore bad generation**")
+    existing_finished_ignore_selection = list(st.session_state.get("finished_output_ignore_selected", []))
+    valid_finished_ignore_selection = [
+        folder_name for folder_name in existing_finished_ignore_selection
+        if folder_name in finished_folder_names
+    ]
+    if valid_finished_ignore_selection != existing_finished_ignore_selection:
+        st.session_state["finished_output_ignore_selected"] = valid_finished_ignore_selection
+
+    with st.form("finished_output_ignore_form"):
+        selected_finished_folders_to_ignore = st.multiselect(
+            "Finished generations to ignore",
+            finished_folder_names,
+            key="finished_output_ignore_selected",
+        )
+        ignore_reason = st.text_input(
+            "Reason",
+            value="Manual Amazon upload used instead",
+            key="finished_output_ignore_reason",
+        )
+        ignored_by = st.selectbox(
+            "Marked by",
+            WORKFLOW_ASSIGNEES,
+            key="finished_output_ignore_by",
+        )
+        ignore_selected_finished = st.form_submit_button(
+            "Mark selected as ignored",
+            width="stretch",
+            disabled=not bool(finished_folder_names),
+        )
+
+    if ignore_selected_finished:
+        if not selected_finished_folders_to_ignore:
+            st.warning("Select at least one finished generation to ignore.")
+        else:
+            st.session_state["active_perf_action_label"] = "ignore finished generation"
+            st.session_state["pending_perf_action_label"] = "ignore finished generation"
+
+            ignore_results = [
+                mark_finished_generation_ignored(
+                    dropbox_cfg=dropbox_cfg,
+                    profiles=profiles,
+                    fallback_profile=fallback_profile,
+                    finished_folder_name=finished_folder_name,
+                    reason=ignore_reason.strip(),
+                    actor=ignored_by,
+                )
+                for finished_folder_name in selected_finished_folders_to_ignore
+            ]
+            success_results = [
+                row for row in ignore_results
+                if row.get("status") == "Success"
+            ]
+            failed_results = [
+                row for row in ignore_results
+                if row.get("status") == "Failed"
+            ]
+
+            st.session_state["finished_ignore_results"] = ignore_results
+            clear_runtime_caches()
+            set_workflow_flash(
+                "success" if not failed_results else "warning",
+                f"Ignored {len(success_results)} of {len(selected_finished_folders_to_ignore)} selected generation(s).",
+                "No files were deleted or moved.",
+            )
+            st.rerun()
+
+    finished_ignore_results = list(st.session_state.get("finished_ignore_results", []))
+    if finished_ignore_results:
+        success_count = sum(1 for row in finished_ignore_results if row.get("status") == "Success")
+        failed_count = sum(1 for row in finished_ignore_results if row.get("status") == "Failed")
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Selected", len(finished_ignore_results))
+        col_b.metric("Ignored", success_count)
+        col_c.metric("Failed", failed_count)
+        st.dataframe(finished_ignore_results, width="stretch", hide_index=True)
+
+
+def render_folder_cleanup_controls(
+    dropbox_cfg: dict[str, Any],
+    *,
+    staged_folder_names: list[str],
+    ready_folder_names: list[str],
+    approved_folder_names: list[str],
+    finished_folder_names: list[str],
+) -> None:
+    folder_groups = {
+        "Stage": (staged_folder_names, lambda name: build_stage_folder_path(dropbox_cfg, name)),
+        "Ready": (ready_folder_names, lambda name: build_ready_folder_path(dropbox_cfg, name)),
+        "Approved": (approved_folder_names, lambda name: build_approved_folder_path(dropbox_cfg, name)),
+        "Finished": (finished_folder_names, lambda name: build_finished_folder_path(dropbox_cfg, name)),
+    }
+    cleanup_state = st.selectbox(
+        "Folder area",
+        list(folder_groups.keys()),
+        key="cleanup_folder_area",
+    )
+    folder_names, path_builder = folder_groups[cleanup_state]
+    selected_folders = st.multiselect(
+        f"{cleanup_state} folders to delete",
+        folder_names,
+        key=f"cleanup_selected_{cleanup_state.lower()}",
+    )
+    confirm_text = st.text_input(
+        "Type DELETE to confirm folder deletion",
+        key="cleanup_confirm_delete_text",
+    )
+    if st.button(
+        "Delete selected folder(s)",
+        key="cleanup_delete_selected_folders",
+        width="stretch",
+        disabled=not selected_folders or confirm_text.strip().upper() != "DELETE",
+    ):
+        cleanup_results: list[dict[str, Any]] = []
+        for folder_name in selected_folders:
+            folder_path = path_builder(folder_name)
+            try:
+                delete_dropbox_path(folder_path)
+                cleanup_results.append({
+                    "folder_name": folder_name,
+                    "status": "Success",
+                    "message": f"Deleted {folder_path}",
+                })
+            except Exception as exc:
+                cleanup_results.append({
+                    "folder_name": folder_name,
+                    "status": "Failed",
+                    "message": str(exc),
+                })
+        st.session_state["folder_cleanup_results"] = cleanup_results
+        clear_runtime_caches()
+        set_workflow_flash(
+            "success" if all(row.get("status") == "Success" for row in cleanup_results) else "warning",
+            f"Deleted {sum(1 for row in cleanup_results if row.get('status') == 'Success')} of {len(cleanup_results)} selected folder(s).",
+        )
+        st.rerun()
+
+    cleanup_results = list(st.session_state.get("folder_cleanup_results", []))
+    if cleanup_results:
+        st.dataframe(cleanup_results, width="stretch", hide_index=True)
 
 
 def process_ready_review_decision(
@@ -7447,6 +9849,8 @@ def render_review_queue_view(
     profiles: list[dict[str, Any]],
     dropbox_cfg: dict[str, Any],
 ) -> None:
+    st.subheader("Review queue")
+
     queue_items = build_ready_queue_items(ready_folder_names, profiles, dropbox_cfg)
     summary_rows = [
         {
@@ -7459,21 +9863,196 @@ def render_review_queue_view(
         for item in queue_items
     ]
 
+    ready_count = sum(1 for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"])
+    load_issue_count = sum(1 for item in queue_items if item["load_error"])
+    missing_memory_count = sum(1 for item in queue_items if not item["listing_memory"])
+    bulk_results = list(st.session_state.get("review_queue_bulk_approve_results", []))
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Waiting review", len(queue_items))
+    metric_cols[1].metric("Ready to decide", ready_count)
+    metric_cols[2].metric("Load issues", load_issue_count)
+    metric_cols[3].metric("Recent results", len(bulk_results))
+
     if summary_rows:
-        st.dataframe(summary_rows, width="stretch", hide_index=True)
+        with st.expander("Ready listings", expanded=False, icon=":material/table_chart:"):
+            st.dataframe(summary_rows, width="stretch", hide_index=True)
     else:
-        st.info("No listings are currently waiting for review.")
+        st.info("No listings are currently waiting for review.", icon=":material/info:")
         return
+
+    if missing_memory_count:
+        st.warning(
+            f"{missing_memory_count} ready folder(s) are missing listing_inputs.json or could not be loaded.",
+            icon=":material/warning:",
+        )
 
     ready_lookup = {item["folder_name"]: item for item in queue_items}
     review_folder_options = [item["folder_name"] for item in queue_items if item["listing_memory"]]
+    actionable_folder_options = [
+        item["folder_name"]
+        for item in queue_items
+        if item["profile"] and item["listing_memory"] and not item["load_error"]
+    ]
 
-    st.markdown("### Bulk approve ready listings")
-    with st.container(border=True):
+    review_queue_sections = [
+        "Review / decide",
+        "Bulk approve",
+        "Results",
+    ]
+    st.session_state.setdefault("review_queue_section", review_queue_sections[0])
+    active_review_queue_section = st.segmented_control(
+        "Review queue section",
+        review_queue_sections,
+        key="review_queue_section",
+        selection_mode="single",
+        width="stretch",
+        label_visibility="collapsed",
+    )
+    if active_review_queue_section not in review_queue_sections:
+        active_review_queue_section = review_queue_sections[0]
+
+    if active_review_queue_section == "Review / decide":
+        st.caption("Open a listing only when you need detailed content, price, image, or quality review.")
+        if not review_folder_options:
+            st.caption("No reviewable ready listings found.")
+            return
+
+        current_review_folder = st.session_state.get("ready_queue_review_folder", review_folder_options[0])
+        if current_review_folder not in review_folder_options:
+            current_review_folder = review_folder_options[0]
+            st.session_state["ready_queue_review_folder"] = current_review_folder
+
+        selected_review_folder = st.selectbox(
+            "Ready listing",
+            review_folder_options,
+            key="ready_queue_review_folder",
+        )
+        review_item = ready_lookup.get(selected_review_folder)
+        if not review_item:
+            st.error("This ready listing could not be found in the loaded queue.")
+            return
+
+        detail_cols = st.columns(4)
+        detail_cols[0].write(f"Template: `{review_item.get('template', '')}`")
+        detail_cols[1].write(f"Status: `{review_item.get('load_status', '')}`")
+        detail_cols[2].write(f"Variants: `{review_item.get('variants_summary', '')}`")
+        detail_cols[3].write(f"Folder: `{review_item.get('folder_name', '')}`")
+
+        if review_item.get("title"):
+            st.caption(review_item["title"])
+
+        review_panel_key_suffix = selected_review_folder.replace("/", "_").replace("\\", "_").replace(" ", "_")
+        review_panel_open_key = f"review_queue_panel_open_{review_panel_key_suffix}"
+
+        panel_col1, panel_col2 = st.columns([1, 3])
+        with panel_col1:
+            if st.button("Open review panel", key=f"{review_panel_open_key}_open_btn", width="stretch"):
+                st.session_state["active_perf_action_label"] = "open ready review panel"
+                clear_review_editor_state(f"review_queue_{review_panel_key_suffix}")
+                st.session_state[review_panel_open_key] = True
+        with panel_col2:
+            if st.session_state.get(review_panel_open_key, False):
+                if st.button("Hide review panel", key=f"{review_panel_open_key}_hide_btn"):
+                    st.session_state["active_perf_action_label"] = "hide ready review panel"
+                    st.session_state[review_panel_open_key] = False
+            else:
+                st.caption("Detailed editor is closed to keep the queue quick to scan.")
+
+        if st.session_state.get(review_panel_open_key, False):
+            with st.expander("Review panel", expanded=True):
+                render_ready_review_panel(
+                    review_item,
+                    dropbox_cfg,
+                    key_prefix="review_queue",
+                    source_folder_path=build_ready_folder_path(dropbox_cfg, review_item["folder_name"]),
+                )
+
+        review_edit_prefix = f"review_queue_{review_panel_key_suffix}"
+        active_review_edit_prefix = st.session_state.get(
+            f"{review_edit_prefix}_active_editor_prefix",
+            review_edit_prefix,
+        )
+        if review_item.get("profile") and review_item.get("listing_memory"):
+            initialize_review_edit_state(
+                review_edit_prefix,
+                review_item["listing_memory"],
+                review_item["profile"],
+            )
+
+        default_reviewer = review_item.get("listing_memory", {}).get("reviewed_by", "")
+        review_reviewer_key = st.session_state.get("review_queue_review_folder_reviewer_key", "")
+        reviewer_context_key = f"{selected_review_folder}|{default_reviewer}"
+        if review_reviewer_key != reviewer_context_key:
+            st.session_state["review_queue_reviewed_by"] = default_reviewer if default_reviewer in WORKFLOW_ASSIGNEES else ""
+            st.session_state["review_queue_review_folder_reviewer_key"] = reviewer_context_key
+
+        with st.form("review_queue_decision_form"):
+            st.selectbox(
+                "Reviewed by",
+                WORKFLOW_ASSIGNEES,
+                key="review_queue_reviewed_by",
+            )
+            with st.container(horizontal=True, horizontal_alignment="distribute"):
+                approve_clicked = st.form_submit_button(
+                    "Approve for generation",
+                    width="stretch",
+                )
+                deny_clicked = st.form_submit_button(
+                    "Deny and return to staging",
+                    width="stretch",
+                )
+
+        if approve_clicked or deny_clicked:
+            st.session_state["pending_perf_action_label"] = (
+                "approve ready listing" if approve_clicked else "deny ready listing"
+            )
+            reviewed_by = st.session_state.get("review_queue_reviewed_by", "")
+            if not reviewed_by:
+                st.warning("Select who reviewed this listing before approving or denying it.")
+                return
+            if not review_item.get("profile") or not review_item.get("listing_memory"):
+                st.error("This ready listing could not be loaded for review.")
+                return
+
+            try:
+                result = process_ready_review_decision(
+                    review_item,
+                    dropbox_cfg,
+                    reviewed_by,
+                    approve=approve_clicked,
+                    review_edit_prefix=active_review_edit_prefix,
+                )
+                if approve_clicked:
+                    st.session_state["last_approved_folder_path"] = result.get("target_path", "")
+                    clear_runtime_caches()
+                    set_workflow_flash(
+                        "success",
+                        result.get("message", "Approved successfully."),
+                    )
+                else:
+                    target_path = result.get("target_path", "")
+                    if target_path:
+                        st.session_state["pending_staged_folder_selection_on_rerun"] = Path(target_path).name
+                    st.session_state["auto_switch_to_staged"] = True
+                    clear_runtime_caches()
+                    set_workflow_flash(
+                        "warning",
+                        result.get("message", "Denied and returned to staging."),
+                    )
+                st.rerun()
+            except Exception as exc:
+                if approve_clicked:
+                    st.error(f"Could not approve the listing: {exc}")
+                else:
+                    st.error(f"Could not deny the listing: {exc}")
+
+    if active_review_queue_section == "Bulk approve":
+        st.caption("Use this only for listings that do not need detailed review edits.")
         existing_bulk_selection = list(st.session_state.get("review_queue_bulk_approve_folders", []))
         valid_bulk_selection = [
             folder_name for folder_name in existing_bulk_selection
-            if folder_name in review_folder_options
+            if folder_name in actionable_folder_options
         ]
         if valid_bulk_selection != existing_bulk_selection:
             st.session_state["review_queue_bulk_approve_folders"] = valid_bulk_selection
@@ -7481,8 +10060,9 @@ def render_review_queue_view(
         with st.form("review_queue_bulk_approve_form"):
             selected_bulk_folders = st.multiselect(
                 "Ready listings to approve",
-                review_folder_options,
+                actionable_folder_options,
                 key="review_queue_bulk_approve_folders",
+                placeholder="Choose listings that are ready without further edits",
             )
             bulk_reviewed_by = st.selectbox(
                 "Reviewed by",
@@ -7492,7 +10072,7 @@ def render_review_queue_view(
             bulk_approve_clicked = st.form_submit_button(
                 "Approve selected for generation",
                 width="stretch",
-                disabled=not bool(review_folder_options),
+                disabled=not bool(actionable_folder_options),
             )
 
         if bulk_approve_clicked:
@@ -7535,142 +10115,21 @@ def render_review_queue_view(
                 )
                 st.rerun()
 
-        bulk_results = list(st.session_state.get("review_queue_bulk_approve_results", []))
+    if active_review_queue_section == "Results":
         if bulk_results:
             st.dataframe(bulk_results, width="stretch", hide_index=True)
-
-    st.markdown("### Review ready listing")
-    with st.container(border=True):
-        if not review_folder_options:
-            st.caption("No reviewable ready listings found.")
-            return
-
-        current_review_folder = st.session_state.get("ready_queue_review_folder", review_folder_options[0])
-        if current_review_folder not in review_folder_options:
-            current_review_folder = review_folder_options[0]
-            st.session_state["ready_queue_review_folder"] = current_review_folder
-
-        selected_review_folder = st.selectbox(
-            "Listing folder",
-            review_folder_options,
-            key="ready_queue_review_folder",
-        )
-        review_item = ready_lookup.get(selected_review_folder)
-        if review_item:
-            review_panel_key_suffix = selected_review_folder.replace("/", "_").replace("\\", "_").replace(" ", "_")
-            review_panel_open_key = f"review_queue_panel_open_{review_panel_key_suffix}"
-
-            panel_col1, panel_col2 = st.columns([1, 3])
-            with panel_col1:
-                if st.button("Open review panel", key=f"{review_panel_open_key}_open_btn", width="stretch"):
-                    st.session_state["active_perf_action_label"] = "open ready review panel"
-                    clear_review_editor_state(f"review_queue_{review_panel_key_suffix}")
-                    st.session_state[review_panel_open_key] = True
-            with panel_col2:
-                if st.session_state.get(review_panel_open_key, False):
-                    if st.button("Hide review panel", key=f"{review_panel_open_key}_hide_btn"):
-                        st.session_state["active_perf_action_label"] = "hide ready review panel"
-                        st.session_state[review_panel_open_key] = False
-                else:
-                    st.info("Review panel is not loaded yet. Open it only when you need detailed content/image/quality review.")
-
-            if st.session_state.get(review_panel_open_key, False):
-                with st.expander("Review panel", expanded=True):
-                    render_ready_review_panel(
-                        review_item,
-                        dropbox_cfg,
-                        key_prefix="review_queue",
-                        source_folder_path=build_ready_folder_path(dropbox_cfg, review_item["folder_name"]),
-                    )
-
-            review_edit_prefix = f"review_queue_{review_panel_key_suffix}"
-            active_review_edit_prefix = st.session_state.get(
-                f"{review_edit_prefix}_active_editor_prefix",
-                review_edit_prefix,
-            )
-            if review_item.get("profile") and review_item.get("listing_memory"):
-                initialize_review_edit_state(
-                    review_edit_prefix,
-                    review_item["listing_memory"],
-                    review_item["profile"],
-                )
-
-            default_reviewer = review_item.get("listing_memory", {}).get("reviewed_by", "")
-            review_reviewer_key = st.session_state.get("review_queue_review_folder_reviewer_key", "")
-            reviewer_context_key = f"{selected_review_folder}|{default_reviewer}"
-            if review_reviewer_key != reviewer_context_key:
-                st.session_state["review_queue_reviewed_by"] = default_reviewer if default_reviewer in WORKFLOW_ASSIGNEES else ""
-                st.session_state["review_queue_review_folder_reviewer_key"] = reviewer_context_key
-
-            with st.form("review_queue_decision_form"):
-                st.selectbox(
-                    "Reviewed by",
-                    WORKFLOW_ASSIGNEES,
-                    key="review_queue_reviewed_by",
-                )
-                action_col1, action_col2 = st.columns(2)
-                with action_col1:
-                    approve_clicked = st.form_submit_button(
-                        "Approve for generation",
-                        width="stretch",
-                    )
-                with action_col2:
-                    deny_clicked = st.form_submit_button(
-                        "Deny and return to staging",
-                        width="stretch",
-                    )
-
-            if approve_clicked or deny_clicked:
-                st.session_state["pending_perf_action_label"] = (
-                    "approve ready listing" if approve_clicked else "deny ready listing"
-                )
-                reviewed_by = st.session_state.get("review_queue_reviewed_by", "")
-                if not reviewed_by:
-                    st.warning("Select who reviewed this listing before approving or denying it.")
-                    return
-                if not review_item.get("profile") or not review_item.get("listing_memory"):
-                    st.error("This ready listing could not be loaded for review.")
-                    return
-
-                try:
-                    result = process_ready_review_decision(
-                        review_item,
-                        dropbox_cfg,
-                        reviewed_by,
-                        approve=approve_clicked,
-                        review_edit_prefix=active_review_edit_prefix,
-                    )
-                    if approve_clicked:
-                        st.session_state["last_approved_folder_path"] = result.get("target_path", "")
-                        clear_runtime_caches()
-                        set_workflow_flash(
-                            "success",
-                            result.get("message", "Approved successfully."),
-                        )
-                    else:
-                        target_path = result.get("target_path", "")
-                        if target_path:
-                            st.session_state["pending_staged_folder_selection_on_rerun"] = Path(target_path).name
-                        st.session_state["auto_switch_to_staged"] = True
-                        clear_runtime_caches()
-                        set_workflow_flash(
-                            "warning",
-                            result.get("message", "Denied and returned to staging."),
-                        )
-                    st.rerun()
-                except Exception as exc:
-                    if approve_clicked:
-                        st.error(f"Could not approve the listing: {exc}")
-                    else:
-                        st.error(f"Could not deny the listing: {exc}")
+        else:
+            st.caption("No recent bulk approval results yet.")
 
 
 def render_approved_queue_view(
     approved_folder_names: list[str],
+    finished_folder_names: list[str],
     profiles: list[dict[str, Any]],
     dropbox_cfg: dict[str, Any],
+    fallback_profile: dict[str, Any],
 ) -> None:
-    st.subheader("Approved queue")
+    st.subheader("Approved output")
 
     queue_items = build_approved_queue_items(approved_folder_names, profiles, dropbox_cfg)
     summary_rows = [
@@ -7685,19 +10144,97 @@ def render_approved_queue_view(
     ]
 
     stored_results = st.session_state.get("approved_queue_generation_results", [])
+    ready_count = sum(1 for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"])
+    load_issue_count = sum(1 for item in queue_items if item["load_error"])
+    generated_ready_count = sum(
+        1 for result in stored_results
+        if result.get("status") == "Success" and result.get("approved_folder_name")
+    )
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Approved", len(queue_items))
+    metric_cols[1].metric("Ready to generate", ready_count)
+    metric_cols[2].metric("Generated downloads", generated_ready_count)
+    metric_cols[3].metric("Load issues", load_issue_count)
+
     if summary_rows:
-        st.dataframe(summary_rows, width="stretch", hide_index=True)
+        with st.expander("Approved listings", expanded=False, icon=":material/table_chart:"):
+            st.dataframe(summary_rows, width="stretch", hide_index=True)
     else:
-        st.info("No approved folders found.")
+        st.info("No approved folders found.", icon=":material/info:")
         render_generation_results(stored_results, "approved_download")
         render_move_generated_to_finished_controls(stored_results, profiles, dropbox_cfg)
         return
 
     approved_lookup = {item["folder_name"]: item for item in queue_items}
     review_folder_options = [item["folder_name"] for item in queue_items if item["listing_memory"]]
+    actionable_folder_options = [
+        item["folder_name"]
+        for item in queue_items
+        if item["profile"] and item["listing_memory"] and not item["load_error"]
+    ]
 
-    st.markdown("### Review approved listing")
-    with st.container(border=True):
+    approved_output_sections = [
+        "Generate",
+        "Review / edit",
+        "Return",
+        "History",
+    ]
+    st.session_state.setdefault("approved_output_section", approved_output_sections[0])
+    active_approved_output_section = st.segmented_control(
+        "Approved output section",
+        approved_output_sections,
+        key="approved_output_section",
+        selection_mode="single",
+        width="stretch",
+        label_visibility="collapsed",
+    )
+    if active_approved_output_section not in approved_output_sections:
+        active_approved_output_section = approved_output_sections[0]
+
+    generate_selected = False
+    generate_all = False
+    selected_approved_folders: list[str] = []
+
+    if active_approved_output_section == "Generate":
+        st.caption("Generate Excel output from approved folders. Separate workbooks are always created; a combined workbook is added when compatible.")
+        with st.form("approved_output_generation_form"):
+            selected_approved_folders = st.multiselect(
+                "Approved folders",
+                actionable_folder_options,
+                key="approved_queue_selected_folders",
+                placeholder="Choose folders, or use Generate all approved",
+            )
+
+            with st.container(horizontal=True, horizontal_alignment="distribute"):
+                generate_selected = st.form_submit_button(
+                    "Generate selected",
+                    width="stretch",
+                    disabled=not bool(actionable_folder_options),
+                )
+                generate_all = st.form_submit_button(
+                    "Generate all approved",
+                    width="stretch",
+                    disabled=not bool(actionable_folder_options),
+                )
+
+        render_generation_results(stored_results, "approved_download")
+        render_move_generated_to_finished_controls(stored_results, profiles, dropbox_cfg)
+        show_finished_generation_tools = st.checkbox(
+            "Show finished generation maintenance",
+            key="show_finished_generation_tools",
+            value=bool(st.session_state.get("finished_restage_results", []) or st.session_state.get("finished_ignore_results", [])),
+            help="Bring finished folders back to Approved or mark bad generations as ignored.",
+        )
+        if show_finished_generation_tools:
+            render_finished_generation_tools(
+                dropbox_cfg=dropbox_cfg,
+                profiles=profiles,
+                fallback_profile=fallback_profile,
+                finished_folder_names=finished_folder_names,
+            )
+
+    if active_approved_output_section == "Review / edit":
         if review_folder_options:
             current_review_folder = st.session_state.get("approved_queue_review_folder", review_folder_options[0])
             if current_review_folder not in review_folder_options:
@@ -7726,7 +10263,7 @@ def render_approved_queue_view(
                             st.session_state["active_perf_action_label"] = "hide approved review panel"
                             st.session_state[approved_panel_open_key] = False
                     else:
-                        st.info("Approved review panel is not loaded yet. Open it only when you need detailed review.")
+                        st.caption("Open the panel only when you need detailed content, pricing, image, or quality review.")
 
                 if st.session_state.get(approved_panel_open_key, False):
                     with st.expander("Review panel", expanded=True):
@@ -7739,13 +10276,9 @@ def render_approved_queue_view(
         else:
             st.caption("No approved listings available to review yet.")
 
-    st.markdown("### Return approved listings")
-    with st.container(border=True):
-        returnable_folder_options = [
-            item["folder_name"]
-            for item in queue_items
-            if item["profile"] and item["listing_memory"] and not item["load_error"]
-        ]
+    if active_approved_output_section == "Return":
+        st.caption("Move approved folders back when they need more content, price, image, or setup work.")
+        returnable_folder_options = list(actionable_folder_options)
         existing_return_selection = list(st.session_state.get("approved_queue_return_folders", []))
         valid_return_selection = [
             folder_name for folder_name in existing_return_selection
@@ -7838,20 +10371,22 @@ def render_approved_queue_view(
         if return_results:
             st.dataframe(return_results, width="stretch", hide_index=True)
 
-    st.markdown("### Generate output")
-    with st.container(border=True):
-        with st.form("approved_output_generation_form"):
-            selected_approved_folders = st.multiselect(
-                "Select approved folders to generate",
-                [item["folder_name"] for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"]],
-                key="approved_queue_selected_folders",
-            )
-
-            col1, col2 = st.columns(2)
-            with col1:
-                generate_selected = st.form_submit_button("Generate selected", width="stretch")
-            with col2:
-                generate_all = st.form_submit_button("Generate all approved", width="stretch")
+    if active_approved_output_section == "History":
+        render_generation_results(stored_results, "approved_history_download")
+        render_generated_excel_history(
+            approved_items=queue_items,
+            finished_folder_names=finished_folder_names,
+            profiles=profiles,
+            dropbox_cfg=dropbox_cfg,
+        )
+        bring_back_results = list(st.session_state.get("approved_queue_bring_back_results", []))
+        if bring_back_results:
+            st.markdown("**Bring back results**")
+            st.dataframe(bring_back_results, width="stretch", hide_index=True)
+        return_results = list(st.session_state.get("approved_queue_return_results", []))
+        if return_results:
+            st.markdown("**Return results**")
+            st.dataframe(return_results, width="stretch", hide_index=True)
 
     if generate_selected:
         st.session_state["pending_perf_action_label"] = "generate selected approved"
@@ -7861,9 +10396,11 @@ def render_approved_queue_view(
     target_folders = selected_approved_folders if generate_selected else [
         item["folder_name"] for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"]
     ] if generate_all else []
+    if generate_selected and not target_folders:
+        if active_approved_output_section == "Generate":
+            st.warning("Select at least one approved folder to generate.")
+        return
     if not target_folders:
-        render_generation_results(stored_results, "approved_download")
-        render_move_generated_to_finished_controls(stored_results, profiles, dropbox_cfg)
         return
 
     approved_generation_started_at = time.perf_counter()
@@ -7905,6 +10442,30 @@ def render_approved_queue_view(
                 "status": "Failed",
                 "message": f"Separate workbooks were generated. Combined workbook was skipped: {exc}",
             })
+
+    for result in results:
+        if (
+            result.get("status") == "Success"
+            and result.get("approved_folder_name")
+            and not result.get("finished_folder_path")
+        ):
+            try:
+                move_result = move_generated_approved_listing_to_finished(
+                    result=result,
+                    profiles=profiles,
+                    dropbox_cfg=dropbox_cfg,
+                )
+                result["finished_folder_path"] = move_result.get("finished_folder_path", "")
+                result["finished_folder_name"] = Path(str(move_result.get("finished_folder_path", ""))).name
+                result["message"] = (
+                    f"{result.get('output_name', 'Workbook')} generated and moved to Finished: "
+                    f"{result.get('finished_folder_name', '')}"
+                )
+            except Exception as exc:
+                result["status"] = "Failed"
+                result["message"] = (
+                    f"Workbook was generated, but the folder could not be moved to Finished: {exc}"
+                )
 
     approved_generation_elapsed_ms = round(
         (time.perf_counter() - approved_generation_started_at) * 1000,
@@ -8040,12 +10601,26 @@ def main() -> None:
         st.error("No template profiles found. Create family folders under templates/ with schema.json, a shared workbook, and garment subfolders containing config.json.")
         st.stop()
 
-    tab_setup, tab_content, tab_review_queue, tab_approved_output = st.tabs([
+    workflow_tab_labels = [
         "Product setup",
         "Listing content",
         "Review queue",
         "Approved output",
-    ])
+    ]
+    pending_workflow_tab = st.session_state.pop("pending_workflow_active_tab", "")
+    if pending_workflow_tab in workflow_tab_labels:
+        st.session_state["workflow_active_tab"] = pending_workflow_tab
+    st.session_state.setdefault("workflow_active_tab", workflow_tab_labels[0])
+    active_workflow_tab = st.segmented_control(
+        "Workflow section",
+        workflow_tab_labels,
+        key="workflow_active_tab",
+        selection_mode="single",
+        width="stretch",
+        label_visibility="collapsed",
+    )
+    if active_workflow_tab not in workflow_tab_labels:
+        active_workflow_tab = workflow_tab_labels[0]
 
     families = sorted({profile.get("_family_slug", "") for profile in profiles if profile.get("_family_slug")})
     detection_message = ""
@@ -8161,6 +10736,7 @@ def main() -> None:
     st.sidebar.write(f"Template: `{active_profile_slug}`")
     st.sidebar.write(f"Workbook: `{active_profile.get('template_file', '')}`")
     st.sidebar.write(f"Variation theme: `{active_profile.get('variation_theme', '')}`")
+    render_active_task_sidebar_card()
     st.sidebar.checkbox("Show troubleshooting debug", key="show_header_debug", value=False)
     st.sidebar.checkbox("Copy row styles", key="copy_row_styles", value=True)
     st.sidebar.checkbox("Auto-load image mappings", key="auto_load_image_mappings", value=False)
@@ -8169,6 +10745,19 @@ def main() -> None:
         refresh_cached_folder_names("stage", "ready", "approved", "finished")
         clear_cached_listing_memory()
         st.rerun()
+    with st.sidebar.expander(
+        "Local cleanup",
+        expanded=bool(st.session_state.get("folder_cleanup_results", [])),
+        icon=":material/delete:",
+    ):
+        st.caption("Delete test or mistake folders only. This is available here so the workflow tabs stay clean.")
+        render_folder_cleanup_controls(
+            dropbox_cfg,
+            staged_folder_names=staged_folder_names,
+            ready_folder_names=ready_folder_names,
+            approved_folder_names=approved_folder_names,
+            finished_folder_names=finished_folder_names,
+        )
 
     colors_available = get_profile_color_options(active_profile)
     sizes_available = active_profile.get("sizes", [])
@@ -8200,7 +10789,13 @@ def main() -> None:
     content_debug_container = None
     content_preflight_container = None
 
-    with tab_setup:
+    if active_workflow_tab == "Product setup":
+        render_listing_task_panel(
+            profiles=profiles,
+            families=families,
+            dropbox_cfg=dropbox_cfg,
+            staged_folder_names=staged_folder_names,
+        )
         top_left_col, top_right_col = st.columns(2)
         with top_left_col:
             st.subheader("Folder workflow")
@@ -8522,6 +11117,7 @@ def main() -> None:
         "full_design_color_image_url_map",
         preview_design_color_image_url_map,
     )
+    show_design_color_image_grid = bool(preview_image_data.get("show_design_color_image_grid", False))
 
     pending_mapped_colour_key = st.session_state.get("apply_mapped_colours_widget_key", "")
     if pending_mapped_colour_key and should_load_image_mappings:
@@ -8642,6 +11238,17 @@ def main() -> None:
     preview_design_color_image_url_map = dict(
         resolved_image_bundle.get("design_color_image_url_map", preview_design_color_image_url_map)
     )
+    show_design_color_image_grid = has_distinct_design_color_images(
+        selected_variants,
+        preview_color_image_map,
+        preview_design_color_image_url_map,
+    )
+    if selected_variants.get("design"):
+        design_color_preview_entries = build_design_color_display_entries(
+            selected_variants,
+            preview_color_image_map,
+            preview_design_color_image_url_map,
+        )
     image_mappings_loaded = bool(
         (
             current_resolved_image_cache_key
@@ -8668,7 +11275,7 @@ def main() -> None:
         image_mapping_status = "not_loaded"
         image_mapping_detail = "Image mappings not loaded yet. Use Load / refresh image mappings when you need image review or full checks."
 
-    with tab_setup:
+    if active_workflow_tab == "Product setup":
         render_active_product_context(
             active_staged_folder_name=active_staged_folder_name,
             active_template_label=active_template_label,
@@ -8680,6 +11287,8 @@ def main() -> None:
             image_mapping_status=image_mapping_status,
             image_mapping_detail=image_mapping_detail,
         )
+        render_stage_images_zip_upload(dropbox_cfg, staged_folder_name)
+
         load_images_disabled = not bool(staged_folder_name)
         if st.button(
             "Load / refresh image mappings",
@@ -8735,9 +11344,19 @@ def main() -> None:
                     st.info("Image mappings are not loaded yet. Use Load image mappings when you need parent/child/support image resolution.")
                 else:
                     tab_names = ["Staged variant images", "Secondary images", "Variant combinations"]
-                    colours_tab, resources_tab, combos_tab = st.tabs(tab_names)
+                    st.session_state.setdefault("image_review_section", tab_names[0])
+                    active_image_review_section = st.segmented_control(
+                        "Image review section",
+                        tab_names,
+                        key="image_review_section",
+                        selection_mode="single",
+                        width="stretch",
+                        label_visibility="collapsed",
+                    )
+                    if active_image_review_section not in tab_names:
+                        active_image_review_section = tab_names[0]
 
-                    with resources_tab:
+                    if active_image_review_section == "Secondary images":
                         st.caption("Images in the staged folder's resources folder are used first. Shared resources are used only when that folder has no images.")
                         render_path_grid(
                             "Listing resources folder",
@@ -8758,7 +11377,7 @@ def main() -> None:
                             image_width=150,
                         )
 
-                    with colours_tab:
+                    if active_image_review_section == "Staged variant images":
                         st.caption("These are the staged mapped variant images expected from the selected staged folder.")
                         parent_main_option_labels = ["Automatic (recommended)"] + [
                             label for label, _ in parent_main_image_options
@@ -8772,7 +11391,7 @@ def main() -> None:
                             index=parent_main_option_labels.index(current_parent_main_label),
                             key="parent_main_image_choice",
                         )
-                        if preview_design_color_image_url_map:
+                        if show_design_color_image_grid:
                             render_design_color_grid(
                                 design_color_preview_entries,
                                 cols_per_row=5,
@@ -8785,12 +11404,19 @@ def main() -> None:
                                 image_width=150,
                             )
 
-                    with combos_tab:
-                        render_design_color_grid(
-                            design_color_preview_entries,
-                            cols_per_row=5,
-                            image_width=150,
-                        )
+                    if active_image_review_section == "Variant combinations":
+                        if show_design_color_image_grid:
+                            render_design_color_grid(
+                                design_color_preview_entries,
+                                cols_per_row=5,
+                                image_width=150,
+                            )
+                        else:
+                            render_color_grid(
+                                staged_variant_entries,
+                                cols_per_row=5,
+                                image_width=150,
+                            )
 
         st.subheader("Product template details")
         col1, col2 = st.columns(2)
@@ -8825,7 +11451,7 @@ def main() -> None:
             if not stock_reference:
                 st.warning("This template has a stock_reference_key, but no matching config/stock_references.json entry was found.")
 
-    with tab_content:
+    if active_workflow_tab == "Listing content":
         render_active_product_context(
             active_staged_folder_name=active_staged_folder_name,
             active_template_label=active_template_label,
@@ -9123,7 +11749,7 @@ def main() -> None:
     score_clicked = False
     ready_clicked = False
 
-    with tab_content:
+    if active_workflow_tab == "Listing content":
         st.caption("Check listing score to review quality before submitting the folder for review.")
         btn_col1, btn_col2 = st.columns(2)
         with btn_col1:
@@ -9134,7 +11760,7 @@ def main() -> None:
         content_preflight_container = st.container()
         content_action_result_container = st.container()
 
-    with tab_review_queue:
+    if active_workflow_tab == "Review queue":
         st.caption("Review ready listings and approve them for generation.")
 
         review_col1, review_col2 = st.columns([1, 3])
@@ -9155,169 +11781,8 @@ def main() -> None:
                 dropbox_cfg=dropbox_cfg,
             )
 
-    with tab_approved_output:
-        st.caption("Generate selected or all approved folders and download completed workbooks.")
-
-        with st.expander("Restage finished folders", expanded=bool(st.session_state.get("finished_restage_results", []))):
-            existing_finished_restage_selection = list(st.session_state.get("finished_output_restage_selected", []))
-            valid_finished_restage_selection = [
-                folder_name for folder_name in existing_finished_restage_selection
-                if folder_name in finished_folder_names
-            ]
-            if valid_finished_restage_selection != existing_finished_restage_selection:
-                st.session_state["finished_output_restage_selected"] = valid_finished_restage_selection
-
-            with st.form("finished_output_restaging_form"):
-                selected_finished_folders_to_restage = st.multiselect(
-                    "Select finished folders to restage",
-                    finished_folder_names,
-                    key="finished_output_restage_selected",
-                )
-                restage_selected_finished = st.form_submit_button(
-                    "Restage selected finished folders",
-                    width="stretch",
-                    disabled=not bool(finished_folder_names),
-                )
-
-            if restage_selected_finished:
-                if not selected_finished_folders_to_restage:
-                    st.warning("Select at least one finished folder to restage.")
-                else:
-                    restage_action_label = (
-                        "restage finished folder"
-                        if len(selected_finished_folders_to_restage) == 1
-                        else "bulk restage finished folders"
-                    )
-                    st.session_state["active_perf_action_label"] = restage_action_label
-                    st.session_state["pending_perf_action_label"] = restage_action_label
-
-                    restage_results = [
-                        restage_finished_listing_for_review(
-                            dropbox_cfg=dropbox_cfg,
-                            profiles=profiles,
-                            fallback_profile=profile,
-                            finished_folder_name=finished_folder_name,
-                            target_state="approved",
-                        )
-                        for finished_folder_name in selected_finished_folders_to_restage
-                    ]
-                    success_results = [
-                        row for row in restage_results
-                        if row.get("status") == "Success"
-                    ]
-                    failed_results = [
-                        row for row in restage_results
-                        if row.get("status") == "Failed"
-                    ]
-
-                    st.session_state["finished_restage_results"] = restage_results
-
-                    if len(selected_finished_folders_to_restage) == 1 and len(success_results) == 1:
-                        flash_title = f"Moved back to approved: {success_results[0].get('new_approved_folder_name', '')}"
-                        flash_detail = success_results[0].get("warning", "")
-                    else:
-                        flash_title = f"Moved {len(success_results)} of {len(selected_finished_folders_to_restage)} selected finished folders back to approved."
-                        flash_detail = "Use the approved queue below to generate them again."
-                        if failed_results:
-                            flash_detail = f"{len(failed_results)} folder(s) failed. " + flash_detail
-
-                    clear_runtime_caches()
-                    set_workflow_flash(
-                        "success" if not failed_results else "warning",
-                        flash_title,
-                        flash_detail,
-                    )
-                    st.rerun()
-
-            finished_restage_results = list(st.session_state.get("finished_restage_results", []))
-            if finished_restage_results:
-                success_count = sum(1 for row in finished_restage_results if row.get("status") == "Success")
-                failed_count = sum(1 for row in finished_restage_results if row.get("status") == "Failed")
-                col_a, col_b, col_c = st.columns(3)
-                col_a.metric("Selected", len(finished_restage_results))
-                col_b.metric("Success", success_count)
-                col_c.metric("Failed", failed_count)
-                st.dataframe(finished_restage_results, width="stretch", hide_index=True)
-
-            st.divider()
-            st.markdown("**Ignore bad generation**")
-            st.caption("Marks a finished workbook as ignored without deleting or moving the Dropbox folder.")
-
-            existing_finished_ignore_selection = list(st.session_state.get("finished_output_ignore_selected", []))
-            valid_finished_ignore_selection = [
-                folder_name for folder_name in existing_finished_ignore_selection
-                if folder_name in finished_folder_names
-            ]
-            if valid_finished_ignore_selection != existing_finished_ignore_selection:
-                st.session_state["finished_output_ignore_selected"] = valid_finished_ignore_selection
-
-            with st.form("finished_output_ignore_form"):
-                selected_finished_folders_to_ignore = st.multiselect(
-                    "Select finished generations to ignore",
-                    finished_folder_names,
-                    key="finished_output_ignore_selected",
-                )
-                ignore_reason = st.text_input(
-                    "Reason",
-                    value="Manual Amazon upload used instead",
-                    key="finished_output_ignore_reason",
-                )
-                ignored_by = st.selectbox(
-                    "Marked by",
-                    WORKFLOW_ASSIGNEES,
-                    key="finished_output_ignore_by",
-                )
-                ignore_selected_finished = st.form_submit_button(
-                    "Mark selected generation(s) ignored",
-                    width="stretch",
-                    disabled=not bool(finished_folder_names),
-                )
-
-            if ignore_selected_finished:
-                if not selected_finished_folders_to_ignore:
-                    st.warning("Select at least one finished generation to ignore.")
-                else:
-                    st.session_state["active_perf_action_label"] = "ignore finished generation"
-                    st.session_state["pending_perf_action_label"] = "ignore finished generation"
-
-                    ignore_results = [
-                        mark_finished_generation_ignored(
-                            dropbox_cfg=dropbox_cfg,
-                            profiles=profiles,
-                            fallback_profile=profile,
-                            finished_folder_name=finished_folder_name,
-                            reason=ignore_reason.strip(),
-                            actor=ignored_by,
-                        )
-                        for finished_folder_name in selected_finished_folders_to_ignore
-                    ]
-                    success_results = [
-                        row for row in ignore_results
-                        if row.get("status") == "Success"
-                    ]
-                    failed_results = [
-                        row for row in ignore_results
-                        if row.get("status") == "Failed"
-                    ]
-
-                    st.session_state["finished_ignore_results"] = ignore_results
-                    clear_runtime_caches()
-                    set_workflow_flash(
-                        "success" if not failed_results else "warning",
-                        f"Ignored {len(success_results)} of {len(selected_finished_folders_to_ignore)} selected generation(s).",
-                        "No files were deleted or moved.",
-                    )
-                    st.rerun()
-
-            finished_ignore_results = list(st.session_state.get("finished_ignore_results", []))
-            if finished_ignore_results:
-                success_count = sum(1 for row in finished_ignore_results if row.get("status") == "Success")
-                failed_count = sum(1 for row in finished_ignore_results if row.get("status") == "Failed")
-                col_a, col_b, col_c = st.columns(3)
-                col_a.metric("Selected", len(finished_ignore_results))
-                col_b.metric("Ignored", success_count)
-                col_c.metric("Failed", failed_count)
-                st.dataframe(finished_ignore_results, width="stretch", hide_index=True)
+    if active_workflow_tab == "Approved output":
+        st.caption("Generate approved listings, download Excel files, and bring finished work back when edits are needed.")
 
         approved_col1, approved_col2 = st.columns([1, 3])
         with approved_col1:
@@ -9328,13 +11793,15 @@ def main() -> None:
                 st.session_state["approved_output_tab_loaded"] = True
         with approved_col2:
             if not st.session_state.get("approved_output_tab_loaded", False):
-                st.info("Approved output is not loaded yet. Click Load / refresh approved output when you need generation.")
+                st.caption("Load approved output when you need generation or review controls.")
 
         if st.session_state.get("approved_output_tab_loaded", False):
             render_approved_queue_view(
                 approved_folder_names=approved_folder_names,
+                finished_folder_names=finished_folder_names,
                 profiles=profiles,
                 dropbox_cfg=dropbox_cfg,
+                fallback_profile=profile,
             )
 
     render_inline_loading_debug()
@@ -9493,6 +11960,18 @@ def main() -> None:
     generation_payload["reviewed_by"] = st.session_state.get("reviewed_by", "")
     generation_payload["prepared_at"] = st.session_state.get("prepared_at", "")
     generation_payload["reviewed_at"] = format_workflow_timestamp()
+    active_listing_task = st.session_state.get("active_listing_task", {})
+    if isinstance(active_listing_task, dict):
+        for field_name, task_value in {
+            "listing_task_id": active_listing_task.get("task_id", ""),
+            "listing_task_path": active_listing_task.get("task_path", ""),
+            "listing_task_notes": active_listing_task.get("notes", ""),
+            "listing_task_reference_image_path": active_listing_task.get("reference_image_path", ""),
+            "listing_task_reference_image_paths": get_task_reference_image_paths(active_listing_task),
+            "listing_task_status": normalize_listing_task_status(active_listing_task.get("status")) if active_listing_task.get("task_id") else "",
+        }.items():
+            if task_value:
+                generation_payload[field_name] = task_value
     generation_errors = generation_prep["errors"]
     action_label = "submit this listing for review" if ready_clicked else "generate"
 
@@ -9511,6 +11990,28 @@ def main() -> None:
             stage_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
             generation_payload["prepared_at"] = format_workflow_timestamp()
             st.session_state["prepared_at"] = generation_payload["prepared_at"]
+
+            if is_split_listing_profile(profile):
+                split_result = submit_split_listing_for_review(
+                    profile=profile,
+                    payload=generation_payload,
+                    dropbox_cfg=dropbox_cfg,
+                    staged_folder_name=staged_folder_name,
+                    quality_report=quality_report,
+                    preview_errors=all_preview_errors,
+                )
+                st.session_state["last_ready_folder_path"] = ", ".join(split_result.get("ready_paths", []))
+                st.session_state.pop("active_listing_task", None)
+                st.session_state["clear_staged_folder_selection_on_rerun"] = True
+                st.session_state["last_cp_split_submit_rows"] = split_result.get("created_rows", [])
+                st.session_state["pending_workflow_active_tab"] = "Review queue"
+                clear_runtime_caches()
+                set_workflow_flash(
+                    "success",
+                    f"Submitted CP split for review: {len(split_result.get('ready_paths', []))} listings",
+                    f"Created Shirt, Hoodie, and Sweatshirt review folders. Archived source to {split_result.get('archived_path', '')}.",
+                )
+                st.rerun()
 
             generation_payload["review_snapshot"] = build_review_snapshot(
                 profile=profile,
@@ -9545,7 +12046,9 @@ def main() -> None:
             )
 
             st.session_state["last_ready_folder_path"] = ready_folder_path
+            st.session_state.pop("active_listing_task", None)
             st.session_state["clear_staged_folder_selection_on_rerun"] = True
+            st.session_state["pending_workflow_active_tab"] = "Review queue"
             clear_runtime_caches()
             set_workflow_flash(
                 "success",
