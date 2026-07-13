@@ -1660,15 +1660,52 @@ def find_profile_for_listing_task(profiles: list[dict[str, Any]], task: dict[str
     return None
 
 
-def build_listing_memory_from_task(task: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
-    selected_variants = task.get("selected_variants", {})
-    if not isinstance(selected_variants, dict):
-        selected_variants = {}
-    selected_variants = {
-        key: list(value)
-        for key, value in selected_variants.items()
-        if isinstance(value, list)
+def build_default_selected_variants_for_profile(profile: dict[str, Any]) -> dict[str, list[str]]:
+    if profile.get("variant_dimensions"):
+        return {
+            str(dim.get("name", "") or ""): list(dim.get("options", []) or [])
+            for dim in profile.get("variant_dimensions", [])
+            if str(dim.get("name", "") or "").strip()
+        }
+
+    return {
+        "color": list(get_profile_color_options(profile)),
+        "size": list(profile.get("sizes", []) or []),
     }
+
+
+def hydrate_task_selected_variants(task: dict[str, Any], profile: dict[str, Any]) -> dict[str, list[str]]:
+    defaults = build_default_selected_variants_for_profile(profile)
+    raw_variants = task.get("selected_variants", {})
+    if not isinstance(raw_variants, dict):
+        raw_variants = {}
+
+    hydrated: dict[str, list[str]] = {}
+    for dim_name, default_values in defaults.items():
+        raw_values = raw_variants.get(dim_name, [])
+        if not isinstance(raw_values, list):
+            raw_values = []
+        allowed_values = set(default_values)
+        clean_values = [
+            value
+            for value in raw_values
+            if value in allowed_values
+        ]
+        hydrated[dim_name] = clean_values or list(default_values)
+
+    return hydrated
+
+
+def normalize_task_handling_time_days(task: dict[str, Any]) -> int:
+    raw_value = task.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)
+    normalized = normalize_handling_time_days(raw_value, DEFAULT_HANDLING_TIME_DAYS)
+    return normalized if normalized > 0 else DEFAULT_HANDLING_TIME_DAYS
+
+
+def build_listing_memory_from_task(task: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+    selected_variants = hydrate_task_selected_variants(task, profile)
+    task["selected_variants"] = selected_variants
+    task["handling_time_days"] = normalize_task_handling_time_days(task)
 
     bullet_points = list(task.get("bullet_points", []) or [])
     bullet_points = (bullet_points + ["", "", "", "", ""])[:5]
@@ -1692,7 +1729,7 @@ def build_listing_memory_from_task(task: dict[str, Any], profile: dict[str, Any]
         "generated_sku_listing_code": listing_code,
         "sku_listing_code": listing_code,
         "quantity": int(task.get("quantity", 100) or 100),
-        "handling_time_days": normalize_handling_time_days(task.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)),
+        "handling_time_days": task["handling_time_days"],
         "merchant_shipping_group_name": normalize_merchant_shipping_group(task.get("merchant_shipping_group_name", "")),
         "assets_prepared_by": str(task.get("assets_prepared_by", "") or task.get("assigned_operator", "") or ""),
         "content_prepared_by": str(task.get("content_prepared_by", "") or ""),
