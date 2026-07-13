@@ -10771,7 +10771,7 @@ def main() -> None:
 
     locked_profile: dict[str, Any] | None = None
     locked_template_key = str(st.session_state.get("task_locked_template_key", "") or "").strip()
-    if initial_staged_folder_name and not authoritative_profile and locked_template_key:
+    if not authoritative_profile and locked_template_key:
         for candidate in profiles:
             if locked_template_key in {
                 str(candidate.get("template_key", "") or "").strip(),
