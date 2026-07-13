@@ -234,7 +234,8 @@ def capture_rerun_cause() -> None:
             active_task_folder = ""
             if isinstance(active_task, dict):
                 active_task_folder = str(active_task.get("expected_stage_folder", "") or "")
-            if current.get("staged_folder_select", "") != active_task_folder:
+            current_folder = str(current.get("staged_folder_select", "") or "")
+            if current_folder and current_folder != active_task_folder:
                 st.session_state.pop("task_locked_template_key", None)
                 st.session_state.pop("task_locked_template_family", None)
                 st.session_state.pop("task_locked_template_label", None)
@@ -10738,6 +10739,18 @@ def main() -> None:
         st.session_state.pop("task_locked_template_key", None)
         st.session_state.pop("task_locked_template_family", None)
         st.session_state.pop("task_locked_template_label", None)
+
+    active_task_for_context = st.session_state.get("active_listing_task", {})
+    if isinstance(active_task_for_context, dict) and active_task_for_context.get("task_id"):
+        active_task_folder = str(active_task_for_context.get("expected_stage_folder", "") or "").strip()
+        active_task_template_key = str(active_task_for_context.get("template_key", "") or "").strip()
+        if active_task_folder and not st.session_state.get("staged_folder_select"):
+            st.session_state["folder_source_mode"] = "Use staged folder"
+            st.session_state["staged_folder_select"] = active_task_folder
+        if active_task_template_key and not st.session_state.get("task_locked_template_key"):
+            st.session_state["task_locked_template_key"] = active_task_template_key
+            st.session_state["task_locked_template_family"] = str(active_task_for_context.get("template_family", "") or "")
+            st.session_state["task_locked_template_label"] = str(active_task_for_context.get("template_label", "") or "")
 
     folder_source = st.session_state.get("folder_source_mode", "Use staged folder")
     initial_staged_folder_name = st.session_state.get("staged_folder_select", "") if folder_source == "Use staged folder" else ""
