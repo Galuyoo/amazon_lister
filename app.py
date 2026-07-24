@@ -2525,9 +2525,7 @@ def render_stage_images_zip_upload(
                     return
 
                 refresh_cached_folder_names("stage")
-                st.session_state["folder_source_mode"] = "Use staged folder"
                 st.session_state["active_folder_source_mode"] = "Use staged folder"
-                st.session_state["staged_folder_select"] = new_folder_name
                 st.session_state["active_staged_folder_select"] = new_folder_name
                 st.session_state["pending_staged_folder_selection_on_rerun"] = new_folder_name
                 set_workflow_flash(
@@ -6300,6 +6298,9 @@ def build_review_memory_fingerprint(
         "generated_sku_listing_code": listing_memory.get("generated_sku_listing_code", ""),
         "sku_listing_code": listing_memory.get("sku_listing_code", ""),
         "parent_sku": listing_memory.get("parent_sku", ""),
+        "merchant_shipping_group_name": normalize_merchant_shipping_group(
+            listing_memory.get("merchant_shipping_group_name", "")
+        ),
         "size_price_map": listing_memory.get("size_price_map", {}),
         "price_input_mode": listing_memory.get("price_input_mode", ""),
         "title": listing_memory.get("title", ""),
@@ -6333,6 +6334,7 @@ def get_review_edit_state_keys(review_key_prefix: str) -> dict[str, str]:
         "custom_sku_decoration_code": f"{review_key_prefix}_custom_sku_decoration_code",
         "manual_sku_listing_code": f"{review_key_prefix}_manual_sku_listing_code",
         "generated_sku_listing_code": f"{review_key_prefix}_generated_sku_listing_code",
+        "merchant_shipping_group_name": f"{review_key_prefix}_merchant_shipping_group_name",
         "price_input_mode": f"{review_key_prefix}_price_input_mode",
     }
 
@@ -6352,6 +6354,7 @@ def has_complete_review_sku_price_state(
         keys["custom_sku_decoration_code"],
         keys["manual_sku_listing_code"],
         keys["generated_sku_listing_code"],
+        keys["merchant_shipping_group_name"],
         keys["price_input_mode"],
     ]
     if has_design_size_pricing(profile, selected_variants):
@@ -6528,6 +6531,9 @@ def initialize_review_edit_state(
             "manual_sku_listing_code": listing_memory.get("manual_sku_listing_code", ""),
             "generated_sku_listing_code": listing_memory.get("generated_sku_listing_code", ""),
             "sku_listing_code": listing_memory.get("sku_listing_code", ""),
+            "merchant_shipping_group_name": normalize_merchant_shipping_group(
+                listing_memory.get("merchant_shipping_group_name", "")
+            ),
             "size_price_map": listing_memory.get("size_price_map", {}),
             "price_input_mode": listing_memory.get("price_input_mode", ""),
         },
@@ -6553,6 +6559,9 @@ def initialize_review_edit_state(
     st.session_state[keys["generated_sku_listing_code"]] = (
         get_saved_generated_sku_listing_code(listing_memory)
         or f"D{generate_unique_sku(5)}"
+    )
+    st.session_state[keys["merchant_shipping_group_name"]] = normalize_merchant_shipping_group(
+        listing_memory.get("merchant_shipping_group_name", "")
     )
     st.session_state[keys["price_input_mode"]] = normalize_design_size_pricing_mode(
         listing_memory.get("price_input_mode", ""),
@@ -6663,6 +6672,9 @@ def get_review_sku_and_price_edits(
         "generated_sku_listing_code": generated_sku_listing_code,
         "sku_listing_code": sku_listing_code,
         "parent_sku": parent_sku,
+        "merchant_shipping_group_name": normalize_merchant_shipping_group(
+            st.session_state.get(keys["merchant_shipping_group_name"], "")
+        ),
         "size_price_map": size_price_map,
         "price_input_mode": price_input_mode if has_design_size_pricing(profile, selected_variants) else "",
     }
@@ -6679,6 +6691,7 @@ def apply_review_sku_and_price_edits(
         "generated_sku_listing_code",
         "sku_listing_code",
         "parent_sku",
+        "merchant_shipping_group_name",
         "size_price_map",
         "price_input_mode",
     ]:
@@ -6715,6 +6728,14 @@ def render_review_sku_price_editor(
             help="Leave blank to use the generated unique design identifier.",
         )
         st.caption(f"Generated code: `{generated_code or '-'}`")
+
+    st.markdown("**Fulfillment**")
+    st.selectbox(
+        "Merchant Shipping Group",
+        MERCHANT_SHIPPING_GROUP_OPTIONS,
+        key=keys["merchant_shipping_group_name"],
+        help="Leave empty to keep Amazon/default fulfilment behavior.",
+    )
 
     edits = get_review_sku_and_price_edits(review_key_prefix, listing_memory, profile)
     st.caption(f"Parent SKU: `{edits['parent_sku']}`")
@@ -7165,6 +7186,10 @@ def render_ready_review_panel(
             st.write(f"Reviewed at: `{review_data['reviewed_at'] or '-'}`")
             st.write(f"Variants: {review_data['variants_summary']}")
             st.write(f"Quantity: {review_data['quantity']}")
+            st.write(
+                "Shipping group: "
+                f"`{normalize_merchant_shipping_group(listing_memory.get('merchant_shipping_group_name', '')) or '-'}`"
+            )
             st.write(f"Pricing: {review_data['price_summary']}")
 
         price_rows = build_review_price_rows(item.get("profile"), item.get("listing_memory", {}))
@@ -7252,7 +7277,7 @@ def render_ready_review_panel(
                 listing_memory=listing_memory,
             )
             if source_folder_path and st.button(
-                "Save SKU and price edits",
+                "Save SKU, shipping, and price edits",
                 key=f"{review_key_prefix}_save_sku_price_edits",
                 width="content",
             ):
@@ -7267,7 +7292,7 @@ def render_ready_review_panel(
                     st.session_state.pop("approved_queue_items_cache", None)
                     clear_review_editor_state(review_key_prefix)
                     item["listing_memory"] = payload
-                    set_workflow_flash("success", "Saved SKU and price edits.")
+                    set_workflow_flash("success", "Saved SKU, shipping, and price edits.")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Could not save SKU and price edits: {exc}")
