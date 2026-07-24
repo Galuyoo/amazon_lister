@@ -1375,6 +1375,66 @@ def sanitize_stage_folder_name(value: str) -> str:
     return cleaned.strip(" .-")
 
 
+def stage_folder_lookup_key(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
+
+
+def build_stage_folder_name_candidates(staged_folder_name: str) -> list[str]:
+    original = str(staged_folder_name or "").strip()
+    candidates = [
+        original,
+        sanitize_stage_folder_name(original),
+        sanitize_sku(original),
+        original.replace("-", " "),
+        original.replace(" ", "-"),
+    ]
+    seen: set[str] = set()
+    unique_candidates: list[str] = []
+    for candidate in candidates:
+        candidate = str(candidate or "").strip()
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            unique_candidates.append(candidate)
+    return unique_candidates
+
+
+def resolve_existing_stage_folder_name(
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+    known_stage_folder_names: list[str] | None = None,
+) -> str:
+    folder_name = str(staged_folder_name or "").strip()
+    if not folder_name:
+        raise ValueError("Select a staged Dropbox folder.")
+
+    candidates = build_stage_folder_name_candidates(folder_name)
+    known_stage_folder_names = list(known_stage_folder_names or [])
+    known_by_lookup = {
+        stage_folder_lookup_key(name): name
+        for name in known_stage_folder_names
+        if stage_folder_lookup_key(name)
+    }
+
+    for candidate in list(candidates):
+        exact_known = next((name for name in known_stage_folder_names if name.lower() == candidate.lower()), "")
+        if exact_known:
+            return exact_known
+
+        lookup_match = known_by_lookup.get(stage_folder_lookup_key(candidate), "")
+        if lookup_match:
+            return lookup_match
+
+    tried_paths: list[str] = []
+    for candidate in candidates:
+        candidate_path = build_stage_folder_path(dropbox_cfg, candidate)
+        tried_paths.append(candidate_path)
+        if path_exists(candidate_path):
+            return candidate
+
+    tried_text = ", ".join(f"`{path}`" for path in tried_paths)
+    raise FileNotFoundError(f"Staged folder was not found in Dropbox. Tried: {tried_text}")
+
+
 def build_finished_folder_path(dropbox_cfg: dict[str, Any], final_sku: str) -> str:
     finished_root = dropbox_cfg.get("finished_root", "").rstrip("/")
     return f"{finished_root}/{final_sku}"
@@ -1961,7 +2021,8 @@ def move_staged_dropbox_folder_to_ready(
         raise ValueError("Ready folder name is required.")
 
     ready_root = dropbox_cfg.get("ready_root", "").rstrip("/")
-    stage_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+    actual_staged_folder_name = resolve_existing_stage_folder_name(dropbox_cfg, staged_folder_name)
+    stage_path = build_stage_folder_path(dropbox_cfg, actual_staged_folder_name)
 
     create_folder_if_missing(ready_root)
 
@@ -10679,7 +10740,16 @@ def main() -> None:
     if ready_clicked:
         try:
             staged_folder_name = staged_folder_name or ""
-            ready_folder_name = staged_folder_name
+            actual_staged_folder_name = resolve_existing_stage_folder_name(
+                dropbox_cfg,
+                staged_folder_name,
+                staged_folder_names,
+            )
+            if actual_staged_folder_name != staged_folder_name:
+                staged_folder_name = actual_staged_folder_name
+                st.session_state["active_staged_folder_select"] = actual_staged_folder_name
+                st.session_state["pending_staged_folder_selection_on_rerun"] = actual_staged_folder_name
+            ready_folder_name = actual_staged_folder_name
             stage_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
             generation_payload["prepared_at"] = format_workflow_timestamp()
             st.session_state["prepared_at"] = generation_payload["prepared_at"]
