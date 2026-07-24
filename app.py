@@ -6115,6 +6115,16 @@ def find_template_matches_for_staged_folder(
     matches: list[tuple[int, dict[str, Any]]] = []
     seen_slugs: set[str] = set()
 
+    if bounded_match("T01") or bounded_match("T02"):
+        for profile in profiles:
+            if (
+                str(profile.get("_family_slug", "")).strip().upper() == "SHIRT"
+                and str(profile.get("template_key", "")).strip().upper() == "GENERIC_SHIRTS"
+            ):
+                matches.append((5, profile))
+                seen_slugs.add(profile.get("_slug", ""))
+                break
+
     for profile in profiles:
         template_key = str(profile.get("template_key", "")).strip()
         parent_sku = str(profile.get("parent_sku", "")).strip()
