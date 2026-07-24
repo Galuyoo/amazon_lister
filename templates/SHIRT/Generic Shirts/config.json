@@ -118,6 +118,7 @@
     "9-11 Years",
     "12-13 Years"
   ],
+  "design_sku_position": "after_parent",
   "design_sku_map": {
     "Adult T-Shirt": "T01",
     "Kids T-Shirt": "T02"
