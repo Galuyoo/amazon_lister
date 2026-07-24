@@ -141,12 +141,21 @@ Move from session-heavy, Dropbox-only state toward a proper multi-user workflow 
 
 - Add login and role checks.
 - Separate admin, operator, reviewer, and approver views.
+- Add profile-aware sidebar panels:
+  - current user/profile
+  - role and team
+  - assigned task count
+  - high-priority or blocked task count
+  - admin notes/messages for the operator or team
+  - quick links to assigned work
 - Hide review/approval/admin actions from operators by default.
 - Add workflow event logging for create, edit, submit, reject, approve, restage, generate, download, and finish actions.
 - Introduce Postgres/Supabase schema for:
   - users
   - teams/workspaces
   - roles
+  - profile settings
+  - admin/operator notes
   - listing tasks
   - listing records
   - selected variants
@@ -167,6 +176,8 @@ Move from session-heavy, Dropbox-only state toward a proper multi-user workflow 
 ### Acceptance Criteria
 
 - Users only see actions appropriate to their role.
+- Sidebar content is useful but quiet: identity, assigned work, and admin notes only.
+- Operators can quickly see what is assigned to them without exposing review/approval tools.
 - Key workflow actions are audit logged.
 - New listings can be tracked in the database without breaking existing Dropbox-based folders.
 - A listing can still be exported to or restored from `listing_inputs.json`.
@@ -242,8 +253,28 @@ Acceptance: listings can start from an admin task instead of only from a staged 
 - Hide review/approval/admin actions from operators.
 - Add workflow event logging.
 - Add basic admin view for user/role mapping.
+- Add first profile sidebar:
+  - signed-in user
+  - role/team
+  - assigned task count
+  - blocked/urgent task count
+  - admin notes
 
 Acceptance: admin/operator/reviewer responsibilities are separated and traceable.
+
+### Sprint 4.5: Profile Sidebar and Operator Handoff
+
+- Keep this after current bugs are stable and the task lister is live.
+- Add profile-level settings for each operator/team.
+- Show only useful sidebar context:
+  - assigned tasks
+  - admin notes
+  - current role/team
+  - quick filter to "my tasks"
+- Let admins post short notes to one operator, one team, or all operators.
+- Keep the main listing workflow in the main tabs; sidebar should support the workflow, not become another crowded control panel.
+
+Acceptance: operators can open the app and immediately understand their assigned work and notes without needing Dropbox or manual messages.
 
 ### Sprint 5: Database Migration Foundation
 
