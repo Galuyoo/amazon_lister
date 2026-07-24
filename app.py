@@ -1366,6 +1366,15 @@ def build_stage_folder_path(dropbox_cfg: dict[str, Any], staged_folder_name: str
     return f"{stage_root}/{staged_folder_name}"
 
 
+def sanitize_stage_folder_name(value: str) -> str:
+    cleaned = str(value or "").strip()
+    for ch in ['\\', '/', ':', '*', '?', '"', '<', '>', '|']:
+        cleaned = cleaned.replace(ch, "-")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"-{2,}", "-", cleaned)
+    return cleaned.strip(" .-")
+
+
 def build_finished_folder_path(dropbox_cfg: dict[str, Any], final_sku: str) -> str:
     finished_root = dropbox_cfg.get("finished_root", "").rstrip("/")
     return f"{finished_root}/{final_sku}"
@@ -2490,7 +2499,43 @@ def render_stage_images_zip_upload(
 ) -> None:
     with st.expander("Upload staged images from ZIP", expanded=False):
         if not staged_folder_name:
-            st.info("Select or create a staged folder before uploading images.")
+            st.info("Select an existing staged folder, or create a new one here before uploading images.")
+            new_folder_raw = st.text_input(
+                "New staged folder name",
+                key="zip_new_staged_folder_name",
+                placeholder="Example: THMRS T01",
+                help="This creates an empty folder in Dropbox _stage, then selects it for this workflow.",
+            )
+            new_folder_name = sanitize_stage_folder_name(new_folder_raw)
+            if new_folder_raw and new_folder_name != new_folder_raw.strip():
+                st.caption(f"Folder will be created as `{new_folder_name}`.")
+
+            create_disabled = not bool(new_folder_name)
+            if st.button(
+                "Create staged folder",
+                key="zip_create_staged_folder_btn",
+                width="stretch",
+                disabled=create_disabled,
+            ):
+                try:
+                    new_folder_path = build_stage_folder_path(dropbox_cfg, new_folder_name)
+                    create_folder_if_missing(new_folder_path)
+                except Exception as exc:
+                    st.error(f"Could not create staged folder: {exc}")
+                    return
+
+                refresh_cached_folder_names("stage")
+                st.session_state["folder_source_mode"] = "Use staged folder"
+                st.session_state["active_folder_source_mode"] = "Use staged folder"
+                st.session_state["staged_folder_select"] = new_folder_name
+                st.session_state["active_staged_folder_select"] = new_folder_name
+                st.session_state["pending_staged_folder_selection_on_rerun"] = new_folder_name
+                set_workflow_flash(
+                    "success",
+                    f"Created staged folder {new_folder_name}.",
+                    "You can now upload a ZIP with mockups in the root and resources inside resources/.",
+                )
+                st.rerun()
             return
 
         staged_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
