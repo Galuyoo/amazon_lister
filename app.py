@@ -1,12 +1,14 @@
 from __future__ import annotations
 from datetime import datetime
 import hashlib
+import io
 import time
 import json
 import re
 import random
 import string
 import traceback
+import zipfile
 
 from copy import copy
 from collections import Counter
@@ -2339,6 +2341,247 @@ def padded_list(values: list[str], target_len: int = 8) -> list[str]:
 def is_image_file(path: str) -> bool:
     suffix = Path(path).suffix.lower()
     return suffix in {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def is_ignored_zip_member(parts: list[str]) -> bool:
+    if not parts:
+        return True
+    filename = parts[-1]
+    return (
+        any(part == "__MACOSX" for part in parts)
+        or filename in {".DS_Store", "Thumbs.db"}
+        or filename.startswith("._")
+    )
+
+
+def inspect_stage_images_zip(zip_bytes: bytes, staged_folder_path: str) -> dict[str, Any]:
+    stage_root = staged_folder_path.rstrip("/")
+    resources_root = f"{stage_root}/resources"
+    plan: dict[str, Any] = {
+        "mockups": [],
+        "resources": [],
+        "skipped": [],
+    }
+
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+        member_parts: list[list[str]] = []
+        for member in archive.infolist():
+            if member.is_dir():
+                continue
+            normalized_name = member.filename.replace("\\", "/").lstrip("/")
+            parts = [part for part in normalized_name.split("/") if part and part != "."]
+            if parts and not is_ignored_zip_member(parts):
+                member_parts.append(parts)
+
+        wrapper_folder = ""
+        if member_parts and all(len(parts) > 1 for parts in member_parts):
+            first_parts = {parts[0] for parts in member_parts}
+            if len(first_parts) == 1 and next(iter(first_parts)).lower() != "resources":
+                wrapper_folder = next(iter(first_parts))
+
+        for member in archive.infolist():
+            raw_name = member.filename
+            normalized_name = raw_name.replace("\\", "/").lstrip("/")
+            parts = [part for part in normalized_name.split("/") if part and part != "."]
+
+            if member.is_dir() or is_ignored_zip_member(parts):
+                continue
+            if wrapper_folder and parts and parts[0] == wrapper_folder:
+                parts = parts[1:]
+
+            if not parts or any(part == ".." for part in parts) or (parts and ":" in parts[0]):
+                plan["skipped"].append({
+                    "file": raw_name,
+                    "reason": "Unsafe ZIP path",
+                })
+                continue
+
+            filename = parts[-1]
+            if not is_image_file(filename):
+                plan["skipped"].append({
+                    "file": raw_name,
+                    "reason": "Not a supported image file",
+                })
+                continue
+
+            if parts[0].lower() == "resources":
+                if len(parts) < 2:
+                    plan["skipped"].append({
+                        "file": raw_name,
+                        "reason": "Resource filename missing",
+                    })
+                    continue
+                plan["resources"].append({
+                    "source": raw_name,
+                    "filename": filename,
+                    "destination": f"{resources_root}/{filename}",
+                })
+                continue
+
+            if len(parts) > 1:
+                plan["skipped"].append({
+                    "file": raw_name,
+                    "reason": "Nested image is not inside resources/",
+                })
+                continue
+
+            plan["mockups"].append({
+                "source": raw_name,
+                "filename": filename,
+                "destination": f"{stage_root}/{filename}",
+            })
+
+    return plan
+
+
+def count_stage_image_files(folder_path: str) -> int:
+    if not folder_path:
+        return 0
+    try:
+        return len([path for path in list_folder_files(folder_path) if is_image_file(path)])
+    except Exception:
+        return 0
+
+
+def upload_stage_images_zip(
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+    zip_bytes: bytes,
+) -> dict[str, Any]:
+    staged_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+    resources_folder_path = f"{staged_folder_path.rstrip('/')}/resources"
+    plan = inspect_stage_images_zip(zip_bytes, staged_folder_path)
+
+    before_mockups = count_stage_image_files(staged_folder_path)
+    before_resources = count_stage_image_files(resources_folder_path)
+
+    create_folder_if_missing(staged_folder_path)
+    create_folder_if_missing(resources_folder_path)
+
+    uploaded: list[dict[str, str]] = []
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+        for item in [*plan["mockups"], *plan["resources"]]:
+            upload_binary_file(item["destination"], archive.read(item["source"]))
+            uploaded.append({
+                "source": item["source"],
+                "destination": item["destination"],
+            })
+
+    after_mockups = count_stage_image_files(staged_folder_path)
+    after_resources = count_stage_image_files(resources_folder_path)
+
+    return {
+        "staged_folder_path": staged_folder_path,
+        "resources_folder_path": resources_folder_path,
+        "planned_mockups": len(plan["mockups"]),
+        "planned_resources": len(plan["resources"]),
+        "skipped": plan["skipped"],
+        "uploaded": uploaded,
+        "before_mockups": before_mockups,
+        "before_resources": before_resources,
+        "after_mockups": after_mockups,
+        "after_resources": after_resources,
+    }
+
+
+def render_stage_images_zip_upload(
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+) -> None:
+    with st.expander("Upload staged images from ZIP", expanded=False):
+        if not staged_folder_name:
+            st.info("Select or create a staged folder before uploading images.")
+            return
+
+        staged_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+        resources_folder_path = f"{staged_folder_path.rstrip('/')}/resources"
+        existing_mockups = count_stage_image_files(staged_folder_path)
+        existing_resources = count_stage_image_files(resources_folder_path)
+
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("Current mockups", existing_mockups)
+        metric_cols[1].metric("Current resources", existing_resources)
+        metric_cols[2].write(f"Folder: `{staged_folder_name}`")
+        metric_cols[3].write("Overwrites same filenames")
+
+        uploaded_zip = st.file_uploader(
+            "Upload ZIP with mockup images in the root and resource images inside resources/",
+            type=["zip"],
+            key="stage_images_zip_upload",
+            help="Root images become staged variant/mockup images. Files inside resources/ become secondary resource images.",
+        )
+        if not uploaded_zip:
+            return
+
+        zip_bytes = uploaded_zip.getvalue()
+        try:
+            plan = inspect_stage_images_zip(zip_bytes, staged_folder_path)
+        except zipfile.BadZipFile:
+            st.error("That file is not a valid ZIP archive.")
+            return
+
+        preview_cols = st.columns(3)
+        preview_cols[0].metric("ZIP mockup images", len(plan["mockups"]))
+        preview_cols[1].metric("ZIP resource images", len(plan["resources"]))
+        preview_cols[2].metric("Skipped files", len(plan["skipped"]))
+
+        if plan["mockups"]:
+            with st.expander("Mockup files to upload", expanded=False):
+                st.dataframe(
+                    [{"filename": item["filename"], "destination": item["destination"]} for item in plan["mockups"]],
+                    width="stretch",
+                    hide_index=True,
+                )
+
+        if plan["resources"]:
+            with st.expander("Resource files to upload", expanded=False):
+                st.dataframe(
+                    [{"filename": item["filename"], "destination": item["destination"]} for item in plan["resources"]],
+                    width="stretch",
+                    hide_index=True,
+                )
+
+        if plan["skipped"]:
+            with st.expander("Skipped ZIP files", expanded=False):
+                st.dataframe(plan["skipped"], width="stretch", hide_index=True)
+
+        can_upload = bool(plan["mockups"] or plan["resources"])
+        if st.button(
+            "Upload ZIP images to staged folder",
+            key="upload_stage_images_zip_button",
+            width="stretch",
+            disabled=not can_upload,
+        ):
+            try:
+                result = upload_stage_images_zip(dropbox_cfg, staged_folder_name, zip_bytes)
+            except Exception as exc:
+                st.error(f"ZIP upload failed: {exc}")
+                return
+
+            clear_runtime_caches()
+            refresh_cached_folder_names("stage")
+            st.session_state["load_image_mappings_now"] = True
+            st.session_state["stage_images_zip_upload_result"] = result
+            set_workflow_flash(
+                "success",
+                f"Uploaded {len(result['uploaded'])} image file(s) to {staged_folder_name}.",
+                (
+                    f"Mockups: {result['before_mockups']} -> {result['after_mockups']}. "
+                    f"Resources: {result['before_resources']} -> {result['after_resources']}."
+                ),
+            )
+            st.rerun()
+
+        result = st.session_state.get("stage_images_zip_upload_result")
+        if result and result.get("staged_folder_path") == staged_folder_path:
+            st.success(
+                "Last ZIP upload: "
+                f"{len(result.get('uploaded', []))} uploaded, "
+                f"{len(result.get('skipped', []))} skipped. "
+                f"Mockups {result.get('before_mockups', 0)} -> {result.get('after_mockups', 0)}, "
+                f"resources {result.get('before_resources', 0)} -> {result.get('after_resources', 0)}."
+            )
+
 
 def build_design_color_preview_paths(
     profile: dict[str, Any],
@@ -9388,6 +9631,8 @@ def main() -> None:
             image_mapping_status=image_mapping_status,
             image_mapping_detail=image_mapping_detail,
         )
+        render_stage_images_zip_upload(dropbox_cfg, staged_folder_name)
+
         load_images_disabled = not bool(staged_folder_name)
         if st.button(
             "Load / refresh image mappings",
