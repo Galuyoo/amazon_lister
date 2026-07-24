@@ -2498,40 +2498,98 @@ def render_stage_images_zip_upload(
     staged_folder_name: str,
 ) -> None:
     with st.expander("Upload staged images from ZIP", expanded=False):
+        uploaded_zip = st.file_uploader(
+            "Upload ZIP with mockup images in the root and resource images inside resources/",
+            type=["zip"],
+            key="stage_images_zip_upload",
+            help="Root images become staged variant/mockup images. Files inside resources/ become secondary resource images.",
+        )
+
         if not staged_folder_name:
-            st.info("Select an existing staged folder, or create a new one here before uploading images.")
+            st.info(
+                "Select an existing staged folder, or upload a staged-folder ZIP here. "
+                "If no folder is selected, the ZIP filename is used as the new staged folder name."
+            )
+            zip_folder_guess = ""
+            if uploaded_zip:
+                zip_folder_guess = sanitize_stage_folder_name(Path(uploaded_zip.name).stem)
+                if st.session_state.get("zip_new_staged_folder_source") != uploaded_zip.name:
+                    st.session_state["zip_new_staged_folder_name"] = zip_folder_guess
+                    st.session_state["zip_new_staged_folder_source"] = uploaded_zip.name
             new_folder_raw = st.text_input(
                 "New staged folder name",
                 key="zip_new_staged_folder_name",
                 placeholder="Example: THMRS T01",
-                help="This creates an empty folder in Dropbox _stage, then selects it for this workflow.",
+                help="Defaults to the ZIP filename. This creates a folder in Dropbox _stage, selects it, and can upload the ZIP in the same action.",
             )
             new_folder_name = sanitize_stage_folder_name(new_folder_raw)
             if new_folder_raw and new_folder_name != new_folder_raw.strip():
                 st.caption(f"Folder will be created as `{new_folder_name}`.")
 
+            if uploaded_zip:
+                new_folder_path = build_stage_folder_path(dropbox_cfg, new_folder_name)
+                zip_bytes = uploaded_zip.getvalue()
+                try:
+                    plan = inspect_stage_images_zip(zip_bytes, new_folder_path)
+                except zipfile.BadZipFile:
+                    st.error("That file is not a valid ZIP archive.")
+                    return
+
+                preview_cols = st.columns(3)
+                preview_cols[0].metric("ZIP mockup images", len(plan["mockups"]))
+                preview_cols[1].metric("ZIP resource images", len(plan["resources"]))
+                preview_cols[2].metric("Skipped files", len(plan["skipped"]))
+
+                if plan["mockups"]:
+                    with st.expander("Mockup files to upload", expanded=False):
+                        st.dataframe(
+                            [{"filename": item["filename"], "destination": item["destination"]} for item in plan["mockups"]],
+                            width="stretch",
+                            hide_index=True,
+                        )
+                if plan["resources"]:
+                    with st.expander("Resource files to upload", expanded=False):
+                        st.dataframe(
+                            [{"filename": item["filename"], "destination": item["destination"]} for item in plan["resources"]],
+                            width="stretch",
+                            hide_index=True,
+                        )
+                if plan["skipped"]:
+                    with st.expander("Skipped ZIP files", expanded=False):
+                        st.dataframe(plan["skipped"], width="stretch", hide_index=True)
+
             create_disabled = not bool(new_folder_name)
             if st.button(
-                "Create staged folder",
+                "Create staged folder and upload ZIP" if uploaded_zip else "Create staged folder",
                 key="zip_create_staged_folder_btn",
                 width="stretch",
                 disabled=create_disabled,
             ):
                 try:
-                    new_folder_path = build_stage_folder_path(dropbox_cfg, new_folder_name)
-                    create_folder_if_missing(new_folder_path)
+                    if uploaded_zip:
+                        result = upload_stage_images_zip(dropbox_cfg, new_folder_name, uploaded_zip.getvalue())
+                        st.session_state["stage_images_zip_upload_result"] = result
+                    else:
+                        new_folder_path = build_stage_folder_path(dropbox_cfg, new_folder_name)
+                        create_folder_if_missing(new_folder_path)
                 except Exception as exc:
-                    st.error(f"Could not create staged folder: {exc}")
+                    st.error(f"Could not create staged folder/upload ZIP: {exc}")
                     return
 
+                clear_runtime_caches()
                 refresh_cached_folder_names("stage")
+                st.session_state["load_image_mappings_now"] = bool(uploaded_zip)
                 st.session_state["active_folder_source_mode"] = "Use staged folder"
                 st.session_state["active_staged_folder_select"] = new_folder_name
                 st.session_state["pending_staged_folder_selection_on_rerun"] = new_folder_name
                 set_workflow_flash(
                     "success",
                     f"Created staged folder {new_folder_name}.",
-                    "You can now upload a ZIP with mockups in the root and resources inside resources/.",
+                    (
+                        f"Uploaded {len(st.session_state.get('stage_images_zip_upload_result', {}).get('uploaded', []))} image file(s)."
+                        if uploaded_zip
+                        else "You can now upload a ZIP with mockups in the root and resources inside resources/."
+                    ),
                 )
                 st.rerun()
             return
@@ -2547,12 +2605,6 @@ def render_stage_images_zip_upload(
         metric_cols[2].write(f"Folder: `{staged_folder_name}`")
         metric_cols[3].write("Overwrites same filenames")
 
-        uploaded_zip = st.file_uploader(
-            "Upload ZIP with mockup images in the root and resource images inside resources/",
-            type=["zip"],
-            key="stage_images_zip_upload",
-            help="Root images become staged variant/mockup images. Files inside resources/ become secondary resource images.",
-        )
         if not uploaded_zip:
             return
 
