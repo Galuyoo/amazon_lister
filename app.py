@@ -6,6 +6,7 @@ import json
 import re
 import random
 import string
+import traceback
 
 from copy import copy
 from collections import Counter
@@ -1293,13 +1294,22 @@ def apply_apparel_size_fields(
     normalized_size = normalize_size(size_value) if size_value else ""
     size_class = get_apparel_size_class(normalized_size)
     shirt_size, shirt_size_to = get_amazon_shirt_size_range(normalized_size)
-    height_type = "" if size_class == "Age" else "Regular"
-    body_type = "" if size_class == "Age" else "Regular"
+    body_type = str(
+        values.get("apparel_body_type")
+        or values.get("shirt_body_type")
+        or ("Regular" if normalized_size else "")
+    )
+    height_type = "" if size_class == "Age" else str(
+        values.get("apparel_height_type")
+        or values.get("shirt_height_type")
+        or ("Regular" if normalized_size else "")
+    )
 
     size_values = {
         "apparel_size_system": "UK",
         "apparel_size_class": size_class,
         "apparel_size": normalized_size,
+        "size_map": normalized_size,
         "apparel_body_type": body_type,
         "apparel_height_type": height_type,
         "shirt_size_system": "UK",
@@ -1424,6 +1434,10 @@ def reset_restaged_selection_state() -> None:
     st.session_state.pop("finalized_finished_folder_path", None)
     st.session_state.pop("finalized_sku", None)
     st.session_state.pop("last_detected_template_folder", None)
+    st.session_state.pop("applied_listing_memory_key_v2", None)
+    st.session_state.pop("applied_listing_memory_widget_key_v2", None)
+    st.session_state.pop("initialized_listing_context_key", None)
+    st.session_state.pop("last_loaded_listing_memory_signature", None)
 
 
 def restage_finished_listing_for_review(
@@ -1723,7 +1737,7 @@ def load_listing_memory_from_dropbox(folder_path: str) -> dict[str, Any]:
     cache = st.session_state.setdefault("listing_memory_cache", {})
     cached = cache.get(folder_path)
 
-    if cached and cached.get("json_path") == json_path:
+    if cached and cached.get("json_path") == json_path and not cached.get("missing"):
         started_at = time.perf_counter()
         cached_data = json.loads(json.dumps(cached.get("data", {})))
         record_load_event(
@@ -1777,6 +1791,74 @@ def initialize_listing_context_defaults(profile: dict[str, Any]) -> None:
     st.session_state["generated_sku_listing_code"] = f"D{generate_unique_sku(5)}"
 
 
+CONTENT_EDITOR_KEYS = {
+    "title": "content_title_input_v3",
+    "description": "content_product_description_v3",
+    "keywords": "content_generic_keywords_v3",
+    "bullets": [
+        "content_bullet_1_v3",
+        "content_bullet_2_v3",
+        "content_bullet_3_v3",
+        "content_bullet_4_v3",
+        "content_bullet_5_v3",
+    ],
+}
+
+
+def hydrate_content_editor_widget_state(listing_memory: dict[str, Any]) -> None:
+    bullet_points = listing_memory.get("bullet_points", [])
+    bullet_points = (bullet_points + ["", "", "", "", ""])[:5]
+
+    st.session_state[CONTENT_EDITOR_KEYS["title"]] = str(listing_memory.get("title", "") or "")
+    st.session_state[CONTENT_EDITOR_KEYS["description"]] = str(listing_memory.get("product_description", "") or "")
+    st.session_state[CONTENT_EDITOR_KEYS["keywords"]] = str(listing_memory.get("generic_keywords", "") or "")
+    for idx, value in enumerate(bullet_points):
+        st.session_state[CONTENT_EDITOR_KEYS["bullets"][idx]] = str(value or "")
+
+
+def listing_memory_has_content(listing_memory: dict[str, Any]) -> bool:
+    if not listing_memory:
+        return False
+
+    content_values = [
+        listing_memory.get("title", ""),
+        listing_memory.get("product_description", ""),
+        listing_memory.get("generic_keywords", ""),
+        *listing_memory.get("bullet_points", []),
+    ]
+    return any(str(value or "").strip() for value in content_values)
+
+
+def selectbox_index_without_state_conflict(
+    key: str,
+    options: list[Any],
+    fallback_value: Any = None,
+) -> int | None:
+    """Return an index only when Streamlit does not already own this widget key."""
+    if key in st.session_state:
+        if st.session_state.get(key) in options:
+            return None
+        st.session_state.pop(key, None)
+
+    if fallback_value in options:
+        return options.index(fallback_value)
+
+    return None
+
+
+def sync_content_editor_to_canonical_state(
+    title: str,
+    bullets: list[str],
+    product_description: str,
+    generic_keywords: str,
+) -> None:
+    st.session_state["title_input"] = title
+    for idx, value in enumerate((bullets + ["", "", "", "", ""])[:5], start=1):
+        st.session_state[f"bullet_{idx}"] = value
+    st.session_state["product_description"] = product_description
+    st.session_state["generic_keywords"] = generic_keywords
+
+
 def apply_listing_memory_to_session(listing_memory: dict[str, Any], profile: dict[str, Any]) -> None:
     st.session_state["title_input"] = listing_memory.get("title", "")
     for field_name in ["assets_prepared_by", "content_prepared_by", "reviewed_by"]:
@@ -1792,6 +1874,7 @@ def apply_listing_memory_to_session(listing_memory: dict[str, Any], profile: dic
 
     st.session_state["product_description"] = listing_memory.get("product_description", "")
     st.session_state["generic_keywords"] = listing_memory.get("generic_keywords", "")
+    hydrate_content_editor_widget_state(listing_memory)
     st.session_state["use_same_price_for_all_sizes"] = listing_memory.get("use_same_price_for_all_sizes", False)
     sku_decoration_code = get_default_sku_decoration_code(profile, listing_memory)
     st.session_state["sku_decoration_choice"] = sku_decoration_code if sku_decoration_code in SKU_DECORATION_OPTIONS else "Custom"
@@ -2661,9 +2744,9 @@ def contains_token_sequence(tokens: list[str], sequence: list[str]) -> bool:
     return False
 
 
-def infer_design_color_image_url_map_from_folder(
+def infer_design_color_image_path_map_from_paths(
     profile: dict[str, Any],
-    folder_path: str,
+    image_paths: list[str],
     selected_colors: list[str],
     selected_designs: list[str] | None = None,
 ) -> dict[str, dict[str, str]]:
@@ -2672,7 +2755,7 @@ def infer_design_color_image_url_map_from_folder(
         for design, code in dict(profile.get("design_sku_map", {}) or {}).items()
         if str(design or "").strip() and str(code or "").strip()
     }
-    if not design_sku_map or not folder_path:
+    if not design_sku_map or not image_paths:
         return {}
 
     selected_design_set = set(selected_designs or [])
@@ -2694,11 +2777,6 @@ def infer_design_color_image_url_map_from_folder(
         for design, code in design_sku_map.items()
         if design in candidate_designs
     }
-
-    try:
-        image_paths = [path for path in list_folder_files(folder_path) if is_image_file(path)]
-    except Exception:
-        return {}
 
     inferred: dict[str, dict[str, str]] = {}
     for path in image_paths:
@@ -2722,18 +2800,44 @@ def infer_design_color_image_url_map_from_folder(
         if not matched_colors:
             continue
 
-        try:
-            image_url = dropbox_preview_url(path)
-        except Exception:
-            image_url = ""
-        if not image_url:
-            continue
-
         for color in matched_colors:
             for design in matched_designs:
-                inferred.setdefault(color, {}).setdefault(design, image_url)
+                inferred.setdefault(color, {}).setdefault(design, path)
 
     return inferred
+
+
+def infer_design_color_image_url_map_from_folder(
+    profile: dict[str, Any],
+    folder_path: str,
+    selected_colors: list[str],
+    selected_designs: list[str] | None = None,
+) -> dict[str, dict[str, str]]:
+    if not folder_path:
+        return {}
+
+    try:
+        image_paths = [path for path in list_folder_files(folder_path) if is_image_file(path)]
+    except Exception:
+        return {}
+
+    path_map = infer_design_color_image_path_map_from_paths(
+        profile=profile,
+        image_paths=image_paths,
+        selected_colors=selected_colors,
+        selected_designs=selected_designs,
+    )
+    url_map: dict[str, dict[str, str]] = {}
+    for color, design_map in path_map.items():
+        for design, path in design_map.items():
+            try:
+                image_url = dropbox_preview_url(path)
+            except Exception:
+                image_url = ""
+            if image_url:
+                url_map.setdefault(color, {})[design] = image_url
+
+    return url_map
 
 
 def build_color_image_filename_candidates(
@@ -2764,6 +2868,42 @@ def build_color_image_filename_candidates(
             candidates.append(filename)
 
     return candidates
+
+
+def resolve_existing_color_image_path_from_paths(
+    image_paths: list[str],
+    template_key: str,
+    color: str,
+    configured_filename: str = "",
+    color_code: str = "",
+) -> tuple[str, list[str]]:
+    candidates = build_color_image_filename_candidates(
+        template_key,
+        color,
+        configured_filename,
+        color_code,
+    )
+    if not image_paths:
+        return "", candidates
+
+    candidate_lookup = {filename.lower(): filename for filename in candidates}
+    candidate_stem_lookup = {
+        normalize_image_match_key(filename): filename
+        for filename in candidates
+        if normalize_image_match_key(filename)
+    }
+
+    for path in image_paths:
+        filename = Path(path).name
+        suffix = Path(filename).suffix.lower()
+        if filename.lower() in candidate_lookup:
+            return path, candidates
+        if suffix in {".jpg", ".jpeg", ".png", ".webp"}:
+            filename_key = normalize_image_match_key(filename)
+            if filename_key in candidate_stem_lookup:
+                return path, candidates
+
+    return "", candidates
 
 
 def resolve_existing_color_image_path(
@@ -2907,7 +3047,6 @@ def get_cached_dropbox_overview(
 
 def clear_runtime_caches() -> None:
     for key in [
-        "dropbox_folder_list_cache",
         "listing_memory_cache",
         "dropbox_overview_cache",
         "preview_image_cache",
@@ -2916,6 +3055,7 @@ def clear_runtime_caches() -> None:
         "ready_queue_items_cache",
         "approved_queue_items_cache",
         "load_image_mappings_now",
+        "scan_mapped_colours_now",
         "current_run_image_resolution_debug",
     ]:
         st.session_state.pop(key, None)
@@ -2956,6 +3096,74 @@ def render_workflow_flash() -> None:
         st.info(detail)
 
 
+def build_safe_error_context() -> dict[str, str]:
+    keys = [
+        "workflow_active_tab",
+        "active_folder_source_mode",
+        "active_staged_folder_select",
+        "active_template_family_select",
+        "active_listing_template_select",
+        "folder_source_mode",
+        "staged_folder_select",
+        "template_family_select",
+        "listing_template_select",
+        "image_mappings_loaded_folder",
+        "image_mappings_loaded_context",
+    ]
+    return {
+        key: normalize_debug_state_value(st.session_state.get(key, ""))
+        for key in keys
+        if key in st.session_state
+    }
+
+
+def record_app_error(exc: Exception) -> dict[str, Any]:
+    error_row = {
+        "timestamp": format_workflow_timestamp(),
+        "type": type(exc).__name__,
+        "message": str(exc),
+        "context": build_safe_error_context(),
+        "traceback": traceback.format_exc(),
+    }
+    history = list(st.session_state.get("app_error_history", []))
+    history.append(error_row)
+    st.session_state["app_error_history"] = history[-10:]
+    return error_row
+
+
+def render_app_error_report(error_row: dict[str, Any]) -> None:
+    st.error("The app hit an error, but the context was captured so we can debug it.")
+    st.write(f"Error: `{error_row.get('type', '')}`")
+    if error_row.get("message"):
+        st.code(str(error_row.get("message", "")), language=None)
+
+    with st.expander("Captured app context", expanded=True):
+        context = dict(error_row.get("context", {}) or {})
+        if context:
+            st.json(context)
+        else:
+            st.caption("No context keys were available.")
+
+    with st.expander("Traceback", expanded=False):
+        st.code(str(error_row.get("traceback", "")), language="python")
+
+    history = list(st.session_state.get("app_error_history", []))
+    if history:
+        with st.expander("Recent app errors in this session", expanded=False):
+            st.dataframe(
+                [
+                    {
+                        "timestamp": row.get("timestamp", ""),
+                        "type": row.get("type", ""),
+                        "message": row.get("message", ""),
+                    }
+                    for row in history
+                ],
+                hide_index=True,
+                width="stretch",
+            )
+
+
 def build_preview_image_cache_key(
     profile: dict[str, Any],
     dropbox_cfg: dict[str, Any],
@@ -2982,6 +3190,7 @@ def build_preview_image_mapping_cache_key(
     profile: dict[str, Any],
     dropbox_cfg: dict[str, Any],
     staged_folder_name: str,
+    resolve_preview_urls: bool = False,
 ) -> str:
     template_key = profile.get("template_key", "")
     cache_parts = {
@@ -2991,6 +3200,7 @@ def build_preview_image_mapping_cache_key(
         "template_cfg": dropbox_cfg.get("templates", {}).get(template_key, {}),
         "general_resource_images": dropbox_cfg.get("general_resource_images", []),
         "resource_root": dropbox_cfg.get("resource_root", ""),
+        "resolve_preview_urls": resolve_preview_urls,
     }
     return json.dumps(cache_parts, sort_keys=True)
 
@@ -3077,23 +3287,63 @@ def get_mapped_color_options(
     return mapped_colors
 
 
+def get_color_widget_keys(profile: dict[str, Any]) -> list[str]:
+    variant_dimensions = profile.get("variant_dimensions", [])
+    if variant_dimensions:
+        return [
+            f"variant_{str(dim.get('name', '')).strip()}"
+            for dim in variant_dimensions
+            if str(dim.get("name", "")).strip().lower() in {"color", "colour"}
+        ]
+    return ["selected_colours"]
+
+
+def apply_mapped_colors_to_widget_once(
+    widget_key: str,
+    mapped_colors: list[str],
+    context_key: str,
+    allow_replace_existing: bool = False,
+) -> bool:
+    if not mapped_colors:
+        return False
+
+    applied_key = f"{widget_key}_auto_mapped_context"
+    if st.session_state.get(applied_key) == context_key:
+        return False
+
+    if widget_key in st.session_state and not allow_replace_existing:
+        return False
+
+    st.session_state[widget_key] = list(mapped_colors)
+    st.session_state[applied_key] = context_key
+    return True
+
+
 def build_lenient_image_maps(
     profile: dict[str, Any],
     selected_variants: dict[str, list[str]],
     selected_colors: list[str],
     dropbox_overview: dict[str, Any],
     folder_path: str,
+    image_paths: list[str] | None = None,
+    resolve_urls: bool = True,
 ) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
     template_key = str(dropbox_overview.get("template_key", "") or "")
     main_image_map = dropbox_overview.get("main_image_map", {})
     design_color_image_map = dropbox_overview.get("design_color_image_map", {})
     color_sku_map = dropbox_overview.get("color_sku_map", {})
+    image_paths = list(image_paths or [])
+    if not image_paths and folder_path:
+        try:
+            image_paths = [path for path in list_folder_files(folder_path) if is_image_file(path)]
+        except Exception:
+            image_paths = []
 
     color_image_map: dict[str, str] = {}
     for color in selected_colors:
         filename = main_image_map.get(color, "")
-        path, _ = resolve_existing_color_image_path(
-            folder_path,
+        path, _ = resolve_existing_color_image_path_from_paths(
+            image_paths,
             template_key,
             color,
             filename,
@@ -3101,32 +3351,54 @@ def build_lenient_image_maps(
         )
         if not path:
             continue
-        url = dropbox_preview_url(path)
-        if url:
-            color_image_map[color] = url
+        if resolve_urls:
+            try:
+                resolved_image = dropbox_preview_url(path)
+            except Exception:
+                resolved_image = ""
+        else:
+            resolved_image = path
+        if resolved_image:
+            color_image_map[color] = resolved_image
 
     design_color_image_url_map: dict[str, dict[str, str]] = {}
+    image_path_set = set(image_paths)
     for color in selected_colors:
         for design, filename in dict(design_color_image_map.get(color, {})).items():
             if not filename:
                 continue
             path = f"{folder_path}/{filename}"
-            if not path_exists(path):
+            if image_paths and path not in image_path_set:
                 continue
-            url = dropbox_preview_url(path)
-            if not url:
+            if not image_paths and not path_exists(path):
                 continue
-            design_color_image_url_map.setdefault(color, {})[design] = url
+            if resolve_urls:
+                try:
+                    resolved_image = dropbox_preview_url(path)
+                except Exception:
+                    resolved_image = ""
+            else:
+                resolved_image = path
+            if resolved_image:
+                design_color_image_url_map.setdefault(color, {})[design] = resolved_image
 
-    inferred_design_color_image_url_map = infer_design_color_image_url_map_from_folder(
+    inferred_design_color_image_url_map = infer_design_color_image_path_map_from_paths(
         profile=profile,
-        folder_path=folder_path,
+        image_paths=image_paths,
         selected_colors=selected_colors,
         selected_designs=list(selected_variants.get("design", [])),
     )
     for color, design_map in inferred_design_color_image_url_map.items():
-        for design, image_url in design_map.items():
-            design_color_image_url_map.setdefault(color, {}).setdefault(design, image_url)
+        for design, path in design_map.items():
+            if resolve_urls:
+                try:
+                    resolved_image = dropbox_preview_url(path)
+                except Exception:
+                    resolved_image = ""
+            else:
+                resolved_image = path
+            if resolved_image:
+                design_color_image_url_map.setdefault(color, {}).setdefault(design, resolved_image)
 
     return color_image_map, design_color_image_url_map
 
@@ -3196,6 +3468,7 @@ def get_cached_preview_image_data(
                 profile,
                 dropbox_cfg,
                 staged_folder_name,
+                resolve_preview_urls=resolve_preview_urls,
             )
             mapping_cache = st.session_state.get("preview_image_mapping_cache", {})
 
@@ -3216,6 +3489,8 @@ def get_cached_preview_image_data(
                     mapping_colors,
                     dropbox_overview,
                     preview_stage_folder_path,
+                    image_paths=staged_preview_paths,
+                    resolve_urls=resolve_preview_urls,
                 )
 
                 st.session_state["preview_image_mapping_cache"] = {
@@ -3235,12 +3510,13 @@ def get_cached_preview_image_data(
                 full_color_image_map,
                 full_design_color_image_url_map,
             )
-            parent_main_image_options = build_parent_main_image_options(
-                profile=profile,
-                selected_variants=selected_variants,
-                color_image_map=preview_color_image_map,
-                design_color_image_url_map=preview_design_color_image_url_map,
-            )
+            if resolve_preview_urls:
+                parent_main_image_options = build_parent_main_image_options(
+                    profile=profile,
+                    selected_variants=selected_variants,
+                    color_image_map=preview_color_image_map,
+                    design_color_image_url_map=preview_design_color_image_url_map,
+                )
         except Exception:
             preview_color_image_map = {}
             preview_design_color_image_url_map = {}
@@ -3266,13 +3542,13 @@ def get_cached_preview_image_data(
                 "label": color,
                 "path": resolved_url,
                 "exists": True,
-                "direct_url": resolved_url,
+                "direct_url": resolved_url if resolve_preview_urls else "",
             })
             continue
 
         if stage_folder_path_for_preview and include_mappings:
-            path, _ = resolve_existing_color_image_path(
-                stage_folder_path_for_preview,
+            path, _ = resolve_existing_color_image_path_from_paths(
+                staged_preview_paths,
                 str(dropbox_overview.get("template_key", "") or profile.get("template_key", "") or ""),
                 color,
                 str(main_image_map.get(color, "") or ""),
@@ -3288,7 +3564,7 @@ def get_cached_preview_image_data(
                     "label": color,
                     "path": resolved_url,
                     "exists": True,
-                    "direct_url": resolved_url,
+                    "direct_url": resolved_url if resolve_preview_urls else "",
                 })
                 continue
 
@@ -4601,9 +4877,36 @@ def build_workbook(profile: dict[str, Any], payload: dict[str, Any]) -> tuple[Pa
 
 
 def build_combined_output_workbook_name(profile: dict[str, Any], payloads: list[dict[str, Any]]) -> str:
-    template_key = sanitize_sku(str(profile.get("template_key", "") or profile.get("_slug", "") or "template"))
+    family_slug = sanitize_sku(str(profile.get("_family_slug", "") or profile.get("template_family", "") or "template"))
+    workbook_stem = sanitize_sku(Path(str(profile.get("template_file", "") or "workbook")).stem)
+    template_keys = sorted({
+        sanitize_sku(str(payload.get("template_key", "") or payload.get("template_slug", "") or "listing"))
+        for payload in payloads
+    })
+    template_part = "-".join([key for key in template_keys if key][:4]) or workbook_stem
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"{template_key}_combined_{len(payloads)}_listings_{timestamp}.xlsm"
+    return f"{family_slug}_{workbook_stem}_{template_part}_combined_{len(payloads)}_listings_{timestamp}.xlsm"
+
+
+def get_combined_workbook_group_identity(profile: dict[str, Any]) -> tuple[Any, ...]:
+    layout = get_workbook_layout(profile)
+    return (
+        str(profile.get("_family_slug", "") or "").strip().lower(),
+        str(resolve_template_path(profile)).strip().lower(),
+        str(layout.get("mode", "") or "").strip(),
+        int(layout.get("header_row", HEADER_ROW)),
+        int(layout.get("parent_row", PARENT_ROW)),
+        int(layout.get("first_child_row", FIRST_CHILD_ROW)),
+    )
+
+
+def build_combined_workbook_group_label(items: list[dict[str, Any]]) -> str:
+    template_keys = sorted({
+        str(item.get("profile", {}).get("template_key", "") or item.get("profile", {}).get("_slug", "") or "").strip()
+        for item in items
+        if item and item.get("profile")
+    })
+    return " + ".join([key for key in template_keys if key]) or "combined"
 
 
 def get_generation_template_identity(profile: dict[str, Any]) -> tuple[Any, ...]:
@@ -4619,9 +4922,17 @@ def get_generation_template_identity(profile: dict[str, Any]) -> tuple[Any, ...]
     )
 
 
-def build_combined_workbook(profile: dict[str, Any], payloads: list[dict[str, Any]]) -> tuple[Path, dict[str, float]]:
+def build_combined_workbook(
+    profile: dict[str, Any],
+    payloads: list[dict[str, Any]],
+    payload_profiles: list[dict[str, Any]] | None = None,
+) -> tuple[Path, dict[str, float]]:
     if len(payloads) < 2:
         raise ValueError("Select at least two approved listings to build one combined workbook.")
+
+    payload_profiles = payload_profiles or [profile for _ in payloads]
+    if len(payload_profiles) != len(payloads):
+        raise ValueError("Internal error: combined workbook payload/profile count mismatch.")
 
     layout = get_workbook_layout(profile)
     if layout["mode"] == "offer_only":
@@ -4631,9 +4942,9 @@ def build_combined_workbook(profile: dict[str, Any], payloads: list[dict[str, An
     if not template_path.exists():
         raise FileNotFoundError(f"Template not found: {template_path}")
 
-    for payload in payloads:
+    for payload, payload_profile in zip(payloads, payload_profiles):
         quality_profile = apply_sku_context_to_profile(
-            profile,
+            payload_profile,
             payload.get("sku_decoration_code", ""),
             payload.get("sku_listing_code", ""),
         )
@@ -4658,13 +4969,13 @@ def build_combined_workbook(profile: dict[str, Any], payloads: list[dict[str, An
         raise ValueError("Duplicate parent SKUs in combined workbook: " + ", ".join(duplicate_parent_skus[:10]))
 
     child_skus: list[str] = []
-    for payload in payloads:
+    for payload, payload_profile in zip(payloads, payload_profiles):
         sku_profile = apply_sku_context_to_profile(
-            profile,
+            payload_profile,
             payload.get("sku_decoration_code", ""),
             payload.get("sku_listing_code", ""),
         )
-        for combo in build_variant_combinations(profile, payload.get("selected_variants", {})):
+        for combo in build_variant_combinations(payload_profile, payload.get("selected_variants", {})):
             child_skus.append(build_child_sku_details(sku_profile, payload["parent_sku"], combo)["amazon_seller_sku"])
 
     duplicate_child_skus = sorted([sku for sku, count in Counter(child_skus).items() if sku and count > 1])
@@ -4677,21 +4988,20 @@ def build_combined_workbook(profile: dict[str, Any], payloads: list[dict[str, An
 
     ws = wb[SHEET_NAME]
     header_map = build_header_map(ws, layout["header_row"])
-    dynamic_profile_fields = get_dynamic_profile_fields(profile, header_map)
-
     current_parent_row = int(layout["parent_row"])
     parent_template_row = int(layout["parent_row"])
     child_template_row = int(layout["first_child_row"])
     total_children = 0
 
-    for payload in payloads:
+    for payload, payload_profile in zip(payloads, payload_profiles):
         payload = dict(payload)
+        dynamic_profile_fields = get_dynamic_profile_fields(payload_profile, header_map)
         payload["dynamic_profile_fields"] = dynamic_profile_fields
 
         row_result = write_listing_rows_to_workbook(
             ws,
             header_map,
-            profile,
+            payload_profile,
             payload,
             parent_row=current_parent_row,
             child_start_row=current_parent_row + 1,
@@ -4735,18 +5045,17 @@ def generate_approved_listings_combined(
     if str(profile.get("template_key", "") or "").strip().upper() == "CP":
         raise ValueError("CP combined generation is disabled for now.")
 
-    identity = get_generation_template_identity(profile)
+    identity = get_combined_workbook_group_identity(profile)
     mismatched = [
         item["folder_name"]
         for item in valid_items
-        if get_generation_template_identity(item["profile"]) != identity
+        if get_combined_workbook_group_identity(item["profile"]) != identity
     ]
     if mismatched:
-        raise ValueError("All selected listings must use the same garment template: " + ", ".join(mismatched[:10]))
+        raise ValueError("Selected listings must use the same workbook group: " + ", ".join(mismatched[:10]))
 
     prepared_payloads: list[dict[str, Any]] = []
-    results: list[dict[str, Any]] = []
-    dropbox_overview = get_cached_dropbox_overview(profile, dropbox_cfg)
+    prepared_profiles: list[dict[str, Any]] = []
 
     for item in valid_items:
         folder_name = item["folder_name"]
@@ -4796,6 +5105,7 @@ def generate_approved_listings_combined(
                 payload["workflow_events"] = list(listing_memory.get("workflow_events", []))
 
             approved_folder_path = build_approved_folder_path(dropbox_cfg, folder_name)
+            dropbox_overview = get_cached_dropbox_overview(profile_i, dropbox_cfg)
             selected_parent_main_image_label = str(payload.get("parent_main_image_choice", "") or "")
             selected_parent_main_image_url = str(
                 payload.get("selected_parent_main_image_url", "")
@@ -4819,17 +5129,19 @@ def generate_approved_listings_combined(
             payload["design_color_image_url_map"] = design_color_image_url_map
 
             prepared_payloads.append(payload)
+            prepared_profiles.append(profile_i)
         except Exception as exc:
             raise ValueError(f"{folder_name}: {exc}") from exc
 
-    output_path, timings = build_combined_workbook(profile, prepared_payloads)
+    output_path, timings = build_combined_workbook(profile, prepared_payloads, prepared_profiles)
     if not output_path.exists() or output_path.stat().st_size <= 0:
         raise ValueError(f"Combined workbook was not created correctly: {output_path.name}")
 
+    group_label = build_combined_workbook_group_label(valid_items)
     return {
-        "folder_name": "Combined workbook",
+        "folder_name": f"Combined workbook - {group_label}",
         "status": "Success",
-        "message": f"Generated one workbook for {len(prepared_payloads)} listing(s): {output_path.name}",
+        "message": f"Generated one grouped workbook for {len(prepared_payloads)} compatible listing(s): {output_path.name}",
         "output_path": str(output_path),
         "output_name": output_path.name,
         "timings": timings,
@@ -6543,11 +6855,12 @@ def render_ready_review_panel(
             st.rerun()
 
     review_sections = ["Overview", "Content", "SKU & Price", "Images", "Quality"]
-    active_review_section = st.radio(
+    active_review_section = st.segmented_control(
         "Review section",
         review_sections,
         key=f"{review_key_prefix}_active_section",
-        horizontal=True,
+        selection_mode="single",
+        width="stretch",
         label_visibility="collapsed",
     )
 
@@ -7172,7 +7485,7 @@ def generate_approved_listing(
         return {
             "folder_name": approved_folder_name,
             "status": "Success",
-            "message": f"Generated {output_path.name}. Folder is still approved until you move it to Finished.",
+            "message": f"Generated {output_path.name}. Moving to Finished before download.",
             "output_path": str(output_path),
             "output_name": output_path.name,
             "approved_folder_name": approved_folder_name,
@@ -7275,7 +7588,65 @@ def move_generated_approved_listing_to_finished(
     }
 
 
-def render_generation_results(results: list[dict[str, Any]], download_key_prefix: str) -> None:
+def move_successful_generation_results_to_finished(
+    results: list[dict[str, Any]],
+    profiles: list[dict[str, Any]],
+    dropbox_cfg: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    updated_results: list[dict[str, Any]] = []
+    move_results: list[dict[str, Any]] = []
+
+    for result in results:
+        should_move = (
+            result.get("status") == "Success"
+            and result.get("approved_folder_name")
+            and result.get("approved_folder_name") != "Combined workbook"
+            and not result.get("finished_folder_path")
+        )
+        if not should_move:
+            updated_results.append(result)
+            continue
+
+        try:
+            move_result = move_generated_approved_listing_to_finished(
+                result=result,
+                profiles=profiles,
+                dropbox_cfg=dropbox_cfg,
+            )
+            move_results.append(move_result)
+            updated_result = dict(result)
+            updated_result["finished_folder_path"] = move_result.get("finished_folder_path", "")
+            updated_result["message"] = (
+                f"Generated {result.get('output_name', 'workbook')} and moved to Finished. "
+                "Download is ready."
+            )
+            updated_results.append(updated_result)
+        except Exception as exc:
+            move_result = {
+                "folder_name": result.get("approved_folder_name") or result.get("folder_name", ""),
+                "status": "Failed",
+                "message": str(exc),
+            }
+            move_results.append(move_result)
+            failed_result = dict(result)
+            failed_result["status"] = "Failed"
+            failed_result["message"] = (
+                f"Generated {result.get('output_name', 'workbook')}, but could not move to Finished: {exc}"
+            )
+            failed_result.pop("output_path", None)
+            updated_results.append(failed_result)
+
+    if any(row.get("status") == "Success" for row in move_results):
+        refresh_cached_folder_names("approved", "finished")
+        st.session_state.pop("approved_queue_items_cache", None)
+
+    return updated_results, move_results
+
+
+def render_generation_results(
+    results: list[dict[str, Any]],
+    download_key_prefix: str,
+) -> None:
     if not results:
         return
 
@@ -7303,68 +7674,16 @@ def render_generation_results(results: list[dict[str, Any]], download_key_prefix
             st.warning(f"Workbook not found for {result.get('folder_name', '')}: {output_path.name}")
             continue
 
+        output_name = result.get("output_name", output_path.name)
+        download_key = f"{download_key_prefix}_{result.get('folder_name', '')}_{output_name}"
         with output_path.open("rb") as f:
             st.download_button(
-                label=f"Download {result.get('output_name', output_path.name)}",
+                label=f"Download {output_name}",
                 data=f.read(),
-                file_name=result.get("output_name", output_path.name),
+                file_name=output_name,
                 mime="application/vnd.ms-excel.sheet.macroEnabled.12",
-                key=f"{download_key_prefix}_{result.get('folder_name', '')}_{result.get('output_name', output_path.name)}",
+                key=download_key,
             )
-
-
-def render_move_generated_to_finished_controls(
-    results: list[dict[str, Any]],
-    profiles: list[dict[str, Any]],
-    dropbox_cfg: dict[str, Any],
-) -> None:
-    eligible_results = [
-        result for result in results
-        if result.get("status") == "Success"
-        and result.get("approved_folder_name")
-        and not result.get("finished_folder_path")
-    ]
-    if not eligible_results:
-        return
-
-    st.info("Generated workbooks are ready. Move these approved folders to Finished after you have downloaded the Excel files.")
-    if st.button(
-        "Move generated successful listing(s) to Finished",
-        key="move_generated_successful_to_finished",
-        width="stretch",
-    ):
-        move_results: list[dict[str, Any]] = []
-        for result in eligible_results:
-            try:
-                move_results.append(
-                    move_generated_approved_listing_to_finished(
-                        result=result,
-                        profiles=profiles,
-                        dropbox_cfg=dropbox_cfg,
-                    )
-                )
-            except Exception as exc:
-                move_results.append({
-                    "folder_name": result.get("approved_folder_name") or result.get("folder_name", ""),
-                    "status": "Failed",
-                    "message": str(exc),
-                })
-
-        st.session_state["approved_queue_move_generated_results"] = move_results
-        st.session_state["approved_queue_generation_results"] = [
-            result for result in results
-            if result not in eligible_results
-        ]
-        clear_runtime_caches()
-        set_workflow_flash(
-            "success" if all(row.get("status") == "Success" for row in move_results) else "warning",
-            f"Moved {sum(1 for row in move_results if row.get('status') == 'Success')} of {len(move_results)} generated listing(s) to Finished.",
-        )
-        st.rerun()
-
-    move_results = list(st.session_state.get("approved_queue_move_generated_results", []))
-    if move_results:
-        st.dataframe(move_results, width="stretch", hide_index=True)
 
 
 def process_ready_review_decision(
@@ -7421,6 +7740,8 @@ def process_ready_review_decision(
             ready_folder_name=folder_name,
             approved_folder_name=folder_name,
         )
+        refresh_cached_folder_names("ready", "approved")
+        clear_cached_listing_memory(ready_folder_path, target_path)
         return {
             "folder_name": folder_name,
             "status": "Success",
@@ -7433,6 +7754,8 @@ def process_ready_review_decision(
         dropbox_cfg=dropbox_cfg,
         ready_folder_name=folder_name,
     )
+    refresh_cached_folder_names("ready", "stage")
+    clear_cached_listing_memory(ready_folder_path, target_path)
     return {
         "folder_name": folder_name,
         "status": "Success",
@@ -7447,6 +7770,8 @@ def render_review_queue_view(
     profiles: list[dict[str, Any]],
     dropbox_cfg: dict[str, Any],
 ) -> None:
+    st.subheader("Review queue")
+
     queue_items = build_ready_queue_items(ready_folder_names, profiles, dropbox_cfg)
     summary_rows = [
         {
@@ -7459,88 +7784,125 @@ def render_review_queue_view(
         for item in queue_items
     ]
 
-    if summary_rows:
-        st.dataframe(summary_rows, width="stretch", hide_index=True)
-    else:
+    if not summary_rows:
         st.info("No listings are currently waiting for review.")
         return
 
     ready_lookup = {item["folder_name"]: item for item in queue_items}
     review_folder_options = [item["folder_name"] for item in queue_items if item["listing_memory"]]
+    actionable_folder_options = [
+        item["folder_name"]
+        for item in queue_items
+        if item["profile"] and item["listing_memory"] and not item["load_error"]
+    ]
+    load_issue_count = sum(1 for item in queue_items if item["load_error"])
+    missing_memory_count = sum(1 for item in queue_items if not item["listing_memory"])
+    bulk_results = list(st.session_state.get("review_queue_bulk_approve_results", []))
 
-    st.markdown("### Bulk approve ready listings")
-    with st.container(border=True):
+    metric_col1, metric_col2, metric_col3 = st.columns(3)
+    metric_col1.metric("Waiting review", len(queue_items))
+    metric_col2.metric("Reviewable", len(actionable_folder_options))
+    metric_col3.metric("Load issues", load_issue_count + missing_memory_count)
+
+    with st.expander("Review queue summary", expanded=False):
+        st.dataframe(summary_rows, width="stretch", hide_index=True)
+
+    review_queue_sections = ["Review / decide", "Bulk approve", "Results"]
+    active_review_queue_section = st.segmented_control(
+        "Review queue section",
+        review_queue_sections,
+        key="review_queue_section",
+        selection_mode="single",
+        width="stretch",
+        label_visibility="collapsed",
+    )
+    if active_review_queue_section not in review_queue_sections:
+        active_review_queue_section = review_queue_sections[0]
+
+    if active_review_queue_section == "Bulk approve":
+        st.caption("Use this only for listings that do not need detailed review edits.")
         existing_bulk_selection = list(st.session_state.get("review_queue_bulk_approve_folders", []))
         valid_bulk_selection = [
             folder_name for folder_name in existing_bulk_selection
-            if folder_name in review_folder_options
+            if folder_name in actionable_folder_options
         ]
         if valid_bulk_selection != existing_bulk_selection:
             st.session_state["review_queue_bulk_approve_folders"] = valid_bulk_selection
 
-        with st.form("review_queue_bulk_approve_form"):
-            selected_bulk_folders = st.multiselect(
-                "Ready listings to approve",
-                review_folder_options,
-                key="review_queue_bulk_approve_folders",
-            )
-            bulk_reviewed_by = st.selectbox(
-                "Reviewed by",
-                WORKFLOW_ASSIGNEES,
-                key="review_queue_bulk_reviewed_by",
-            )
-            bulk_approve_clicked = st.form_submit_button(
-                "Approve selected for generation",
-                width="stretch",
-                disabled=not bool(review_folder_options),
-            )
-
-        if bulk_approve_clicked:
-            if not selected_bulk_folders:
-                st.warning("Select at least one ready listing to approve.")
-            elif not bulk_reviewed_by:
-                st.warning("Select who reviewed these listings before approving them.")
-            else:
-                st.session_state["pending_perf_action_label"] = "bulk approve ready listings"
-                results: list[dict[str, Any]] = []
-                for folder_name in selected_bulk_folders:
-                    review_item = ready_lookup.get(folder_name)
-                    try:
-                        result = process_ready_review_decision(
-                            review_item or {},
-                            dropbox_cfg,
-                            bulk_reviewed_by,
-                            approve=True,
-                        )
-                    except Exception as exc:
-                        result = {
-                            "folder_name": folder_name,
-                            "status": "Failed",
-                            "action": "approved",
-                            "message": str(exc),
-                        }
-                    results.append(result)
-
-                st.session_state["review_queue_bulk_approve_results"] = results
-                success_results = [row for row in results if row.get("status") == "Success"]
-                failed_results = [row for row in results if row.get("status") == "Failed"]
-                if len(success_results) == 1:
-                    st.session_state["last_approved_folder_path"] = success_results[0].get("target_path", "")
-                st.session_state.pop("review_queue_bulk_approve_folders", None)
-                clear_runtime_caches()
-                set_workflow_flash(
-                    "success" if not failed_results else "warning",
-                    f"Approved {len(success_results)} of {len(selected_bulk_folders)} selected listing(s).",
-                    f"{len(failed_results)} failed." if failed_results else "",
+        with st.container(border=True):
+            with st.form("review_queue_bulk_approve_form"):
+                selected_bulk_folders = st.multiselect(
+                    "Ready listings to approve",
+                    actionable_folder_options,
+                    key="review_queue_bulk_approve_folders",
+                    placeholder="Choose listings that are ready without further edits",
                 )
-                st.rerun()
+                bulk_reviewed_by = st.selectbox(
+                    "Reviewed by",
+                    WORKFLOW_ASSIGNEES,
+                    key="review_queue_bulk_reviewed_by",
+                )
+                bulk_approve_clicked = st.form_submit_button(
+                    "Approve selected for generation",
+                    width="stretch",
+                    disabled=not bool(actionable_folder_options),
+                )
 
-        bulk_results = list(st.session_state.get("review_queue_bulk_approve_results", []))
-        if bulk_results:
-            st.dataframe(bulk_results, width="stretch", hide_index=True)
+            if bulk_approve_clicked:
+                if not selected_bulk_folders:
+                    st.warning("Select at least one ready listing to approve.")
+                elif not bulk_reviewed_by:
+                    st.warning("Select who reviewed these listings before approving them.")
+                else:
+                    st.session_state["pending_perf_action_label"] = "bulk approve ready listings"
+                    results: list[dict[str, Any]] = []
+                    for folder_name in selected_bulk_folders:
+                        review_item = ready_lookup.get(folder_name)
+                        try:
+                            result = process_ready_review_decision(
+                                review_item or {},
+                                dropbox_cfg,
+                                bulk_reviewed_by,
+                                approve=True,
+                            )
+                        except Exception as exc:
+                            result = {
+                                "folder_name": folder_name,
+                                "status": "Failed",
+                                "action": "approved",
+                                "message": str(exc),
+                            }
+                        results.append(result)
 
-    st.markdown("### Review ready listing")
+                    st.session_state["review_queue_bulk_approve_results"] = results
+                    success_results = [row for row in results if row.get("status") == "Success"]
+                    failed_results = [row for row in results if row.get("status") == "Failed"]
+                    if len(success_results) == 1:
+                        st.session_state["last_approved_folder_path"] = success_results[0].get("target_path", "")
+                    st.session_state.pop("review_queue_bulk_approve_folders", None)
+                    clear_runtime_caches()
+                    set_workflow_flash(
+                        "success" if not failed_results else "warning",
+                        f"Approved {len(success_results)} of {len(selected_bulk_folders)} selected listing(s).",
+                        f"{len(failed_results)} failed." if failed_results else "",
+                    )
+                    st.rerun()
+
+        return
+
+    if active_review_queue_section == "Results":
+        with st.container(border=True):
+            if bulk_results:
+                st.dataframe(bulk_results, width="stretch", hide_index=True)
+            else:
+                st.caption("No recent bulk approval results yet.")
+        return
+
+    if active_review_queue_section != "Review / decide":
+        return
+
     with st.container(border=True):
+        st.caption("Open a listing only when you need detailed content, price, image, or quality review.")
         if not review_folder_options:
             st.caption("No reviewable ready listings found.")
             return
@@ -7572,7 +7934,7 @@ def render_review_queue_view(
                         st.session_state["active_perf_action_label"] = "hide ready review panel"
                         st.session_state[review_panel_open_key] = False
                 else:
-                    st.info("Review panel is not loaded yet. Open it only when you need detailed content/image/quality review.")
+                    st.caption("Review panel is closed.")
 
             if st.session_state.get(review_panel_open_key, False):
                 with st.expander("Review panel", expanded=True):
@@ -7664,15 +8026,25 @@ def render_review_queue_view(
                     else:
                         st.error(f"Could not deny the listing: {exc}")
 
+    return
+
 
 def render_approved_queue_view(
     approved_folder_names: list[str],
     profiles: list[dict[str, Any]],
     dropbox_cfg: dict[str, Any],
 ) -> None:
-    st.subheader("Approved queue")
+    st.subheader("Approved output")
 
     queue_items = build_approved_queue_items(approved_folder_names, profiles, dropbox_cfg)
+    stored_results = list(st.session_state.get("approved_queue_generation_results", []))
+    approved_lookup = {item["folder_name"]: item for item in queue_items}
+    review_folder_options = [item["folder_name"] for item in queue_items if item["listing_memory"]]
+    actionable_folder_options = [
+        item["folder_name"]
+        for item in queue_items
+        if item["profile"] and item["listing_memory"] and not item["load_error"]
+    ]
     summary_rows = [
         {
             "folder_name": item["folder_name"],
@@ -7684,174 +8056,210 @@ def render_approved_queue_view(
         for item in queue_items
     ]
 
-    stored_results = st.session_state.get("approved_queue_generation_results", [])
+    metric_col1, metric_col2, metric_col3 = st.columns(3)
+    metric_col1.metric("Approved", len(queue_items))
+    metric_col2.metric("Ready", len(actionable_folder_options))
+    metric_col3.metric(
+        "Downloads",
+        sum(1 for result in stored_results if result.get("status") == "Success" and result.get("output_path")),
+    )
+
     if summary_rows:
-        st.dataframe(summary_rows, width="stretch", hide_index=True)
+        with st.expander("Approved folder summary", expanded=False):
+            st.dataframe(summary_rows, width="stretch", hide_index=True)
     else:
         st.info("No approved folders found.")
         render_generation_results(stored_results, "approved_download")
-        render_move_generated_to_finished_controls(stored_results, profiles, dropbox_cfg)
         return
 
-    approved_lookup = {item["folder_name"]: item for item in queue_items}
-    review_folder_options = [item["folder_name"] for item in queue_items if item["listing_memory"]]
+    approved_output_sections = ["Generate", "Review / edit", "Return"]
+    active_approved_output_section = st.segmented_control(
+        "Approved output section",
+        approved_output_sections,
+        key="approved_output_section",
+        selection_mode="single",
+        width="stretch",
+        label_visibility="collapsed",
+    )
+    if active_approved_output_section not in approved_output_sections:
+        active_approved_output_section = approved_output_sections[0]
 
-    st.markdown("### Review approved listing")
-    with st.container(border=True):
-        if review_folder_options:
-            current_review_folder = st.session_state.get("approved_queue_review_folder", review_folder_options[0])
-            if current_review_folder not in review_folder_options:
-                current_review_folder = review_folder_options[0]
-                st.session_state["approved_queue_review_folder"] = current_review_folder
+    generate_selected = False
+    generate_all = False
+    selected_approved_folders: list[str] = []
 
-            selected_review_folder = st.selectbox(
-                "Review approved listing",
-                review_folder_options,
-                key="approved_queue_review_folder",
-            )
-            review_item = approved_lookup.get(selected_review_folder)
-            if review_item:
-                approved_panel_key_suffix = selected_review_folder.replace("/", "_").replace("\\", "_").replace(" ", "_")
-                approved_panel_open_key = f"approved_output_panel_open_{approved_panel_key_suffix}"
-
-                panel_col1, panel_col2 = st.columns([1, 3])
-                with panel_col1:
-                    if st.button("Open approved review panel", key=f"{approved_panel_open_key}_open_btn", width="stretch"):
-                        st.session_state["active_perf_action_label"] = "open approved review panel"
-                        clear_review_editor_state(f"approved_output_{approved_panel_key_suffix}")
-                        st.session_state[approved_panel_open_key] = True
-                with panel_col2:
-                    if st.session_state.get(approved_panel_open_key, False):
-                        if st.button("Hide approved review panel", key=f"{approved_panel_open_key}_hide_btn"):
-                            st.session_state["active_perf_action_label"] = "hide approved review panel"
-                            st.session_state[approved_panel_open_key] = False
-                    else:
-                        st.info("Approved review panel is not loaded yet. Open it only when you need detailed review.")
-
-                if st.session_state.get(approved_panel_open_key, False):
-                    with st.expander("Review panel", expanded=True):
-                        render_ready_review_panel(
-                            review_item,
-                            dropbox_cfg,
-                            key_prefix="approved_output",
-                            source_folder_path=build_approved_folder_path(dropbox_cfg, review_item["folder_name"]),
-                        )
-        else:
-            st.caption("No approved listings available to review yet.")
-
-    st.markdown("### Return approved listings")
-    with st.container(border=True):
-        returnable_folder_options = [
-            item["folder_name"]
-            for item in queue_items
-            if item["profile"] and item["listing_memory"] and not item["load_error"]
-        ]
-        existing_return_selection = list(st.session_state.get("approved_queue_return_folders", []))
-        valid_return_selection = [
-            folder_name for folder_name in existing_return_selection
-            if folder_name in returnable_folder_options
-        ]
-        if valid_return_selection != existing_return_selection:
-            st.session_state["approved_queue_return_folders"] = valid_return_selection
-
-        with st.form("approved_queue_return_form"):
-            selected_return_folders = st.multiselect(
-                "Approved listings to move",
-                returnable_folder_options,
-                key="approved_queue_return_folders",
-            )
-            return_target_label = st.radio(
-                "Move selected listings to",
-                ["Review queue", "Stage folder"],
-                horizontal=True,
-                key="approved_queue_return_target",
-            )
-            return_actor = st.selectbox(
-                "Returned by",
-                WORKFLOW_ASSIGNEES,
-                key="approved_queue_return_actor",
-            )
-            return_reason = st.text_input(
-                "Reason",
-                key="approved_queue_return_reason",
-                placeholder="Needs price/content/image changes",
-            )
-            return_clicked = st.form_submit_button(
-                "Move selected approved listing(s)",
-                width="stretch",
-                disabled=not bool(returnable_folder_options),
-            )
-
-        if return_clicked:
-            if not selected_return_folders:
-                st.warning("Select at least one approved listing to move.")
-            elif not return_actor:
-                st.warning("Select who is returning these listings.")
-            else:
-                target_state = "ready" if return_target_label == "Review queue" else "stage"
-                action_label = (
-                    "return approved to review"
-                    if target_state == "ready"
-                    else "return approved to stage"
+    if active_approved_output_section == "Generate":
+        with st.container(border=True):
+            st.caption("Generate Excel files. Successful single listings are moved to Finished before downloads appear.")
+            with st.form("approved_output_generation_form"):
+                selected_approved_folders = st.multiselect(
+                    "Approved folders",
+                    actionable_folder_options,
+                    key="approved_queue_selected_folders",
+                    placeholder="Choose approved folders to generate",
                 )
-                st.session_state["active_perf_action_label"] = action_label
-                st.session_state["pending_perf_action_label"] = action_label
 
-                return_results = [
-                    return_approved_listing(
-                        dropbox_cfg=dropbox_cfg,
-                        profiles=profiles,
-                        fallback_profile=profiles[0] if profiles else {},
-                        approved_folder_name=folder_name,
-                        target_state=target_state,
-                        actor=return_actor,
-                        reason=return_reason.strip(),
-                    )
-                    for folder_name in selected_return_folders
-                ]
-                success_results = [
-                    row for row in return_results
-                    if row.get("status") == "Success"
-                ]
-                failed_results = [
-                    row for row in return_results
-                    if row.get("status") == "Failed"
-                ]
+                col1, col2 = st.columns(2)
+                with col1:
+                    generate_selected = st.form_submit_button("Generate selected", width="stretch")
+                with col2:
+                    generate_all = st.form_submit_button("Generate all approved", width="stretch")
 
-                st.session_state["approved_queue_return_results"] = return_results
-                st.session_state.pop("approved_queue_return_folders", None)
+        if stored_results:
+            stored_results, move_results = move_successful_generation_results_to_finished(
+                results=stored_results,
+                profiles=profiles,
+                dropbox_cfg=dropbox_cfg,
+            )
+            if move_results:
+                st.session_state["approved_queue_generation_results"] = stored_results
+                st.session_state["approved_queue_move_generated_results"] = move_results
                 clear_runtime_caches()
-                set_workflow_flash(
-                    "success" if not failed_results else "warning",
-                    f"Moved {len(success_results)} of {len(selected_return_folders)} approved listing(s).",
-                    (
-                        "They are back in the review queue."
-                        if target_state == "ready" and not failed_results
-                        else "They are back in staging."
-                        if target_state == "stage" and not failed_results
-                        else f"{len(failed_results)} folder(s) failed."
-                    ),
+            render_generation_results(stored_results, "approved_download")
+
+    if active_approved_output_section == "Review / edit":
+        with st.container(border=True):
+            st.caption("Open detailed approved listing review only when you need to inspect or edit it.")
+            if review_folder_options:
+                current_review_folder = st.session_state.get("approved_queue_review_folder", review_folder_options[0])
+                if current_review_folder not in review_folder_options:
+                    current_review_folder = review_folder_options[0]
+                    st.session_state["approved_queue_review_folder"] = current_review_folder
+
+                selected_review_folder = st.selectbox(
+                    "Approved listing",
+                    review_folder_options,
+                    key="approved_queue_review_folder",
                 )
-                st.rerun()
+                review_item = approved_lookup.get(selected_review_folder)
+                if review_item:
+                    approved_panel_key_suffix = selected_review_folder.replace("/", "_").replace("\\", "_").replace(" ", "_")
+                    approved_panel_open_key = f"approved_output_panel_open_{approved_panel_key_suffix}"
 
-        return_results = list(st.session_state.get("approved_queue_return_results", []))
-        if return_results:
-            st.dataframe(return_results, width="stretch", hide_index=True)
+                    panel_col1, panel_col2 = st.columns([1, 3])
+                    with panel_col1:
+                        if st.button("Open review panel", key=f"{approved_panel_open_key}_open_btn", width="stretch"):
+                            st.session_state["active_perf_action_label"] = "open approved review panel"
+                            clear_review_editor_state(f"approved_output_{approved_panel_key_suffix}")
+                            st.session_state[approved_panel_open_key] = True
+                    with panel_col2:
+                        if st.session_state.get(approved_panel_open_key, False):
+                            if st.button("Hide review panel", key=f"{approved_panel_open_key}_hide_btn"):
+                                st.session_state["active_perf_action_label"] = "hide approved review panel"
+                                st.session_state[approved_panel_open_key] = False
+                        else:
+                            st.caption("Review panel is closed.")
 
-    st.markdown("### Generate output")
-    with st.container(border=True):
-        with st.form("approved_output_generation_form"):
-            selected_approved_folders = st.multiselect(
-                "Select approved folders to generate",
-                [item["folder_name"] for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"]],
-                key="approved_queue_selected_folders",
-            )
+                    if st.session_state.get(approved_panel_open_key, False):
+                        with st.expander("Review panel", expanded=True):
+                            render_ready_review_panel(
+                                review_item,
+                                dropbox_cfg,
+                                key_prefix="approved_output",
+                                source_folder_path=build_approved_folder_path(dropbox_cfg, review_item["folder_name"]),
+                            )
+            else:
+                st.caption("No approved listings are available for review.")
+        return
 
-            col1, col2 = st.columns(2)
-            with col1:
-                generate_selected = st.form_submit_button("Generate selected", width="stretch")
-            with col2:
-                generate_all = st.form_submit_button("Generate all approved", width="stretch")
+    if active_approved_output_section == "Return":
+        with st.container(border=True):
+            st.caption("Move approved listings back when they need content, price, image, or setup changes.")
+            existing_return_selection = list(st.session_state.get("approved_queue_return_folders", []))
+            valid_return_selection = [
+                folder_name for folder_name in existing_return_selection
+                if folder_name in actionable_folder_options
+            ]
+            if valid_return_selection != existing_return_selection:
+                st.session_state["approved_queue_return_folders"] = valid_return_selection
+
+            with st.form("approved_queue_return_form"):
+                selected_return_folders = st.multiselect(
+                    "Approved listings to move",
+                    actionable_folder_options,
+                    key="approved_queue_return_folders",
+                )
+                return_target_label = st.radio(
+                    "Move selected listings to",
+                    ["Review queue", "Stage folder"],
+                    horizontal=True,
+                    key="approved_queue_return_target",
+                )
+                return_actor = st.selectbox(
+                    "Returned by",
+                    WORKFLOW_ASSIGNEES,
+                    key="approved_queue_return_actor",
+                )
+                return_reason = st.text_input(
+                    "Reason",
+                    key="approved_queue_return_reason",
+                    placeholder="Needs price/content/image changes",
+                )
+                return_clicked = st.form_submit_button(
+                    "Move selected approved listing(s)",
+                    width="stretch",
+                    disabled=not bool(actionable_folder_options),
+                )
+
+            if return_clicked:
+                if not selected_return_folders:
+                    st.warning("Select at least one approved listing to move.")
+                elif not return_actor:
+                    st.warning("Select who is returning these listings.")
+                else:
+                    target_state = "ready" if return_target_label == "Review queue" else "stage"
+                    action_label = (
+                        "return approved to review"
+                        if target_state == "ready"
+                        else "return approved to stage"
+                    )
+                    st.session_state["active_perf_action_label"] = action_label
+                    st.session_state["pending_perf_action_label"] = action_label
+
+                    return_results = [
+                        return_approved_listing(
+                            dropbox_cfg=dropbox_cfg,
+                            profiles=profiles,
+                            fallback_profile=profiles[0] if profiles else {},
+                            approved_folder_name=folder_name,
+                            target_state=target_state,
+                            actor=return_actor,
+                            reason=return_reason.strip(),
+                        )
+                        for folder_name in selected_return_folders
+                    ]
+                    success_results = [
+                        row for row in return_results
+                        if row.get("status") == "Success"
+                    ]
+                    failed_results = [
+                        row for row in return_results
+                        if row.get("status") == "Failed"
+                    ]
+
+                    st.session_state["approved_queue_return_results"] = return_results
+                    st.session_state.pop("approved_queue_return_folders", None)
+                    clear_runtime_caches()
+                    set_workflow_flash(
+                        "success" if not failed_results else "warning",
+                        f"Moved {len(success_results)} of {len(selected_return_folders)} approved listing(s).",
+                        (
+                            "They are back in the review queue."
+                            if target_state == "ready" and not failed_results
+                            else "They are back in staging."
+                            if target_state == "stage" and not failed_results
+                            else f"{len(failed_results)} folder(s) failed."
+                        ),
+                    )
+                    st.rerun()
+
+            return_results = list(st.session_state.get("approved_queue_return_results", []))
+            if return_results:
+                st.dataframe(return_results, width="stretch", hide_index=True)
+        return
+
+    if active_approved_output_section != "Generate":
+        return
 
     if generate_selected:
         st.session_state["pending_perf_action_label"] = "generate selected approved"
@@ -7861,9 +8269,10 @@ def render_approved_queue_view(
     target_folders = selected_approved_folders if generate_selected else [
         item["folder_name"] for item in queue_items if item["profile"] and item["listing_memory"] and not item["load_error"]
     ] if generate_all else []
+    if generate_selected and not target_folders:
+        st.warning("Select at least one approved folder to generate.")
+        return
     if not target_folders:
-        render_generation_results(stored_results, "approved_download")
-        render_move_generated_to_finished_controls(stored_results, profiles, dropbox_cfg)
         return
 
     approved_generation_started_at = time.perf_counter()
@@ -7896,15 +8305,54 @@ def render_approved_queue_view(
             })
 
     if len(target_folders) >= 2:
-        selected_items = [approved_lookup.get(folder_name) for folder_name in target_folders]
-        try:
-            results.append(generate_approved_listings_combined(selected_items, dropbox_cfg))
-        except Exception as exc:
+        selected_items = [
+            approved_lookup.get(folder_name)
+            for folder_name in target_folders
+            if approved_lookup.get(folder_name)
+        ]
+        combined_groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+        skipped_combined_items: list[str] = []
+        for item in selected_items:
+            item_profile = item.get("profile") if item else None
+            if not item_profile or not item.get("listing_memory") or item.get("load_error"):
+                continue
+            if str(item_profile.get("template_key", "") or "").strip().upper() == "CP":
+                skipped_combined_items.append(item.get("folder_name", ""))
+                continue
+            try:
+                group_key = get_combined_workbook_group_identity(item_profile)
+            except Exception:
+                skipped_combined_items.append(item.get("folder_name", ""))
+                continue
+            combined_groups.setdefault(group_key, []).append(item)
+
+        for group_items in combined_groups.values():
+            if len(group_items) < 2:
+                continue
+            group_label = build_combined_workbook_group_label(group_items)
+            try:
+                results.append(generate_approved_listings_combined(group_items, dropbox_cfg))
+            except Exception as exc:
+                results.append({
+                    "folder_name": f"Combined workbook - {group_label}",
+                    "status": "Failed",
+                    "message": f"Separate workbooks were generated. Grouped workbook was skipped: {exc}",
+                })
+
+        if skipped_combined_items:
             results.append({
                 "folder_name": "Combined workbook",
-                "status": "Failed",
-                "message": f"Separate workbooks were generated. Combined workbook was skipped: {exc}",
+                "status": "Skipped",
+                "message": "Grouped workbook skipped for incompatible listing(s): " + ", ".join(skipped_combined_items[:10]),
             })
+
+    results, move_results = move_successful_generation_results_to_finished(
+        results=results,
+        profiles=profiles,
+        dropbox_cfg=dropbox_cfg,
+    )
+    if move_results:
+        st.session_state["approved_queue_move_generated_results"] = move_results
 
     approved_generation_elapsed_ms = round(
         (time.perf_counter() - approved_generation_started_at) * 1000,
@@ -7987,8 +8435,109 @@ def debug_size_headers(header_map: dict[str, int]) -> None:
         matches = [key for key in header_map.keys() if pattern.lower() in key.lower()]
         st.write({pattern: matches})
 
+
+def render_widget_visibility_patch() -> None:
+    st.markdown(
+        """
+        <style>
+        input,
+        textarea,
+        [contenteditable="true"],
+        [role="textbox"] {
+            color: #f8fafc !important;
+            -webkit-text-fill-color: #f8fafc !important;
+            caret-color: #f8fafc !important;
+            opacity: 1 !important;
+            visibility: visible !important;
+            text-indent: 0 !important;
+            letter-spacing: 0 !important;
+            text-shadow: none !important;
+            filter: none !important;
+        }
+
+        input *,
+        textarea *,
+        [role="textbox"] * {
+            color: inherit !important;
+            -webkit-text-fill-color: inherit !important;
+            opacity: 1 !important;
+            visibility: visible !important;
+        }
+
+        [data-testid="stTextInput"] input,
+        [data-testid="stTextArea"] textarea,
+        [data-testid="stNumberInput"] input,
+        [data-testid="stSelectbox"] input,
+        [data-testid="stMultiSelect"] input,
+        [data-testid="stTextInput"] div[data-baseweb="input"] input,
+        [data-testid="stTextArea"] div[data-baseweb="textarea"] textarea,
+        [data-testid="stNumberInput"] div[data-baseweb="input"] input,
+        [data-testid="stSelectbox"] div[data-baseweb="select"] input,
+        [data-testid="stMultiSelect"] div[data-baseweb="select"] input,
+        div[data-baseweb="base-input"] input,
+        div[data-baseweb="input"] input,
+        div[data-baseweb="textarea"] textarea,
+        div[data-baseweb="select"] input,
+        .stTextInput input,
+        .stTextArea textarea,
+        .stNumberInput input {
+            color: #f8fafc !important;
+            -webkit-text-fill-color: #f8fafc !important;
+            caret-color: #f8fafc !important;
+            opacity: 1 !important;
+            text-shadow: none !important;
+        }
+
+        [data-testid="stTextInput"] input::placeholder,
+        [data-testid="stTextArea"] textarea::placeholder,
+        [data-testid="stNumberInput"] input::placeholder,
+        [data-testid="stSelectbox"] input::placeholder,
+        [data-testid="stMultiSelect"] input::placeholder,
+        div[data-baseweb="input"] input::placeholder,
+        div[data-baseweb="textarea"] textarea::placeholder,
+        .stTextInput input::placeholder,
+        .stTextArea textarea::placeholder {
+            color: #94a3b8 !important;
+            -webkit-text-fill-color: #94a3b8 !important;
+            opacity: 1 !important;
+        }
+
+        [data-testid="stTextInput"] input:disabled,
+        [data-testid="stTextArea"] textarea:disabled,
+        [data-testid="stNumberInput"] input:disabled,
+        div[data-baseweb="input"] input:disabled,
+        div[data-baseweb="textarea"] textarea:disabled,
+        .stTextInput input:disabled,
+        .stTextArea textarea:disabled {
+            color: #cbd5e1 !important;
+            -webkit-text-fill-color: #cbd5e1 !important;
+        }
+
+        [data-testid="stTextInput"] input[value]:not([value=""]),
+        [data-testid="stTextArea"] textarea:not(:placeholder-shown),
+        [data-testid="stNumberInput"] input[value]:not([value=""]) {
+            color: #f8fafc !important;
+            -webkit-text-fill-color: #f8fafc !important;
+        }
+
+        input:-webkit-autofill,
+        input:-webkit-autofill:hover,
+        input:-webkit-autofill:focus,
+        textarea:-webkit-autofill,
+        textarea:-webkit-autofill:hover,
+        textarea:-webkit-autofill:focus {
+            -webkit-text-fill-color: #f8fafc !important;
+            transition: background-color 9999s ease-out 0s !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def main() -> None:
     st.set_page_config(page_title="Amazon Listing Generator", layout="wide")
+    render_widget_visibility_patch()
     st.title("Amazon Listing Generator")
     st.caption("Template-based Amazon flat file generator.")
     render_workflow_flash()
@@ -8040,12 +8589,25 @@ def main() -> None:
         st.error("No template profiles found. Create family folders under templates/ with schema.json, a shared workbook, and garment subfolders containing config.json.")
         st.stop()
 
-    tab_setup, tab_content, tab_review_queue, tab_approved_output = st.tabs([
+    workflow_tab_labels = [
         "Product setup",
         "Listing content",
         "Review queue",
         "Approved output",
-    ])
+    ]
+    pending_workflow_tab = st.session_state.pop("pending_workflow_active_tab", "")
+    if pending_workflow_tab in workflow_tab_labels:
+        st.session_state["workflow_active_tab"] = pending_workflow_tab
+    if st.session_state.get("workflow_active_tab") not in workflow_tab_labels:
+        st.session_state["workflow_active_tab"] = workflow_tab_labels[0]
+    active_workflow_tab = st.segmented_control(
+        "Workflow section",
+        workflow_tab_labels,
+        key="workflow_active_tab",
+        selection_mode="single",
+        width="stretch",
+        label_visibility="collapsed",
+    )
 
     families = sorted({profile.get("_family_slug", "") for profile in profiles if profile.get("_family_slug")})
     detection_message = ""
@@ -8053,24 +8615,55 @@ def main() -> None:
 
     if st.session_state.pop("auto_switch_to_staged", False):
         st.session_state["folder_source_mode"] = "Use staged folder"
+        st.session_state["active_folder_source_mode"] = "Use staged folder"
 
     pending_staged_folder_selection = st.session_state.pop("pending_staged_folder_selection_on_rerun", None)
     if pending_staged_folder_selection:
         st.session_state["staged_folder_select"] = pending_staged_folder_selection
+        st.session_state["active_staged_folder_select"] = pending_staged_folder_selection
         st.session_state.pop("last_detected_template_folder", None)
         st.session_state.pop("applied_listing_memory_key_v2", None)
+        st.session_state.pop("applied_listing_memory_widget_key_v2", None)
         st.session_state.pop("initialized_listing_context_key", None)
         st.session_state.pop("last_loaded_listing_memory_signature", None)
 
     if st.session_state.pop("clear_staged_folder_selection_on_rerun", False):
         st.session_state["staged_folder_select"] = None
+        st.session_state["active_staged_folder_select"] = ""
         st.session_state.pop("last_detected_template_folder", None)
         st.session_state.pop("applied_listing_memory_key_v2", None)
+        st.session_state.pop("applied_listing_memory_widget_key_v2", None)
         st.session_state.pop("initialized_listing_context_key", None)
         st.session_state.pop("last_loaded_listing_memory_signature", None)
 
-    folder_source = st.session_state.get("folder_source_mode", "Use staged folder")
-    initial_staged_folder_name = st.session_state.get("staged_folder_select", "") if folder_source == "Use staged folder" else ""
+    # Product setup widgets are not rendered on the other workflow sections.
+    # Keep durable active selections separate so hidden/cleaned widget state
+    # cannot reset a loaded staged folder or template while editing content.
+    if active_workflow_tab == "Product setup":
+        if "folder_source_mode" in st.session_state:
+            st.session_state["active_folder_source_mode"] = st.session_state.get("folder_source_mode") or "Use staged folder"
+        if "staged_folder_select" in st.session_state:
+            st.session_state["active_staged_folder_select"] = st.session_state.get("staged_folder_select") or ""
+        if "finished_folder_select" in st.session_state:
+            st.session_state["active_finished_folder_select"] = st.session_state.get("finished_folder_select") or ""
+        if "template_family_select" in st.session_state:
+            st.session_state["active_template_family_select"] = st.session_state.get("template_family_select") or ""
+        if "listing_template_select" in st.session_state:
+            st.session_state["active_listing_template_select"] = st.session_state.get("listing_template_select") or ""
+    else:
+        if st.session_state.get("active_folder_source_mode"):
+            st.session_state["folder_source_mode"] = st.session_state.get("active_folder_source_mode")
+        if st.session_state.get("active_staged_folder_select"):
+            st.session_state["staged_folder_select"] = st.session_state.get("active_staged_folder_select")
+        if st.session_state.get("active_finished_folder_select"):
+            st.session_state["finished_folder_select"] = st.session_state.get("active_finished_folder_select")
+        if st.session_state.get("active_template_family_select"):
+            st.session_state["template_family_select"] = st.session_state.get("active_template_family_select")
+        if st.session_state.get("active_listing_template_select"):
+            st.session_state["listing_template_select"] = st.session_state.get("active_listing_template_select")
+
+    folder_source = st.session_state.get("active_folder_source_mode", "Use staged folder")
+    initial_staged_folder_name = st.session_state.get("active_staged_folder_select", "") if folder_source == "Use staged folder" else ""
     listing_memory: dict[str, Any] = {}
     authoritative_profile: dict[str, Any] | None = None
 
@@ -8082,23 +8675,41 @@ def main() -> None:
             if authoritative_profile:
                 st.session_state["template_family_select"] = authoritative_profile.get("_family_slug", "")
                 st.session_state["listing_template_select"] = authoritative_profile.get("label", authoritative_profile.get("_slug", ""))
+                st.session_state["active_template_family_select"] = authoritative_profile.get("_family_slug", "")
+                st.session_state["active_listing_template_select"] = authoritative_profile.get("label", authoritative_profile.get("_slug", ""))
         except Exception:
             listing_memory = {}
             authoritative_profile = None
 
-    current_folder_source_mode = st.session_state.get("folder_source_mode", "Use staged folder")
-    current_detect_folder = st.session_state.get("staged_folder_select", "") if current_folder_source_mode == "Use staged folder" else ""
+    current_folder_source_mode = st.session_state.get("active_folder_source_mode", "Use staged folder")
+    current_detect_folder = st.session_state.get("active_staged_folder_select", "") if current_folder_source_mode == "Use staged folder" else ""
 
     if current_detect_folder and not authoritative_profile:
         last_detect_folder = st.session_state.get("last_detected_template_folder", "")
-        if last_detect_folder != current_detect_folder:
+        matches: list[dict[str, Any]] = []
+        should_detect_folder_template = last_detect_folder != current_detect_folder
+        if not should_detect_folder_template:
             matches = find_template_matches_for_staged_folder(current_detect_folder, profiles)
+            if len(matches) == 1:
+                matched = matches[0]
+                current_template_label = st.session_state.get("active_listing_template_select") or st.session_state.get("listing_template_select", "")
+                current_template_family = st.session_state.get("active_template_family_select") or st.session_state.get("template_family_select", "")
+                should_detect_folder_template = (
+                    current_template_family != matched.get("_family_slug", "")
+                    or current_template_label != matched.get("label", matched.get("_slug", ""))
+                )
+
+        if should_detect_folder_template:
+            if not matches:
+                matches = find_template_matches_for_staged_folder(current_detect_folder, profiles)
             st.session_state["last_detected_template_folder"] = current_detect_folder
 
             if len(matches) == 1:
                 matched = matches[0]
                 st.session_state["template_family_select"] = matched.get("_family_slug", "")
                 st.session_state["listing_template_select"] = matched.get("label", matched.get("_slug", ""))
+                st.session_state["active_template_family_select"] = matched.get("_family_slug", "")
+                st.session_state["active_listing_template_select"] = matched.get("label", matched.get("_slug", ""))
                 st.session_state["template_detection_message"] = (
                     f"Auto-detected template `{matched.get('label', matched.get('_slug', ''))}` from staged folder `{current_detect_folder}`."
                 )
@@ -8108,6 +8719,7 @@ def main() -> None:
                 if len(matched_families) == 1:
                     matched_family = next(iter(matched_families))
                     st.session_state["template_family_select"] = matched_family
+                    st.session_state["active_template_family_select"] = matched_family
                     match_labels = ", ".join(match.get("label", match.get("_slug", "")) for match in matches)
                     st.session_state["template_detection_message"] = (
                         f"Detected family `{matched_family}` from staged folder `{current_detect_folder}`. "
@@ -8130,10 +8742,11 @@ def main() -> None:
         selected_family = authoritative_profile.get("_family_slug", "")
         selected_label = authoritative_profile.get("label", authoritative_profile.get("_slug", ""))
     else:
-        selected_family = st.session_state.get("template_family_select", families[0] if families else "")
+        selected_family = st.session_state.get("active_template_family_select") or st.session_state.get("template_family_select", families[0] if families else "")
     if families and selected_family not in families:
         selected_family = families[0]
         st.session_state["template_family_select"] = selected_family
+        st.session_state["active_template_family_select"] = selected_family
 
     family_profiles = [
         profile for profile in profiles
@@ -8143,10 +8756,11 @@ def main() -> None:
     family_labels = [profile.get("label", profile["_slug"]) for profile in family_profiles]
 
     if not authoritative_profile:
-        selected_label = st.session_state.get("listing_template_select", family_labels[0] if family_labels else "")
+        selected_label = st.session_state.get("active_listing_template_select") or st.session_state.get("listing_template_select", family_labels[0] if family_labels else "")
     if family_labels and selected_label not in family_labels:
         selected_label = family_labels[0]
         st.session_state["listing_template_select"] = selected_label
+        st.session_state["active_listing_template_select"] = selected_label
 
     profile = family_profiles[family_labels.index(selected_label)]
     active_staged_folder_name = initial_staged_folder_name
@@ -8200,10 +8814,13 @@ def main() -> None:
     content_debug_container = None
     content_preflight_container = None
 
-    with tab_setup:
+    if active_workflow_tab == "Product setup":
         top_left_col, top_right_col = st.columns(2)
         with top_left_col:
             st.subheader("Folder workflow")
+            active_folder_source = st.session_state.get("active_folder_source_mode", "Use staged folder")
+            if active_folder_source in ["Use staged folder", "Restage finished folder"]:
+                st.session_state.setdefault("folder_source_mode", active_folder_source)
             folder_source = st.radio(
                 "Choose Folder Source",
                 ["Use staged folder", "Restage finished folder"],
@@ -8213,10 +8830,15 @@ def main() -> None:
             if folder_source == "Use staged folder":
                 staged_select_col, staged_refresh_col = st.columns([4, 1])
                 with staged_select_col:
+                    active_staged_folder = st.session_state.get("active_staged_folder_select", "")
                     staged_folder_name = st.selectbox(
                         "Dropbox folder",
                         staged_folder_names,
-                        index=None,
+                        index=selectbox_index_without_state_conflict(
+                            "staged_folder_select",
+                            staged_folder_names,
+                            active_staged_folder,
+                        ),
                         placeholder="Select a staged folder",
                         key="staged_folder_select",
                     )
@@ -8229,10 +8851,15 @@ def main() -> None:
                         clear_runtime_caches()
                         st.rerun()
             else:
+                active_finished_folder = st.session_state.get("active_finished_folder_select", "")
                 selected_finished_folder = st.selectbox(
                     "Dropbox folder",
                     finished_folder_names,
-                    index=None,
+                    index=selectbox_index_without_state_conflict(
+                        "finished_folder_select",
+                        finished_folder_names,
+                        active_finished_folder,
+                    ),
                     placeholder="Select a finished folder to restage",
                     key="finished_folder_select",
                 )
@@ -8267,6 +8894,7 @@ def main() -> None:
 
                         reset_restaged_selection_state()
                         st.session_state["staged_folder_select"] = result.get("new_staged_folder_name", "")
+                        st.session_state["active_staged_folder_select"] = result.get("new_staged_folder_name", "")
                         st.session_state["auto_switch_to_staged"] = True
                         st.session_state["finished_restage_results"] = [result]
 
@@ -8314,15 +8942,27 @@ def main() -> None:
                     st.info(detection_message)
             select_col1, select_col2 = st.columns(2)
             with select_col1:
+                active_family_selection = st.session_state.get("active_template_family_select", selected_family)
                 st.selectbox(
                     "Template family",
                     families,
+                    index=selectbox_index_without_state_conflict(
+                        "template_family_select",
+                        families,
+                        active_family_selection,
+                    ),
                     key="template_family_select",
                 )
             with select_col2:
+                active_template_selection = st.session_state.get("active_listing_template_select", selected_label)
                 st.selectbox(
                     "Garment template",
                     family_labels,
+                    index=selectbox_index_without_state_conflict(
+                        "listing_template_select",
+                        family_labels,
+                        active_template_selection,
+                    ),
                     key="listing_template_select",
                 )
             st.selectbox(
@@ -8330,11 +8970,18 @@ def main() -> None:
                 WORKFLOW_ASSIGNEES,
                 key="assets_prepared_by",
             )
-    folder_source = st.session_state.get("folder_source_mode", folder_source)
+    if active_workflow_tab == "Product setup":
+        st.session_state["active_folder_source_mode"] = st.session_state.get("folder_source_mode") or "Use staged folder"
+        st.session_state["active_staged_folder_select"] = st.session_state.get("staged_folder_select") or ""
+        st.session_state["active_finished_folder_select"] = st.session_state.get("finished_folder_select") or ""
+        st.session_state["active_template_family_select"] = st.session_state.get("template_family_select") or selected_family
+        st.session_state["active_listing_template_select"] = st.session_state.get("listing_template_select") or selected_label
+
+    folder_source = st.session_state.get("active_folder_source_mode", folder_source)
     if folder_source == "Use staged folder":
-        staged_folder_name = st.session_state.get("staged_folder_select") or active_staged_folder_name
+        staged_folder_name = st.session_state.get("active_staged_folder_select") or active_staged_folder_name
     else:
-        selected_finished_folder = st.session_state.get("finished_folder_select")
+        selected_finished_folder = st.session_state.get("active_finished_folder_select")
 
     listing_memory = dict(active_listing_memory)
     listing_context_key = ""
@@ -8364,11 +9011,42 @@ def main() -> None:
         )
 
         applied_memory_key = st.session_state.get("applied_listing_memory_key_v2", "")
-        should_apply_memory = applied_memory_key != memory_fingerprint
+        applied_widget_memory_key = st.session_state.get("applied_listing_memory_widget_key_v2", "")
+        content_widget_keys = [
+            "title_input",
+            "bullet_1",
+            "bullet_2",
+            "bullet_3",
+            "bullet_4",
+            "bullet_5",
+            "product_description",
+            "generic_keywords",
+        ]
+        content_widgets_missing = any(key not in st.session_state for key in content_widget_keys)
+        memory_has_content = any(
+            str(value or "").strip()
+            for value in [
+                listing_memory.get("title", ""),
+                listing_memory.get("product_description", ""),
+                listing_memory.get("generic_keywords", ""),
+                *listing_memory.get("bullet_points", []),
+            ]
+        )
+        content_widgets_empty = all(
+            not str(st.session_state.get(key, "") or "").strip()
+            for key in content_widget_keys
+        )
+        should_apply_memory = (
+            applied_memory_key != memory_fingerprint
+            or applied_widget_memory_key != memory_fingerprint
+            or content_widgets_missing
+            or (memory_has_content and content_widgets_empty)
+        )
 
         if should_apply_memory:
             apply_listing_memory_to_session(listing_memory, active_profile)
             st.session_state["applied_listing_memory_key_v2"] = memory_fingerprint
+            st.session_state["applied_listing_memory_widget_key_v2"] = memory_fingerprint
             st.session_state["initialized_listing_context_key"] = listing_context_key
             st.session_state["last_loaded_listing_memory_signature"] = f"{staged_folder_name}|{active_profile_slug}"
     elif listing_context_key:
@@ -8407,6 +9085,11 @@ def main() -> None:
         st.session_state.setdefault(f"bullet_{idx}", bullet_value)
     st.session_state.setdefault("product_description", product_description)
     st.session_state.setdefault("generic_keywords", generic_keywords)
+    st.session_state.setdefault(CONTENT_EDITOR_KEYS["title"], title)
+    for idx, bullet_value in enumerate(bullets):
+        st.session_state.setdefault(CONTENT_EDITOR_KEYS["bullets"][idx], bullet_value)
+    st.session_state.setdefault(CONTENT_EDITOR_KEYS["description"], product_description)
+    st.session_state.setdefault(CONTENT_EDITOR_KEYS["keywords"], generic_keywords)
     st.session_state.setdefault("variant_quantity", int(listing_memory.get("quantity", 100)))
     st.session_state.setdefault(
         "handling_time_days",
@@ -8420,11 +9103,21 @@ def main() -> None:
     profile = active_profile
     variant_dimensions = active_profile.get("variant_dimensions", [])
     saved_selected_variants = listing_memory.get("selected_variants", {})
+    had_color_widget_state_before_normalize = any(
+        widget_key in st.session_state
+        for widget_key in get_color_widget_keys(active_profile)
+    )
     selected_variants = normalize_selected_variants_session_state(active_profile, listing_memory)
 
     auto_load_image_mappings = bool(st.session_state.get("auto_load_image_mappings", False))
     load_image_mappings_now = bool(st.session_state.pop("load_image_mappings_now", False))
+    scan_mapped_colours_now = bool(st.session_state.pop("scan_mapped_colours_now", False))
     manual_image_load_requested = bool(load_image_mappings_now and staged_folder_name)
+    auto_apply_mapped_colors = bool(
+        active_workflow_tab == "Listing content"
+        and staged_folder_name
+        and not had_color_widget_state_before_normalize
+    )
 
     # Image mappings should persist while editing listing content.
     # Treat mappings as loaded for the staged folder + template, not for every selected colour/size change.
@@ -8464,9 +9157,15 @@ def main() -> None:
         auto_load_image_mappings
         or manual_image_load_requested
         or persisted_image_mappings_loaded
+        or auto_apply_mapped_colors
+        or scan_mapped_colours_now
     )
 
-    if auto_load_image_mappings and staged_folder_name:
+    if scan_mapped_colours_now and staged_folder_name:
+        image_resolution_reason = "mapped_colour_scan"
+    elif auto_apply_mapped_colors and staged_folder_name:
+        image_resolution_reason = "auto_mapped_colours"
+    elif auto_load_image_mappings and staged_folder_name:
         image_resolution_reason = "auto_load"
     elif manual_image_load_requested:
         image_resolution_reason = "manual_load"
@@ -8478,6 +9177,10 @@ def main() -> None:
         image_resolution_reason = ""
 
     image_preview_variants = selected_variants
+    resolve_preview_image_urls = bool(
+        should_load_image_mappings
+        and image_resolution_reason not in {"auto_mapped_colours", "mapped_colour_scan"}
+    )
 
     preview_image_cache_hit = (
         st.session_state.get("preview_image_cache", {}).get("key")
@@ -8487,7 +9190,7 @@ def main() -> None:
             staged_folder_name or "",
             image_preview_variants,
             should_load_image_mappings,
-            should_load_image_mappings,
+            resolve_preview_image_urls,
         )
     )
     t_preview_image_start = time.perf_counter()
@@ -8498,7 +9201,7 @@ def main() -> None:
         selected_variants=image_preview_variants,
         dropbox_overview=dropbox_overview,
         include_mappings=should_load_image_mappings,
-        resolve_preview_urls=should_load_image_mappings,
+        resolve_preview_urls=resolve_preview_image_urls,
     )
     t_preview_image_end = time.perf_counter()
     record_load_event(
@@ -8604,8 +9307,13 @@ def main() -> None:
         current_resolved_image_cache_key
         and st.session_state.get("resolved_image_bundle_cache", {}).get("key") == current_resolved_image_cache_key
     )
+    should_resolve_image_bundle = bool(
+        staged_folder_name
+        and should_load_image_mappings
+        and image_resolution_reason not in {"auto_mapped_colours", "mapped_colour_scan"}
+    )
     t_resolved_image_start = time.perf_counter()
-    if staged_folder_name and (should_load_image_mappings or resolved_image_bundle_cache_hit):
+    if staged_folder_name and (should_resolve_image_bundle or resolved_image_bundle_cache_hit):
         try:
             resolved_image_bundle = get_cached_resolved_image_bundle(
                 profile=profile,
@@ -8617,7 +9325,7 @@ def main() -> None:
                 selected_parent_main_image_url=selected_parent_main_image_url,
                 use_resource_fallback_images=use_resource_fallback_images,
             )
-            image_mappings_loaded_this_run = should_load_image_mappings and not resolved_image_bundle_cache_hit
+            image_mappings_loaded_this_run = should_resolve_image_bundle and not resolved_image_bundle_cache_hit
         except Exception as exc:
             resolved_image_bundle = {
                 "parent_main_image_url": preview_parent_main_image_url if preview_parent_main_image_url else "",
@@ -8668,7 +9376,7 @@ def main() -> None:
         image_mapping_status = "not_loaded"
         image_mapping_detail = "Image mappings not loaded yet. Use Load / refresh image mappings when you need image review or full checks."
 
-    with tab_setup:
+    if active_workflow_tab == "Product setup":
         render_active_product_context(
             active_staged_folder_name=active_staged_folder_name,
             active_template_label=active_template_label,
@@ -8769,10 +9477,18 @@ def main() -> None:
                         st.selectbox(
                             "Parent main image",
                             parent_main_option_labels,
-                            index=parent_main_option_labels.index(current_parent_main_label),
+                            index=selectbox_index_without_state_conflict(
+                                "parent_main_image_choice",
+                                parent_main_option_labels,
+                                current_parent_main_label,
+                            ),
                             key="parent_main_image_choice",
                         )
-                        if preview_design_color_image_url_map:
+                        has_design_dimension = any(
+                            str(dim.get("name", "")).strip().lower() == "design"
+                            for dim in variant_dimensions
+                        )
+                        if has_design_dimension and preview_design_color_image_url_map:
                             render_design_color_grid(
                                 design_color_preview_entries,
                                 cols_per_row=5,
@@ -8786,11 +9502,21 @@ def main() -> None:
                             )
 
                     with combos_tab:
-                        render_design_color_grid(
-                            design_color_preview_entries,
-                            cols_per_row=5,
-                            image_width=150,
-                        )
+                        if has_design_dimension:
+                            render_design_color_grid(
+                                design_color_preview_entries,
+                                cols_per_row=5,
+                                image_width=150,
+                            )
+                        else:
+                            render_variant_combinations_preview(
+                                profile,
+                                parent_sku_from_config,
+                                selected_variants,
+                                base_title=title,
+                                sku_decoration_code="",
+                                sku_listing_code="",
+                            )
 
         st.subheader("Product template details")
         col1, col2 = st.columns(2)
@@ -8825,7 +9551,7 @@ def main() -> None:
             if not stock_reference:
                 st.warning("This template has a stock_reference_key, but no matching config/stock_references.json entry was found.")
 
-    with tab_content:
+    if active_workflow_tab == "Listing content":
         render_active_product_context(
             active_staged_folder_name=active_staged_folder_name,
             active_template_label=active_template_label,
@@ -8838,10 +9564,35 @@ def main() -> None:
             image_mapping_detail=image_mapping_detail,
         )
 
+        if staged_folder_name and listing_memory_has_content(listing_memory):
+            fill_col, info_col = st.columns([1, 3])
+            with fill_col:
+                fill_from_json_clicked = st.button(
+                    "Fill fields from listing_inputs.json",
+                    key="fill_listing_content_from_json_btn",
+                    width="stretch",
+                    help="Use this when a restaged folder has saved content but the editable fields are blank.",
+                )
+            with info_col:
+                st.caption(
+                    "Saved content is available for this staged folder. "
+                    "Click the button if the editable fields did not hydrate automatically."
+                )
+
+            if fill_from_json_clicked:
+                apply_listing_memory_to_session(listing_memory, active_profile)
+                current_memory_fingerprint = locals().get("memory_fingerprint", "")
+                if current_memory_fingerprint:
+                    st.session_state["applied_listing_memory_key_v2"] = current_memory_fingerprint
+                    st.session_state["applied_listing_memory_widget_key_v2"] = current_memory_fingerprint
+                st.success("Filled editable content fields from listing_inputs.json.")
+
         title = st.text_input(
             "Product title",
-            key="title_input",
+            key=CONTENT_EDITOR_KEYS["title"],
         )
+        if st.session_state.get("show_header_debug", False):
+            st.caption(f"Loaded title debug: {title or '[empty]'}")
 
         title_chars = len(title.strip())
         if title_chars < 150:
@@ -8857,11 +9608,11 @@ def main() -> None:
 
         st.subheader("Bullets")
         bullets = [
-            st.text_input("Bullet 1", key="bullet_1"),
-            st.text_input("Bullet 2", key="bullet_2"),
-            st.text_input("Bullet 3", key="bullet_3"),
-            st.text_input("Bullet 4", key="bullet_4"),
-            st.text_input("Bullet 5", key="bullet_5"),
+            st.text_input("Bullet 1", key=CONTENT_EDITOR_KEYS["bullets"][0]),
+            st.text_input("Bullet 2", key=CONTENT_EDITOR_KEYS["bullets"][1]),
+            st.text_input("Bullet 3", key=CONTENT_EDITOR_KEYS["bullets"][2]),
+            st.text_input("Bullet 4", key=CONTENT_EDITOR_KEYS["bullets"][3]),
+            st.text_input("Bullet 5", key=CONTENT_EDITOR_KEYS["bullets"][4]),
         ]
 
         for idx, bullet in enumerate(bullets, start=1):
@@ -8875,7 +9626,7 @@ def main() -> None:
         product_description = st.text_area(
             "Product description",
             height=120,
-            key="product_description",
+            key=CONTENT_EDITOR_KEYS["description"],
         )
 
         description_chars = len(product_description.strip())
@@ -8889,7 +9640,13 @@ def main() -> None:
         generic_keywords = st.text_area(
             "Search terms",
             height=100,
-            key="generic_keywords",
+            key=CONTENT_EDITOR_KEYS["keywords"],
+        )
+        sync_content_editor_to_canonical_state(
+            title,
+            bullets,
+            product_description,
+            generic_keywords,
         )
 
         byte_count = len(generic_keywords.encode("utf-8"))
@@ -8924,7 +9681,11 @@ def main() -> None:
             st.selectbox(
                 "Merchant Shipping Group",
                 MERCHANT_SHIPPING_GROUP_OPTIONS,
-                index=MERCHANT_SHIPPING_GROUP_OPTIONS.index(current_shipping_group),
+                index=selectbox_index_without_state_conflict(
+                    "merchant_shipping_group_name",
+                    MERCHANT_SHIPPING_GROUP_OPTIONS,
+                    current_shipping_group,
+                ),
                 key="merchant_shipping_group_name",
                 help="Leave empty to skip this Amazon field.",
             )
@@ -8944,6 +9705,13 @@ def main() -> None:
                         full_preview_color_image_map,
                         full_preview_design_color_image_url_map,
                     )
+                    if auto_apply_mapped_colors:
+                        apply_mapped_colors_to_widget_once(
+                            widget_key,
+                            mapped_colors,
+                            image_mapping_context_key,
+                            allow_replace_existing=True,
+                        )
                     action_cols = st.columns(3)
                     if action_cols[0].button("All colours", key=f"{widget_key}_all", width="stretch"):
                         st.session_state[widget_key] = list(dim_options)
@@ -8963,10 +9731,7 @@ def main() -> None:
                             st.rerun()
                         else:
                             st.session_state["apply_mapped_colours_widget_key"] = widget_key
-                            st.session_state["load_image_mappings_now"] = True
-                            if staged_folder_name:
-                                st.session_state["image_mappings_loaded_folder"] = staged_folder_name
-                                st.session_state["image_mappings_loaded_context"] = image_mapping_context_key
+                            st.session_state["scan_mapped_colours_now"] = True
                             st.rerun()
 
                 selected_variants[dim_name] = st.multiselect(
@@ -8980,6 +9745,13 @@ def main() -> None:
                 full_preview_color_image_map,
                 full_preview_design_color_image_url_map,
             )
+            if auto_apply_mapped_colors:
+                apply_mapped_colors_to_widget_once(
+                    "selected_colours",
+                    mapped_colors,
+                    image_mapping_context_key,
+                    allow_replace_existing=True,
+                )
             color_action_cols = st.columns(3)
             if color_action_cols[0].button("All colours", key="selected_colours_all", width="stretch"):
                 st.session_state["selected_colours"] = list(colors_available)
@@ -8999,10 +9771,7 @@ def main() -> None:
                     st.rerun()
                 else:
                     st.session_state["apply_mapped_colours_widget_key"] = "selected_colours"
-                    st.session_state["load_image_mappings_now"] = True
-                    if staged_folder_name:
-                        st.session_state["image_mappings_loaded_folder"] = staged_folder_name
-                        st.session_state["image_mappings_loaded_context"] = image_mapping_context_key
+                    st.session_state["scan_mapped_colours_now"] = True
                     st.rerun()
 
             selected_colors = st.multiselect(
@@ -9123,7 +9892,7 @@ def main() -> None:
     score_clicked = False
     ready_clicked = False
 
-    with tab_content:
+    if active_workflow_tab == "Listing content":
         st.caption("Check listing score to review quality before submitting the folder for review.")
         btn_col1, btn_col2 = st.columns(2)
         with btn_col1:
@@ -9134,13 +9903,14 @@ def main() -> None:
         content_preflight_container = st.container()
         content_action_result_container = st.container()
 
-    with tab_review_queue:
+    if active_workflow_tab == "Review queue":
         st.caption("Review ready listings and approve them for generation.")
 
         review_col1, review_col2 = st.columns([1, 3])
         with review_col1:
             if st.button("Load / refresh review queue", key="load_review_queue_tab_btn", width="stretch"):
                 st.session_state["active_perf_action_label"] = "load review queue"
+                refresh_cached_folder_names("ready")
                 clear_cached_listing_memory()
                 st.session_state.pop("ready_queue_items_cache", None)
                 st.session_state["review_queue_tab_loaded"] = True
@@ -9155,10 +9925,10 @@ def main() -> None:
                 dropbox_cfg=dropbox_cfg,
             )
 
-    with tab_approved_output:
+    if active_workflow_tab == "Approved output":
         st.caption("Generate selected or all approved folders and download completed workbooks.")
 
-        with st.expander("Restage finished folders", expanded=bool(st.session_state.get("finished_restage_results", []))):
+        with st.expander("Bring finished folders back", expanded=bool(st.session_state.get("finished_restage_results", []))):
             existing_finished_restage_selection = list(st.session_state.get("finished_output_restage_selected", []))
             valid_finished_restage_selection = [
                 folder_name for folder_name in existing_finished_restage_selection
@@ -9169,24 +9939,35 @@ def main() -> None:
 
             with st.form("finished_output_restaging_form"):
                 selected_finished_folders_to_restage = st.multiselect(
-                    "Select finished folders to restage",
+                    "Select finished folders",
                     finished_folder_names,
                     key="finished_output_restage_selected",
                 )
+                finished_return_destination = st.radio(
+                    "Bring back to",
+                    ["Approved output", "Product setup / staging"],
+                    key="finished_output_return_destination",
+                    horizontal=True,
+                    help=(
+                        "Use Approved output when you only need to regenerate or redownload with app updates. "
+                        "Use staging when you need to edit the listing setup/content first."
+                    ),
+                )
                 restage_selected_finished = st.form_submit_button(
-                    "Restage selected finished folders",
+                    "Bring selected finished folders back",
                     width="stretch",
                     disabled=not bool(finished_folder_names),
                 )
 
             if restage_selected_finished:
                 if not selected_finished_folders_to_restage:
-                    st.warning("Select at least one finished folder to restage.")
+                    st.warning("Select at least one finished folder.")
                 else:
+                    target_state = "stage" if finished_return_destination == "Product setup / staging" else "approved"
                     restage_action_label = (
-                        "restage finished folder"
+                        "bring finished folder back"
                         if len(selected_finished_folders_to_restage) == 1
-                        else "bulk restage finished folders"
+                        else "bulk bring finished folders back"
                     )
                     st.session_state["active_perf_action_label"] = restage_action_label
                     st.session_state["pending_perf_action_label"] = restage_action_label
@@ -9197,7 +9978,7 @@ def main() -> None:
                             profiles=profiles,
                             fallback_profile=profile,
                             finished_folder_name=finished_folder_name,
-                            target_state="approved",
+                            target_state=target_state,
                         )
                         for finished_folder_name in selected_finished_folders_to_restage
                     ]
@@ -9213,14 +9994,27 @@ def main() -> None:
                     st.session_state["finished_restage_results"] = restage_results
 
                     if len(selected_finished_folders_to_restage) == 1 and len(success_results) == 1:
-                        flash_title = f"Moved back to approved: {success_results[0].get('new_approved_folder_name', '')}"
-                        flash_detail = success_results[0].get("warning", "")
+                        if target_state == "approved":
+                            returned_name = success_results[0].get("new_approved_folder_name", "")
+                            flash_title = f"Moved back to approved: {returned_name}"
+                            flash_detail = success_results[0].get("warning", "") or "Generate it again from Approved output."
+                        else:
+                            returned_name = success_results[0].get("new_staged_folder_name", "")
+                            flash_title = f"Moved back to staging: {returned_name}"
+                            flash_detail = success_results[0].get("warning", "") or "Open it from Product setup to edit."
                     else:
-                        flash_title = f"Moved {len(success_results)} of {len(selected_finished_folders_to_restage)} selected finished folders back to approved."
-                        flash_detail = "Use the approved queue below to generate them again."
+                        target_label = "approved" if target_state == "approved" else "staging"
+                        flash_title = f"Moved {len(success_results)} of {len(selected_finished_folders_to_restage)} selected finished folders back to {target_label}."
+                        flash_detail = (
+                            "Use Approved output to generate them again."
+                            if target_state == "approved"
+                            else "Use Product setup to edit them."
+                        )
                         if failed_results:
                             flash_detail = f"{len(failed_results)} folder(s) failed. " + flash_detail
 
+                    refresh_cached_folder_names("finished", "approved" if target_state == "approved" else "stage")
+                    clear_cached_listing_memory()
                     clear_runtime_caches()
                     set_workflow_flash(
                         "success" if not failed_results else "warning",
@@ -9323,6 +10117,7 @@ def main() -> None:
         with approved_col1:
             if st.button("Load / refresh approved output", key="load_approved_output_tab_btn", width="stretch"):
                 st.session_state["active_perf_action_label"] = "load approved output"
+                refresh_cached_folder_names("approved")
                 clear_cached_listing_memory()
                 st.session_state.pop("approved_queue_items_cache", None)
                 st.session_state["approved_output_tab_loaded"] = True
@@ -9726,8 +10521,18 @@ def main() -> None:
     save_completed_load_events()
 
 
+def run_app_safely() -> None:
+    try:
+        main()
+    except Exception as exc:
+        if type(exc).__name__ in {"RerunException", "StopException"}:
+            raise
+        error_row = record_app_error(exc)
+        render_app_error_report(error_row)
+
+
 if __name__ == "__main__":
-    main()
+    run_app_safely()
 
 
 

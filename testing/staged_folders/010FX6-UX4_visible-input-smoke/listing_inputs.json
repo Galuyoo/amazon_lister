@@ -1,0 +1,42 @@
+{
+  "template_family": "HOODIE",
+  "template_slug": "UX4",
+  "template_key": "UX4",
+  "template_label": "UX4 Hoodie",
+  "title": "Personalised Hoodie Hoodie Gift Custom Printed Hoodie For Men Women Birthday Casual Pullover Top",
+  "bullet_points": [
+    "Custom printed hoodie made for everyday gifting, events, teams, family groups, and personalised casual outfits.",
+    "Soft pullover hoodie with a comfortable regular fit and practical front pocket for daily wear.",
+    "Choose from classic colours and adult sizes to match the design, name, slogan, or artwork.",
+    "Suitable for birthdays, holidays, workwear, group trips, parties, clubs, and matching family clothing.",
+    "Printed to order in Great Britain with care, using a clear front design area for bold personalised artwork."
+  ],
+  "product_description": "Smoke test listing input used to verify that saved staged-folder content appears visibly inside the Streamlit Listing content widgets. This file intentionally repeats the word hoodie in the title so the app should show both the loaded title length and the duplicate-word warning while the title text itself remains visible in the input.",
+  "generic_keywords": "custom hoodie personalised hoodie printed hoodie gift pullover sweatshirt",
+  "selected_variants": {
+    "color": [
+      "Black",
+      "Navy",
+      "Heather Grey"
+    ],
+    "size": [
+      "S",
+      "M",
+      "L",
+      "XL"
+    ]
+  },
+  "parent_main_image_choice": "Automatic (recommended)",
+  "sku_decoration_code": "PRINT",
+  "manual_sku_listing_code": "SMOKE",
+  "generated_sku_listing_code": "SMOKE",
+  "quantity": 100,
+  "handling_time_days": 2,
+  "merchant_shipping_group_name": "",
+  "size_price_map": {
+    "S": 19.99,
+    "M": 19.99,
+    "L": 19.99,
+    "XL": 19.99
+  }
+}
