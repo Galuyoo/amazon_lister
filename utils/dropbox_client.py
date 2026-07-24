@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from functools import lru_cache
 from pathlib import Path
 from dropbox.files import WriteMode
@@ -105,10 +106,34 @@ def list_folder_names(path: str) -> list[str]:
 
 def create_folder_if_missing(path: str) -> None:
     dbx = get_dropbox_client()
-    try:
-        dbx.files_get_metadata(path)
-    except ApiError:
-        dbx.files_create_folder_v2(path)
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            dbx.files_get_metadata(path)
+            return
+        except ApiError as metadata_error:
+            last_error = metadata_error
+            try:
+                dbx.files_create_folder_v2(path)
+                return
+            except ApiError as create_error:
+                if "conflict" in str(create_error).lower():
+                    return
+                last_error = create_error
+            except Exception as create_error:
+                last_error = create_error
+                try:
+                    dbx.files_get_metadata(path)
+                    return
+                except Exception:
+                    pass
+        except Exception as metadata_error:
+            last_error = metadata_error
+
+        if attempt < 2:
+            time.sleep(0.8 * (attempt + 1))
+
+    raise ValueError(f"Dropbox folder create failed for {path}: {last_error}")
 
 
 def move_dropbox_folder(from_path: str, to_path: str) -> str:
