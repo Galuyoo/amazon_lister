@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 from collections import Counter
@@ -446,19 +446,32 @@ def build_clear_child_sku(
         [decoration_code, design_code],
     )
 
-    design_sku_position = str(profile.get("design_sku_position", "") or "").strip().lower()
-    if design_code and design_sku_position in {"after_parent", "after_listing_code", "after_mpn"}:
-        parent_sku_part = strip_repeated_leading_sku_context(parent_sku, [decoration_code])
-        variant_tail = strip_repeated_leading_sku_context(variant_sku, [parent_sku_part])
+    if design_code:
+        # Keep the listing/MPN code before the garment/design code:
+        # PRINT-IMBSE-T02-BLAC-1Y
+        parent_sku_part = strip_repeated_leading_sku_context(
+            parent_sku,
+            [decoration_code],
+        )
+        variant_tail = strip_repeated_leading_sku_context(
+            variant_sku,
+            [parent_sku_part],
+        )
+
         return "-".join(
             part
-            for part in [decoration_code, parent_sku_part, design_code, variant_tail]
+            for part in [
+                decoration_code,
+                parent_sku_part,
+                design_code,
+                variant_tail,
+            ]
             if str(part or "").strip()
         )
 
     return "-".join(
         part
-        for part in [decoration_code, design_code, variant_sku]
+        for part in [decoration_code, variant_sku]
         if str(part or "").strip()
     )
 
@@ -579,3 +592,4 @@ def validate_stock_ready_skus(
         "missing_supplier_stock_key_count": len(missing_rows),
         "children": details,
     }
+
