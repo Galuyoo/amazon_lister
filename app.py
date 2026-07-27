@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 from datetime import datetime
 import hashlib
 import io
@@ -4327,34 +4327,122 @@ def build_size_price_inputs(
         return build_design_size_price_inputs(profile, selected_variants, saved_prices)
 
     st.markdown("**Price by size**")
-    if not sizes:
-        st.caption("No sizes configured.")
-        return {}
 
-    saved_prices = saved_prices or {}
+    # An empty selected-size list can mean either:
+    # 1. this is a true One Size template, or
+    # 2. the template supports sizes but none have been selected yet.
+    #
+    # Detect a real size dimension before applying the One Size fallback.
+    selected_variant_keys = {
+        str(key).strip().lower()
+        for key in selected_variants
+    }
+
+    variation_theme = str(
+        profile.get("variation_theme")
+        or profile.get("variation-theme")
+        or profile.get("variationTheme")
+        or ""
+    ).strip().lower()
+
+    has_size_dimension = (
+        "size" in selected_variant_keys
+        or "sizes" in selected_variant_keys
+        or "size" in variation_theme
+    )
+
+    if not sizes:
+        if has_size_dimension:
+            st.caption("Select at least one size to configure pricing.")
+            return {}
+
+        # True One Size templates, such as RL100, still need a price.
+        sizes = ["One Size"]
+
+    saved_prices = dict(saved_prices or {})
     profile = profile or {}
 
-    default_same_price = False
-    if sizes:
-        existing_values = [saved_prices.get(size) for size in sizes if size in saved_prices]
-        unique_existing_values = {v for v in existing_values if v is not None}
-        if len(unique_existing_values) == 1 and len(existing_values) == len(sizes):
-            default_same_price = True
-
-    if "use_same_price_for_all_sizes" not in st.session_state:
-        st.session_state["use_same_price_for_all_sizes"] = default_same_price
-
-    use_same_price = st.checkbox(
-        "Use one price for all sizes",
-        key="use_same_price_for_all_sizes",
+    existing_values = [
+        saved_prices.get(size)
+        for size in sizes
+        if size in saved_prices
+    ]
+    unique_existing_values = {
+        float(value)
+        for value in existing_values
+        if value is not None
+    }
+    default_same_price = (
+        len(unique_existing_values) == 1
+        and len(existing_values) == len(sizes)
     )
+
+    available_clusters: dict[str, list[str]] = {}
+
+    for size in sizes:
+        cluster_label = get_design_size_price_cluster_label("", size)
+        available_clusters.setdefault(cluster_label, []).append(size)
+
+    has_multiple_clusters = len(available_clusters) >= 2
+
+    pricing_modes = ["Use one price for all"]
+
+    if has_multiple_clusters:
+        pricing_modes.append("Use one price per cluster")
+
+    pricing_modes.append("Manual price by size")
+
+    legacy_mode_names = {
+        "One price for all": "Use one price for all",
+        "One price per cluster": "Use one price per cluster",
+        "Manual by size": "Manual price by size",
+    }
+
+    if "size_pricing_mode" not in st.session_state:
+        st.session_state["size_pricing_mode"] = (
+            "Use one price for all"
+            if st.session_state.get(
+                "use_same_price_for_all_sizes",
+                default_same_price,
+            )
+            else "Manual price by size"
+        )
+
+    current_mode = st.session_state.get("size_pricing_mode")
+    current_mode = legacy_mode_names.get(current_mode, current_mode)
+
+    if (
+        current_mode == "Use one price per cluster"
+        and not has_multiple_clusters
+    ):
+        current_mode = "Use one price for all"
+
+    if current_mode not in pricing_modes:
+        current_mode = "Manual price by size"
+
+    st.session_state["size_pricing_mode"] = current_mode
+
+    pricing_mode = st.radio(
+        "Pricing mode",
+        pricing_modes,
+        horizontal=True,
+        key="size_pricing_mode",
+    )
+
+    use_same_price = pricing_mode == "Use one price for all"
+    st.session_state["use_same_price_for_all_sizes"] = use_same_price
 
     size_price_map: dict[str, float] = {}
 
     if use_same_price:
-        fallback_price = get_default_price_for_size(profile, sizes[0], saved_prices) if sizes else 29.99
-        if default_same_price and sizes:
-            fallback_price = float(saved_prices.get(sizes[0], 29.99))
+        fallback_price = get_default_price_for_size(
+            profile,
+            sizes[0],
+            saved_prices,
+        )
+
+        if default_same_price:
+            fallback_price = float(saved_prices.get(sizes[0], fallback_price))
 
         if "shared_price_all_sizes" not in st.session_state:
             st.session_state["shared_price_all_sizes"] = float(fallback_price)
@@ -4371,23 +4459,100 @@ def build_size_price_inputs(
 
         return size_price_map
 
+    if pricing_mode == "Use one price per cluster":
+        cols_per_row = 3
+        cols = st.columns(cols_per_row)
+
+        for idx, (cluster_label, cluster_sizes) in enumerate(
+            available_clusters.items()
+        ):
+            saved_cluster_price = None
+
+            for size in cluster_sizes:
+                try:
+                    candidate = float(saved_prices.get(size, 0))
+                except (TypeError, ValueError):
+                    candidate = 0
+
+                if candidate > 0:
+                    saved_cluster_price = candidate
+                    break
+
+            fallback_price = (
+                saved_cluster_price
+                if saved_cluster_price is not None
+                else get_default_price_for_size(
+                    profile,
+                    cluster_sizes[0],
+                    saved_prices,
+                )
+            )
+
+            cluster_key = (
+                "size_cluster_price_"
+                f"{sanitize_sku(cluster_label)}"
+            )
+
+            with cols[idx % cols_per_row]:
+                if cluster_key not in st.session_state:
+                    st.session_state[cluster_key] = float(fallback_price)
+
+                cluster_price = st.number_input(
+                    f"{cluster_label} price",
+                    min_value=0.0,
+                    step=0.50,
+                    key=cluster_key,
+                )
+
+                st.caption(", ".join(cluster_sizes))
+
+            for size in cluster_sizes:
+                size_price_map[size] = cluster_price
+
+        return size_price_map
+
+    if len(sizes) == 1:
+        size = sizes[0]
+        widget_key = f"price_{size}"
+
+        if widget_key not in st.session_state:
+            st.session_state[widget_key] = get_default_price_for_size(
+                profile,
+                size,
+                saved_prices,
+            )
+
+        size_price_map[size] = st.number_input(
+            f"{size} price",
+            min_value=0.0,
+            step=0.50,
+            key=widget_key,
+        )
+
+        return size_price_map
+
     cols_per_row = 4
     cols = st.columns(cols_per_row)
 
     for idx, size in enumerate(sizes):
+        widget_key = f"price_{size}"
+
         with cols[idx % cols_per_row]:
-            if f"price_{size}" not in st.session_state:
-                st.session_state[f"price_{size}"] = get_default_price_for_size(profile, size, saved_prices)
+            if widget_key not in st.session_state:
+                st.session_state[widget_key] = get_default_price_for_size(
+                    profile,
+                    size,
+                    saved_prices,
+                )
 
             size_price_map[size] = st.number_input(
                 f"{size} price",
                 min_value=0.0,
                 step=0.50,
-                key=f"price_{size}",
+                key=widget_key,
             )
 
     return size_price_map
-
 
 def build_design_size_price_inputs(
     profile: dict[str, Any],
@@ -10980,6 +11145,11 @@ def run_app_safely() -> None:
 
 if __name__ == "__main__":
     run_app_safely()
+
+
+
+
+
 
 
 
