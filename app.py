@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 from datetime import datetime
 import hashlib
 import io
@@ -1853,6 +1853,7 @@ def load_listing_memory_from_dropbox(folder_path: str) -> dict[str, Any]:
 def initialize_listing_context_defaults(profile: dict[str, Any]) -> None:
     normalize_selected_variants_session_state(profile, {}, force_defaults=True)
     st.session_state["parent_main_image_choice"] = "Automatic (recommended)"
+    st.session_state["variant_quantity"] = 100
     st.session_state["handling_time_days"] = DEFAULT_HANDLING_TIME_DAYS
     st.session_state["merchant_shipping_group_name"] = ""
     sku_decoration_code = get_default_sku_decoration_code(profile)
@@ -11145,14 +11146,3 @@ def run_app_safely() -> None:
 
 if __name__ == "__main__":
     run_app_safely()
-
-
-
-
-
-
-
-
-
-
-
