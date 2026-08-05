@@ -632,6 +632,12 @@
         "Natural/Natural": "RL201-Natural-Natural.jpg"
       }
     },
+    "WM451": {
+      "variant_folder": "WM451",
+      "main_image_map": {
+        "Natural": "WM451-Natural.jpg"
+      }
+    },
     "JH030": {
       "variant_folder": "JH030",
       "main_image_map": {
