@@ -638,6 +638,19 @@
         "Natural": "WM451-Natural.jpg"
       }
     },
+    "B125J": {
+      "variant_folder": "B125J",
+      "main_image_map": {
+        "Black": "B125J-Black.jpg",
+        "Bottle Green": "B125J-Bottle-Green.jpg",
+        "Bright Red": "B125J-Bright-Red.jpg",
+        "Bright Royal": "B125J-Bright-Royal.jpg",
+        "Classic Pink/Light Grey": "B125J-Classic-Pink-Light-Grey.jpg",
+        "French Navy": "B125J-French-Navy.jpg",
+        "Fuchsia/Graphite Grey": "B125J-Fuchsia-Graphite-Grey.jpg",
+        "Lime Green/Graphite Grey": "B125J-Lime-Green-Graphite-Grey.jpg"
+      }
+    },
     "JH030": {
       "variant_folder": "JH030",
       "main_image_map": {
