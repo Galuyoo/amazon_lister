@@ -624,6 +624,14 @@
         "Gold": "RL100-Gold.jpg"
       }
     },
+    "RL201": {
+      "variant_folder": "RL201",
+      "main_image_map": {
+        "Natural/Black": "RL201-Natural-Black.jpg",
+        "Natural/French Navy": "RL201-Natural-French-Navy.jpg",
+        "Natural/Natural": "RL201-Natural-Natural.jpg"
+      }
+    },
     "JH030": {
       "variant_folder": "JH030",
       "main_image_map": {

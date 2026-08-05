@@ -1,0 +1,74 @@
+{
+  "label": "RL201 Jute Canvas Panel Shopper",
+  "template_key": "RL201",
+  "template_file": "BAG.xlsm",
+  "parent_sku": "RL201",
+  "feed_product_type": "totebag",
+  "recommended_browse_nodes": "2722825031",
+  "product_category": "accessory",
+  "brand_name": "Generic",
+  "manufacturer": "Result",
+  "department_name": "Unisex",
+  "target_gender": "Unisex",
+  "age_range_description": "Adult",
+  "material_type": "Jute and Recycled Cotton Canvas",
+  "style_name": "Jute Canvas Panel Shopper",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "jute canvas shopper bag",
+  "care_instructions": "Sponge Clean Only",
+  "theme": "Custom Printed Shopper Bag",
+  "country_of_origin": "Pakistan",
+  "pattern_type": "Plain",
+  "closure_type": "Open Top",
+  "colors": [
+    "Natural/Black",
+    "Natural/French Navy",
+    "Natural/Natural"
+  ],
+  "sizes": [
+    "S",
+    "M",
+    "L"
+  ],
+  "size_code_map": {
+    "S": "S",
+    "M": "M",
+    "L": "L"
+  },
+  "color_sku_map": {
+    "Natural/Black": "NBK",
+    "Natural/French Navy": "NFN",
+    "Natural/Natural": "NAT"
+  },
+  "extra_parent_fields": {
+    "unit_count_type": "count",
+    "unit_count": "1",
+    "outer_material_type": "Jute",
+    "inner_material_type": "Recycled Cotton Canvas",
+    "material_composition": "Centre panel: 100% Jute; side panels: 100% recycled cotton canvas",
+    "fabric_weight": "325",
+    "fabric_weight_unit_of_measure": "grams_per_square_meter",
+    "number_of_compartments": "1",
+    "number_of_pockets": "1",
+    "strap_type": "Shoulder Strap",
+    "handle_material": "Cotton",
+    "are_batteries_included": "FALSE",
+    "batteries_required": "FALSE"
+  },
+  "extra_child_fields": {
+    "unit_count_type": "count",
+    "unit_count": "1",
+    "outer_material_type": "Jute",
+    "inner_material_type": "Recycled Cotton Canvas",
+    "material_composition": "Centre panel: 100% Jute; side panels: 100% recycled cotton canvas",
+    "fabric_weight": "325",
+    "fabric_weight_unit_of_measure": "grams_per_square_meter",
+    "number_of_compartments": "1",
+    "number_of_pockets": "1",
+    "strap_type": "Shoulder Strap",
+    "handle_material": "Cotton",
+    "are_batteries_included": "FALSE",
+    "batteries_required": "FALSE"
+  }
+}
