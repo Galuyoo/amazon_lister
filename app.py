@@ -3068,7 +3068,11 @@ def get_available_sizes_for_selected_colors(
 
     return allowed
 
-def build_dropbox_overview(profile: dict[str, Any], dropbox_cfg: dict[str, Any]) -> dict[str, Any]:
+def build_dropbox_overview(
+    profile: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+    include_garment_resource_images: bool = True,
+) -> dict[str, Any]:
     if not dropbox_cfg:
         return {}
 
@@ -3088,7 +3092,7 @@ def build_dropbox_overview(profile: dict[str, Any], dropbox_cfg: dict[str, Any])
     garment_resource_images: list[str] = []
     garment_resource_warning = ""
 
-    if garment_resource_root:
+    if garment_resource_root and include_garment_resource_images:
         try:
             garment_resource_images = [
                 p for p in list_folder_files(garment_resource_root)
@@ -3104,6 +3108,8 @@ def build_dropbox_overview(profile: dict[str, Any], dropbox_cfg: dict[str, Any])
                 )
         except Exception as exc:
             garment_resource_warning = f"Garment support images unavailable: {exc}"
+    elif garment_resource_root:
+        garment_resource_warning = "Garment support images not loaded yet."
 
     return {
         "resource_root": resource_root,
@@ -3416,6 +3422,7 @@ def resolve_selected_parent_main_image_url(
 def build_dropbox_overview_cache_key(
     profile: dict[str, Any],
     dropbox_cfg: dict[str, Any],
+    include_garment_resource_images: bool = True,
 ) -> str:
     template_key = profile.get("template_key", "")
     cache_parts = {
@@ -3423,6 +3430,7 @@ def build_dropbox_overview_cache_key(
         "template_cfg": dropbox_cfg.get("templates", {}).get(template_key, {}),
         "general_resource_images": dropbox_cfg.get("general_resource_images", []),
         "resource_root": dropbox_cfg.get("resource_root", ""),
+        "include_garment_resource_images": include_garment_resource_images,
     }
     return json.dumps(cache_parts, sort_keys=True)
 
@@ -3430,14 +3438,23 @@ def build_dropbox_overview_cache_key(
 def get_cached_dropbox_overview(
     profile: dict[str, Any],
     dropbox_cfg: dict[str, Any],
+    include_garment_resource_images: bool = True,
 ) -> dict[str, Any]:
-    cache_key = build_dropbox_overview_cache_key(profile, dropbox_cfg)
+    cache_key = build_dropbox_overview_cache_key(
+        profile,
+        dropbox_cfg,
+        include_garment_resource_images=include_garment_resource_images,
+    )
     cache = st.session_state.get("dropbox_overview_cache", {})
 
     if cache.get("key") == cache_key:
         return cache.get("data", {})
 
-    data = build_dropbox_overview(profile, dropbox_cfg)
+    data = build_dropbox_overview(
+        profile,
+        dropbox_cfg,
+        include_garment_resource_images=include_garment_resource_images,
+    )
     st.session_state["dropbox_overview_cache"] = {
         "key": cache_key,
         "data": data,
@@ -9164,11 +9181,45 @@ def main() -> None:
         st.error("stage_root, ready_root, approved_root, and finished_root must be set in config/dropbox_templates.json")
         st.stop()
 
+    workflow_tab_labels = [
+        "Product setup",
+        "Listing content",
+        "Review queue",
+        "Approved output",
+    ]
+    pending_workflow_tab = st.session_state.pop("pending_workflow_active_tab", "")
+    if pending_workflow_tab in workflow_tab_labels:
+        st.session_state["workflow_active_tab"] = pending_workflow_tab
+    if st.session_state.get("workflow_active_tab") not in workflow_tab_labels:
+        st.session_state["workflow_active_tab"] = workflow_tab_labels[0]
+    active_workflow_tab = st.segmented_control(
+        "Workflow section",
+        workflow_tab_labels,
+        key="workflow_active_tab",
+        selection_mode="single",
+        width="stretch",
+        label_visibility="collapsed",
+    )
+
+    staged_folder_names: list[str] = []
+    ready_folder_names: list[str] = []
+    approved_folder_names: list[str] = []
+    finished_folder_names: list[str] = []
+
     try:
-        staged_folder_names = get_cached_folder_names("stage", stage_root, "_stage folders")
-        ready_folder_names = get_cached_folder_names("ready", ready_root, "ready folders")
-        approved_folder_names = get_cached_folder_names("approved", approved_root, "approved folders")
-        finished_folder_names = get_cached_folder_names("finished", finished_root, "finished folders")
+        if active_workflow_tab in {"Product setup", "Listing content"}:
+            staged_folder_names = get_cached_folder_names("stage", stage_root, "_stage folders")
+        if (
+            active_workflow_tab == "Product setup"
+            and st.session_state.get("active_folder_source_mode") == "Restage finished folder"
+        ):
+            finished_folder_names = get_cached_folder_names("finished", finished_root, "finished folders")
+        elif active_workflow_tab == "Review queue" and st.session_state.get("review_queue_tab_loaded", False):
+            ready_folder_names = get_cached_folder_names("ready", ready_root, "ready folders")
+        elif active_workflow_tab == "Approved output":
+            finished_folder_names = get_cached_folder_names("finished", finished_root, "finished folders")
+            if st.session_state.get("approved_output_tab_loaded", False):
+                approved_folder_names = get_cached_folder_names("approved", approved_root, "approved folders")
     except Exception as exc:
         st.error(f"Could not read Dropbox folders: {exc}")
         st.stop()
@@ -9190,26 +9241,6 @@ def main() -> None:
     if not profiles:
         st.error("No template profiles found. Create family folders under templates/ with schema.json, a shared workbook, and garment subfolders containing config.json.")
         st.stop()
-
-    workflow_tab_labels = [
-        "Product setup",
-        "Listing content",
-        "Review queue",
-        "Approved output",
-    ]
-    pending_workflow_tab = st.session_state.pop("pending_workflow_active_tab", "")
-    if pending_workflow_tab in workflow_tab_labels:
-        st.session_state["workflow_active_tab"] = pending_workflow_tab
-    if st.session_state.get("workflow_active_tab") not in workflow_tab_labels:
-        st.session_state["workflow_active_tab"] = workflow_tab_labels[0]
-    active_workflow_tab = st.segmented_control(
-        "Workflow section",
-        workflow_tab_labels,
-        key="workflow_active_tab",
-        selection_mode="single",
-        width="stretch",
-        label_visibility="collapsed",
-    )
 
     families = sorted({profile.get("_family_slug", "") for profile in profiles if profile.get("_family_slug")})
     detection_message = ""
@@ -9390,10 +9421,18 @@ def main() -> None:
     sizes_available = active_profile.get("sizes", [])
     dropbox_overview_cache_hit = (
         st.session_state.get("dropbox_overview_cache", {}).get("key")
-        == build_dropbox_overview_cache_key(active_profile, dropbox_cfg)
+        == build_dropbox_overview_cache_key(
+            active_profile,
+            dropbox_cfg,
+            include_garment_resource_images=active_workflow_tab == "Listing content",
+        )
     )
     t_dropbox_overview_start = time.perf_counter()
-    dropbox_overview = get_cached_dropbox_overview(active_profile, dropbox_cfg)
+    dropbox_overview = get_cached_dropbox_overview(
+        active_profile,
+        dropbox_cfg,
+        include_garment_resource_images=active_workflow_tab == "Listing content",
+    )
     t_dropbox_overview_end = time.perf_counter()
 
     with st.sidebar.expander("Dropbox debug"):
@@ -9453,6 +9492,8 @@ def main() -> None:
                         clear_runtime_caches()
                         st.rerun()
             else:
+                if not finished_folder_names:
+                    finished_folder_names = get_cached_folder_names("finished", finished_root, "finished folders")
                 active_finished_folder = st.session_state.get("active_finished_folder_select", "")
                 selected_finished_folder = st.selectbox(
                     "Dropbox folder",
@@ -10523,6 +10564,8 @@ def main() -> None:
                 st.info("Review queue is not loaded yet. Click Load / refresh review queue when you need admin review.")
 
         if st.session_state.get("review_queue_tab_loaded", False):
+            if not ready_folder_names:
+                ready_folder_names = get_cached_folder_names("ready", ready_root, "ready folders")
             render_review_queue_view(
                 ready_folder_names=ready_folder_names,
                 profiles=profiles,
@@ -10730,6 +10773,8 @@ def main() -> None:
                 st.info("Approved output is not loaded yet. Click Load / refresh approved output when you need generation.")
 
         if st.session_state.get("approved_output_tab_loaded", False):
+            if not approved_folder_names:
+                approved_folder_names = get_cached_folder_names("approved", approved_root, "approved folders")
             render_approved_queue_view(
                 approved_folder_names=approved_folder_names,
                 profiles=profiles,
