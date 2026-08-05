@@ -9207,7 +9207,10 @@ def main() -> None:
     finished_folder_names: list[str] = []
 
     try:
-        if active_workflow_tab in {"Product setup", "Listing content"}:
+        if (
+            active_workflow_tab == "Product setup"
+            and st.session_state.get("stage_folder_list_loaded", False)
+        ):
             staged_folder_names = get_cached_folder_names("stage", stage_root, "_stage folders")
         if (
             active_workflow_tab == "Product setup"
@@ -9419,33 +9422,36 @@ def main() -> None:
 
     colors_available = get_profile_color_options(active_profile)
     sizes_available = active_profile.get("sizes", [])
+    include_garment_resource_overview = False
     dropbox_overview_cache_hit = (
         st.session_state.get("dropbox_overview_cache", {}).get("key")
         == build_dropbox_overview_cache_key(
             active_profile,
             dropbox_cfg,
-            include_garment_resource_images=active_workflow_tab == "Listing content",
+            include_garment_resource_images=include_garment_resource_overview,
         )
     )
     t_dropbox_overview_start = time.perf_counter()
     dropbox_overview = get_cached_dropbox_overview(
         active_profile,
         dropbox_cfg,
-        include_garment_resource_images=active_workflow_tab == "Listing content",
+        include_garment_resource_images=include_garment_resource_overview,
     )
     t_dropbox_overview_end = time.perf_counter()
 
     with st.sidebar.expander("Dropbox debug"):
-        try:
-            test_path = ""
-            if dropbox_overview.get("shared_resource_images"):
-                test_path = dropbox_overview["shared_resource_images"][0]
+        st.caption("Runs only when clicked so it cannot slow normal app loading.")
+        if st.button("Test shared preview link", key="test_dropbox_preview_link_btn"):
+            try:
+                test_path = ""
+                if dropbox_overview.get("shared_resource_images"):
+                    test_path = dropbox_overview["shared_resource_images"][0]
 
-            st.write("Test path:", test_path)
-            if test_path:
-                st.write("Preview URL:", dropbox_preview_url(test_path))
-        except Exception as exc:
-            st.error(f"Dropbox debug failed: {exc}")
+                st.write("Test path:", test_path)
+                if test_path:
+                    st.write("Preview URL:", dropbox_preview_url(test_path))
+            except Exception as exc:
+                st.error(f"Dropbox debug failed: {exc}")
 
 
     parent_sku_from_config = str(get_default(active_profile, "parent_sku", "")).strip()
@@ -9472,21 +9478,30 @@ def main() -> None:
                 staged_select_col, staged_refresh_col = st.columns([4, 1])
                 with staged_select_col:
                     active_staged_folder = st.session_state.get("active_staged_folder_select", "")
-                    staged_folder_name = st.selectbox(
-                        "Dropbox folder",
-                        staged_folder_names,
-                        index=selectbox_index_without_state_conflict(
-                            "staged_folder_select",
-                            staged_folder_names,
-                            active_staged_folder,
-                        ),
-                        placeholder="Select a staged folder",
-                        key="staged_folder_select",
-                    )
+                    staged_folder_options = list(staged_folder_names)
+                    if active_staged_folder and active_staged_folder not in staged_folder_options:
+                        staged_folder_options.insert(0, active_staged_folder)
+                    if not st.session_state.get("stage_folder_list_loaded", False) and not staged_folder_options:
+                        st.info("Load staged folders when you are ready to choose one.")
+                        staged_folder_name = ""
+                    else:
+                        staged_folder_name = st.selectbox(
+                            "Dropbox folder",
+                            staged_folder_options,
+                            index=selectbox_index_without_state_conflict(
+                                "staged_folder_select",
+                                staged_folder_options,
+                                active_staged_folder,
+                            ),
+                            placeholder="Select a staged folder",
+                            key="staged_folder_select",
+                        )
                 with staged_refresh_col:
                     st.write("")
-                    if st.button("Refresh", key="refresh_staged_folders_btn", width="stretch"):
-                        st.session_state["pending_perf_action_label"] = "refresh staged folders"
+                    load_stage_label = "Refresh" if st.session_state.get("stage_folder_list_loaded", False) else "Load"
+                    if st.button(load_stage_label, key="refresh_staged_folders_btn", width="stretch"):
+                        st.session_state["pending_perf_action_label"] = f"{load_stage_label.lower()} staged folders"
+                        st.session_state["stage_folder_list_loaded"] = True
                         refresh_cached_folder_names("stage")
                         clear_cached_listing_memory()
                         clear_runtime_caches()
@@ -9824,6 +9839,13 @@ def main() -> None:
         should_load_image_mappings
         and image_resolution_reason not in {"auto_mapped_colours", "mapped_colour_scan"}
     )
+
+    if should_load_image_mappings and image_resolution_reason not in {"auto_mapped_colours", "mapped_colour_scan"}:
+        dropbox_overview = get_cached_dropbox_overview(
+            active_profile,
+            dropbox_cfg,
+            include_garment_resource_images=True,
+        )
 
     preview_image_cache_hit = (
         st.session_state.get("preview_image_cache", {}).get("key")
