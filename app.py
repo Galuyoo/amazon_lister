@@ -5109,7 +5109,11 @@ def write_child_rows(
         values.update(get_variant_design_overrides(profile, variant_values))
 
         field_aliases = data.get("field_aliases", {})
-        extra_child_fields = data.get("extra_child_fields", {})
+        extra_child_fields = merge_extra_child_fields_for_variant(
+            data.get("extra_child_fields", {}),
+            data.get("extra_child_fields_by_size", {}),
+            variant_values,
+        )
         values = prepare_row_values(values, field_aliases, extra_child_fields)
         values = apply_apparel_size_fields(values, normalized_size, is_apparel=is_apparel)
         values["size_name"] = normalized_display_size
@@ -5166,6 +5170,29 @@ def get_extra_parent_fields(profile: dict[str, Any]) -> dict[str, Any]:
 
 def get_extra_child_fields(profile: dict[str, Any]) -> dict[str, Any]:
     return profile.get("extra_child_fields", profile.get("extra_fields", {}))
+
+
+def get_extra_child_fields_by_size(profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw_map = profile.get("extra_child_fields_by_size", {})
+    if not isinstance(raw_map, dict):
+        return {}
+    return {
+        str(size): dict(fields)
+        for size, fields in raw_map.items()
+        if isinstance(fields, dict)
+    }
+
+
+def merge_extra_child_fields_for_variant(
+    base_fields: dict[str, Any],
+    size_fields_map: dict[str, dict[str, Any]],
+    variant_values: dict[str, str],
+) -> dict[str, Any]:
+    merged = dict(base_fields or {})
+    size_value = str(variant_values.get("size", "") or "")
+    if size_value and size_value in size_fields_map:
+        merged.update(size_fields_map[size_value])
+    return merged
 
 DEFAULT_FIELD_ALIASES = {
     "apparel_size_system": [
@@ -5953,6 +5980,7 @@ def build_preflight_report(
         "field_aliases": get_field_aliases(profile),
         "extra_parent_fields": get_extra_parent_fields(profile),
         "extra_child_fields": get_extra_child_fields(profile),
+        "extra_child_fields_by_size": get_extra_child_fields_by_size(profile),
         "parent_main_image_url": "",
         "product_description": product_description.strip(),
         "generic_keywords": generic_keywords.strip(),
