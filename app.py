@@ -18,11 +18,7 @@ from utils.image_resolver import resolve_one
 import streamlit as st
 from openpyxl import load_workbook
 from itertools import product
-from services.quality_checks import (
-    find_forbidden_title_phrases,
-    validate_listing_quality,
-    words_repeated_at_least,
-)
+from services.quality_checks import validate_listing_quality, words_repeated_at_least
 from services.stock_references import (
     MAX_AMAZON_SKU_LENGTH,
     build_child_sku_details,
@@ -65,6 +61,24 @@ MERCHANT_SHIPPING_GROUP_OPTIONS = [
     "INSTOCK Template",
     "Template",
 ]
+FORBIDDEN_TITLE_PHRASES = [
+    "Mother's Day Gift",
+]
+
+
+def normalize_title_phrase_for_app(value: str) -> str:
+    value = (value or "").lower().replace("’", "'").replace("`", "'")
+    value = value.replace("'", "")
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", value).split())
+
+
+def find_forbidden_title_phrases_for_app(value: str) -> list[str]:
+    normalized_title = normalize_title_phrase_for_app(value)
+    return [
+        phrase
+        for phrase in FORBIDDEN_TITLE_PHRASES
+        if normalize_title_phrase_for_app(phrase) in normalized_title
+    ]
 
 
 def reset_load_events() -> None:
@@ -10326,7 +10340,7 @@ def main() -> None:
                 "Amazon may reject titles where one word appears 3+ times: "
                 + ", ".join(repeated_title_words[:8])
             )
-        forbidden_title_phrases = find_forbidden_title_phrases(title)
+        forbidden_title_phrases = find_forbidden_title_phrases_for_app(title)
         if forbidden_title_phrases:
             st.error(
                 "Amazon rejected phrase in title: "
