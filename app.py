@@ -52,6 +52,7 @@ OUTPUT_DIR = BASE_DIR / "outputs"
 
 LOAD_EVENT_LIMIT = 160
 DEFAULT_HANDLING_TIME_DAYS = 2
+DEFAULT_VARIANT_QUANTITY = 100
 DROPBOX_FOLDER_LIST_ATTEMPTS = 2
 MERCHANT_SHIPPING_GROUP_OPTIONS = [
     "",
@@ -1697,6 +1698,14 @@ def normalize_handling_time_days(value: Any, default: int = DEFAULT_HANDLING_TIM
     return max(0, normalized)
 
 
+def normalize_variant_quantity(value: Any, default: int = DEFAULT_VARIANT_QUANTITY) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        normalized = default
+    return normalized if normalized > 0 else default
+
+
 def normalize_merchant_shipping_group(value: Any) -> str:
     group = str(value or "").strip()
     return group if group in MERCHANT_SHIPPING_GROUP_OPTIONS else ""
@@ -1722,7 +1731,7 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
         "sku_listing_code": payload.get("sku_listing_code", ""),
         "base_parent_sku": payload.get("base_parent_sku", ""),
         "parent_sku": payload.get("parent_sku", ""),
-        "quantity": payload.get("quantity", 0),
+        "quantity": normalize_variant_quantity(payload.get("quantity", DEFAULT_VARIANT_QUANTITY)),
         "handling_time_days": normalize_handling_time_days(payload.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)),
         "merchant_shipping_group_name": normalize_merchant_shipping_group(payload.get("merchant_shipping_group_name", "")),
         "assets_prepared_by": payload.get("assets_prepared_by", ""),
@@ -1960,7 +1969,9 @@ def apply_listing_memory_to_session(listing_memory: dict[str, Any], profile: dic
         "parent_main_image_choice",
         "Automatic (recommended)",
     ) or "Automatic (recommended)"
-    st.session_state["variant_quantity"] = int(listing_memory.get("quantity", 100))
+    st.session_state["variant_quantity"] = normalize_variant_quantity(
+        listing_memory.get("quantity", DEFAULT_VARIANT_QUANTITY)
+    )
     st.session_state["handling_time_days"] = normalize_handling_time_days(
         listing_memory.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)
     )
@@ -5694,7 +5705,7 @@ def generate_approved_listings_combined(
                 sku_listing_code=str(listing_memory.get("sku_listing_code", "") or get_saved_generated_sku_listing_code(listing_memory)),
                 manual_sku_listing_code=str(listing_memory.get("manual_sku_listing_code", "") or ""),
                 generated_sku_listing_code=get_saved_generated_sku_listing_code(listing_memory),
-                quantity=int(listing_memory.get("quantity", 0)),
+                quantity=normalize_variant_quantity(listing_memory.get("quantity", DEFAULT_VARIANT_QUANTITY)),
                 staged_folder_name=folder_name,
                 handling_time_days=normalize_handling_time_days(listing_memory.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)),
                 merchant_shipping_group_name=normalize_merchant_shipping_group(listing_memory.get("merchant_shipping_group_name", "")),
@@ -5805,8 +5816,8 @@ def validate_variants(
         if not values:
             errors.append(f"At least one option is required for {dim_name}.")
 
-    if quantity < 0:
-        errors.append("Quantity cannot be negative.")
+    if quantity <= 0:
+        errors.append("Quantity must be at least 1.")
 
     variant_combos = build_variant_combinations(profile, selected_variants) if profile else []
     if variant_combos:
@@ -7292,7 +7303,7 @@ def build_review_snapshot(
         "garment_resource_root": str(dropbox_overview.get("garment_resource_root", "") or ""),
         "variants_summary": build_variants_summary(selected_variants),
         "price_summary": build_price_summary(size_price_map),
-        "quantity": int(payload.get("quantity", 0) or 0),
+        "quantity": normalize_variant_quantity(payload.get("quantity", DEFAULT_VARIANT_QUANTITY)),
         "fulfillment": {
             "handling_time_days": normalize_handling_time_days(
                 payload.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)
@@ -7342,7 +7353,7 @@ def build_ready_review_data(
         "product_description": listing_memory.get("product_description", ""),
         "generic_keywords": listing_memory.get("generic_keywords", ""),
         "variants_summary": build_variants_summary(dict(listing_memory.get("selected_variants", {}))),
-        "quantity": int(listing_memory.get("quantity", 0) or 0),
+        "quantity": normalize_variant_quantity(listing_memory.get("quantity", DEFAULT_VARIANT_QUANTITY)),
         "price_summary": build_price_summary(dict(listing_memory.get("size_price_map", {}))),
         "parent_main_image_url": "",
         "support_images": [],
@@ -7884,7 +7895,7 @@ def build_sku_manifest(
             "supplier_stock_key_reason": sku_details.get("supplier_stock_key_reason", ""),
             "design_or_listing_code": sku_details.get("design_or_listing_code", ""),
             "variant_values": dict(variant_values),
-            "quantity": int(payload.get("quantity", 0) or 0),
+            "quantity": normalize_variant_quantity(payload.get("quantity", DEFAULT_VARIANT_QUANTITY)),
             "price": price_value,
         }
 
@@ -7986,7 +7997,7 @@ def generate_approved_listing(
         str(size): float(price)
         for size, price in dict(listing_memory.get("size_price_map", {})).items()
     }
-    quantity = int(listing_memory.get("quantity", 0))
+    quantity = normalize_variant_quantity(listing_memory.get("quantity", DEFAULT_VARIANT_QUANTITY))
 
     generation_prep = prepare_generation_payload(
         profile=profile,
@@ -9691,7 +9702,9 @@ def main() -> None:
                 "manual_sku_listing_code": listing_memory.get("manual_sku_listing_code", ""),
                 "generated_sku_listing_code": listing_memory.get("generated_sku_listing_code", ""),
                 "sku_listing_code": listing_memory.get("sku_listing_code", ""),
-                "quantity": listing_memory.get("quantity", 100),
+                "quantity": normalize_variant_quantity(
+                    listing_memory.get("quantity", DEFAULT_VARIANT_QUANTITY)
+                ),
             },
             sort_keys=True,
         )
@@ -9776,7 +9789,10 @@ def main() -> None:
         st.session_state.setdefault(CONTENT_EDITOR_KEYS["bullets"][idx], bullet_value)
     st.session_state.setdefault(CONTENT_EDITOR_KEYS["description"], product_description)
     st.session_state.setdefault(CONTENT_EDITOR_KEYS["keywords"], generic_keywords)
-    st.session_state.setdefault("variant_quantity", int(listing_memory.get("quantity", 100)))
+    st.session_state.setdefault(
+        "variant_quantity",
+        normalize_variant_quantity(listing_memory.get("quantity", DEFAULT_VARIANT_QUANTITY)),
+    )
     st.session_state.setdefault(
         "handling_time_days",
         normalize_handling_time_days(listing_memory.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)),
@@ -9964,7 +9980,13 @@ def main() -> None:
             for size in price_dimension_values
         }
 
-    quantity = int(st.session_state.get("variant_quantity", listing_memory.get("quantity", 100)))
+    quantity = normalize_variant_quantity(
+        st.session_state.get(
+            "variant_quantity",
+            listing_memory.get("quantity", DEFAULT_VARIANT_QUANTITY),
+        )
+    )
+    st.session_state["variant_quantity"] = quantity
     selected_parent_main_label = st.session_state.get("parent_main_image_choice", "Automatic (recommended)")
     selected_parent_main_image_url = resolve_selected_parent_main_image_url(
         parent_main_image_options,
@@ -10574,7 +10596,7 @@ def main() -> None:
         st.subheader("Inventory setup")
         quantity = st.number_input(
             "Quantity for all child variants",
-            min_value=0,
+            min_value=1,
             step=1,
             key="variant_quantity",
         )
