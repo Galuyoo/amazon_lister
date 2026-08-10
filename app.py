@@ -18,7 +18,11 @@ from utils.image_resolver import resolve_one
 import streamlit as st
 from openpyxl import load_workbook
 from itertools import product
-from services.quality_checks import validate_listing_quality, words_repeated_at_least
+from services.quality_checks import (
+    find_forbidden_title_phrases,
+    validate_listing_quality,
+    words_repeated_at_least,
+)
 from services.stock_references import (
     MAX_AMAZON_SKU_LENGTH,
     build_child_sku_details,
@@ -10321,6 +10325,12 @@ def main() -> None:
             st.error(
                 "Amazon may reject titles where one word appears 3+ times: "
                 + ", ".join(repeated_title_words[:8])
+            )
+        forbidden_title_phrases = find_forbidden_title_phrases(title)
+        if forbidden_title_phrases:
+            st.error(
+                "Amazon rejected phrase in title: "
+                + ", ".join(forbidden_title_phrases)
             )
 
         st.subheader("Bullets")

@@ -17,6 +17,9 @@ EMOJI_PATTERN = re.compile(
     "]+",
     flags=re.UNICODE,
 )
+FORBIDDEN_TITLE_PHRASES = [
+    "Mother's Day Gift",
+]
 
 def is_variant_combo_allowed(profile: dict[str, Any], variant_values: dict[str, str]) -> bool:
     color = variant_values.get("color", "")
@@ -105,6 +108,21 @@ def words_repeated_at_least(value: str, limit: int = 3) -> list[str]:
     words = re.findall(r"\b[a-zA-Z0-9]+\b", (value or "").lower())
     counts = Counter(words)
     return sorted(word for word, count in counts.items() if count >= limit)
+
+
+def normalize_title_phrase(value: str) -> str:
+    value = (value or "").lower().replace("’", "'").replace("`", "'")
+    value = value.replace("'", "")
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", value).split())
+
+
+def find_forbidden_title_phrases(value: str) -> list[str]:
+    normalized_title = normalize_title_phrase(value)
+    return [
+        phrase
+        for phrase in FORBIDDEN_TITLE_PHRASES
+        if normalize_title_phrase(phrase) in normalized_title
+    ]
 
 
 def build_child_sku_for_validation(
@@ -259,6 +277,15 @@ def validate_listing_quality(
                 + "."
             )
             breakdown["content_quality"] -= 6
+
+        forbidden_title_phrases = find_forbidden_title_phrases(title)
+        if forbidden_title_phrases:
+            blockers.append(
+                "Title contains forbidden Amazon phrase(s): "
+                + ", ".join(forbidden_title_phrases)
+                + "."
+            )
+            breakdown["content_quality"] -= 10
 
         if title_chars < 80:
             warnings.append("Title looks short and may be too weak.")
