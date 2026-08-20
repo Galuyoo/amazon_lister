@@ -40,6 +40,7 @@ from services.stock_references import (
 )
 from ui.listing_content import render_listing_content
 from ui.product_setup import render_product_setup, render_product_setup_controls
+from ui.review_queue import render_review_queue
 
 from utils.dropbox_client import (
     get_or_create_shared_link,
@@ -9987,28 +9988,16 @@ def main() -> None:
         content_action_result_container = listing_content_result["content_action_result_container"]
 
     if active_workflow_tab == "Review queue":
-        st.caption("Review ready listings and approve them for generation.")
-
-        review_col1, review_col2 = st.columns([1, 3])
-        with review_col1:
-            if st.button("Load / refresh review queue", key="load_review_queue_tab_btn", width="stretch"):
-                st.session_state["active_perf_action_label"] = "load review queue"
-                refresh_cached_folder_names("ready")
-                clear_cached_listing_memory()
-                st.session_state.pop("ready_queue_items_cache", None)
-                st.session_state["review_queue_tab_loaded"] = True
-        with review_col2:
-            if not st.session_state.get("review_queue_tab_loaded", False):
-                st.info("Review queue is not loaded yet. Click Load / refresh review queue when you need admin review.")
-
-        if st.session_state.get("review_queue_tab_loaded", False):
-            if not ready_folder_names:
-                ready_folder_names = get_cached_folder_names("ready", ready_root, "ready folders")
-            render_review_queue_view(
-                ready_folder_names=ready_folder_names,
-                profiles=profiles,
-                dropbox_cfg=dropbox_cfg,
-            )
+        render_review_queue(
+            ready_folder_names=ready_folder_names,
+            ready_root=ready_root,
+            profiles=profiles,
+            dropbox_cfg=dropbox_cfg,
+            refresh_cached_folder_names=refresh_cached_folder_names,
+            clear_cached_listing_memory=clear_cached_listing_memory,
+            get_cached_folder_names=get_cached_folder_names,
+            render_review_queue_view=render_review_queue_view,
+        )
 
     if active_workflow_tab == "Approved output":
         st.caption("Generate selected or all approved folders and download completed workbooks.")
