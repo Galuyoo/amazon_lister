@@ -45,6 +45,7 @@ from ui.review_queue import render_review_queue
 
 from utils.dropbox_client import (
     get_or_create_shared_link,
+    format_dropbox_error,
     to_direct_url,
     list_folder_files,
     list_folder_names,
@@ -65,7 +66,6 @@ CONFIG_DIR = BASE_DIR / "config"
 OUTPUT_DIR = BASE_DIR / "outputs"
 
 LOAD_EVENT_LIMIT = 160
-DROPBOX_FOLDER_LIST_ATTEMPTS = 2
 FORBIDDEN_TITLE_PHRASES = [
     "Mother's Day Gift",
 ]
@@ -127,30 +127,24 @@ def get_cached_folder_names(cache_key: str, root_path: str, label: str) -> list[
         return folder_names
 
     started_at = time.perf_counter()
-    last_error: Exception | None = None
-    for attempt in range(DROPBOX_FOLDER_LIST_ATTEMPTS):
-        try:
-            folder_names = list_folder_names(root_path)
-            break
-        except Exception as exc:
-            last_error = exc
-            if attempt < DROPBOX_FOLDER_LIST_ATTEMPTS - 1:
-                time.sleep(0.5)
-    else:
-        load_errors[cache_key] = f"{label}: {last_error}"
+    try:
+        folder_names = list_folder_names(root_path)
+    except Exception as exc:
+        error_message = format_dropbox_error(exc)
+        load_errors[cache_key] = f"{label}: {error_message}"
         if cached and cached.get("root_path") == root_path:
             folder_names = list(cached.get("folder_names", []))
             record_load_event(
                 f"Dropbox: cached after failed {label}",
                 started_at,
-                f"{len(folder_names)} folder(s); {last_error}",
+                f"{len(folder_names)} folder(s); {error_message}",
             )
             return folder_names
 
         record_load_event(
             f"Dropbox: failed {label}",
             started_at,
-            str(last_error or "Unknown Dropbox error"),
+            error_message,
         )
         return []
 
@@ -9211,7 +9205,7 @@ def main() -> None:
     dropbox_folder_load_errors = dict(st.session_state.get("dropbox_folder_load_errors", {}))
     if dropbox_folder_load_errors:
         st.warning(
-            "Dropbox did not respond for some folder lists. "
+            "Some Dropbox folder lists could not be refreshed. "
             "The app is using cached lists where possible; empty sections can be retried."
         )
         with st.expander("Dropbox folder load errors", expanded=False):

@@ -8,8 +8,9 @@ from pathlib import Path
 from dropbox.files import WriteMode
 
 import dropbox
-from dropbox.exceptions import ApiError, AuthError
+from dropbox.exceptions import ApiError, AuthError, InternalServerError, RateLimitError
 from dotenv import load_dotenv
+from requests.exceptions import RequestException
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
@@ -20,6 +21,8 @@ REQUIRED_DROPBOX_KEYS = (
     "DROPBOX_APP_SECRET",
     "DROPBOX_REFRESH_TOKEN",
 )
+DROPBOX_REQUEST_TIMEOUT_SECONDS = 30
+DROPBOX_READ_ATTEMPTS = 3
 
 
 def get_secret_value(key: str) -> str:
@@ -58,6 +61,9 @@ def get_dropbox_client() -> dropbox.Dropbox:
         oauth2_refresh_token=credentials["DROPBOX_REFRESH_TOKEN"],
         app_key=credentials["DROPBOX_APP_KEY"],
         app_secret=credentials["DROPBOX_APP_SECRET"],
+        timeout=DROPBOX_REQUEST_TIMEOUT_SECONDS,
+        max_retries_on_error=4,
+        max_retries_on_rate_limit=4,
     )
 
     try:
@@ -66,6 +72,40 @@ def get_dropbox_client() -> dropbox.Dropbox:
         raise ValueError("Dropbox authentication failed.") from exc
 
     return dbx
+
+
+def reset_dropbox_client() -> None:
+    get_dropbox_client.cache_clear()
+
+
+def format_dropbox_error(exc: Exception) -> str:
+    error_chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in error_chain:
+        error_chain.append(current)
+        current = current.__cause__ or current.__context__
+
+    error_text = " ".join(str(error) for error in error_chain).lower()
+    if any(isinstance(error, AuthError) for error in error_chain) or any(
+        marker in error_text
+        for marker in ("authentication failed", "invalid_grant", "missing dropbox credentials")
+    ):
+        return "Dropbox authentication failed. Check the deployed Dropbox app credentials and refresh token."
+    if any(isinstance(error, RateLimitError) for error in error_chain) or "too_many_requests" in error_text:
+        return "Dropbox temporarily rate-limited this request. Retry the folder list shortly."
+    if any(isinstance(error, InternalServerError) for error in error_chain):
+        return "Dropbox returned a temporary server error. Retry the folder list shortly."
+    if any(isinstance(error, RequestException) for error in error_chain):
+        return "The app could not reach Dropbox over the network. Retry the folder list shortly."
+    if any(isinstance(error, ApiError) for error in error_chain):
+        return f"Dropbox rejected the folder request: {exc}"
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _is_retryable_dropbox_read_error(exc: Exception) -> bool:
+    if isinstance(exc, (AuthError, ApiError, ValueError)):
+        return False
+    return True
 
 def list_folder_files(path: str) -> list[str]:
     dbx = get_dropbox_client()
@@ -85,7 +125,7 @@ def list_folder_files(path: str) -> list[str]:
 
     return files
 
-def list_folder_names(path: str) -> list[str]:
+def _list_folder_names_once(path: str) -> list[str]:
     dbx = get_dropbox_client()
     entries = []
 
@@ -102,6 +142,21 @@ def list_folder_names(path: str) -> list[str]:
             folders.append(entry.name)
 
     return sorted(folders)
+
+
+def list_folder_names(path: str) -> list[str]:
+    last_error: Exception | None = None
+    for attempt in range(DROPBOX_READ_ATTEMPTS):
+        try:
+            return _list_folder_names_once(path)
+        except Exception as exc:
+            last_error = exc
+            if not _is_retryable_dropbox_read_error(exc) or attempt == DROPBOX_READ_ATTEMPTS - 1:
+                raise
+            reset_dropbox_client()
+            time.sleep(0.75 * (2 ** attempt))
+
+    raise RuntimeError(f"Dropbox folder listing failed: {last_error}")
 
 
 def create_folder_if_missing(path: str) -> None:
