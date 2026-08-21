@@ -7,6 +7,7 @@ from typing import Any, Callable
 import streamlit as st
 
 from services.listing_content_import import parse_listing_content_json
+from services.listing_content_prompt import load_amazon_listing_content_prompt
 
 
 AI_JSON_INPUT_KEY = "listing_content_ai_json_input"
@@ -14,6 +15,7 @@ AI_VALIDATION_RESULT_KEY = "listing_content_ai_validation_result"
 AI_VALIDATE_BUTTON_KEY = "listing_content_ai_validate_btn"
 AI_APPLY_BUTTON_KEY = "listing_content_ai_apply_btn"
 AI_JSON_UPLOAD_KEY = "listing_content_ai_json_upload"
+AI_PROMPT_DOWNLOAD_KEY = "listing_content_ai_prompt_download_btn"
 
 
 def resolve_listing_content_import_source(
@@ -97,12 +99,35 @@ def apply_validated_listing_content(
     return True
 
 
+def render_chatgpt_prompt_download() -> None:
+    st.markdown("**Generate with ChatGPT**")
+    st.caption(
+        "Upload your product/design image to ChatGPT, use our standard prompt, "
+        "then upload or paste the returned JSON below."
+    )
+    try:
+        prompt_text = load_amazon_listing_content_prompt()
+    except (OSError, UnicodeError):
+        st.error("The standard ChatGPT prompt is currently unavailable.")
+        return
+
+    st.download_button(
+        "Download ChatGPT Prompt",
+        data=prompt_text,
+        file_name="amazon_listing_content_chatgpt_prompt.txt",
+        mime="text/plain",
+        key=AI_PROMPT_DOWNLOAD_KEY,
+    )
+
+
 def render_ai_listing_content_import(
     *,
     content_editor_keys: dict[str, Any],
     sync_content_editor_to_canonical_state: Callable[..., None],
 ) -> None:
     with st.expander("Import AI listing content", expanded=False):
+        render_chatgpt_prompt_download()
+
         uploaded_file = st.file_uploader(
             "Upload JSON file",
             type=["json"],
