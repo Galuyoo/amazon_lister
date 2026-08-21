@@ -1,0 +1,144 @@
+{
+  "label": "UC503 Childrens Hooded Sweatshirt",
+  "template_key": "UC503",
+  "template_file": "SWEATSHIRT.xlsm",
+  "parent_sku": "UC503",
+  "feed_product_type": "sweatshirt",
+  "recommended_browse_nodes": "1731011031",
+  "product_category": "apparel",
+  "brand_name": "Generic",
+  "manufacturer": "Generic",
+  "department_name": "unisex-child",
+  "target_gender": "unisex",
+  "age_range_description": "Child",
+  "material_type": "50% Polyester, 50% Cotton",
+  "style_name": "Childrens Hooded Sweatshirt",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "Hooded Sweatshirt",
+  "theme": "Custom Printed Kids Hoodie",
+  "neck_style": "Hooded Neck",
+  "fit_type": "Regular",
+  "weave_type": "Knit",
+  "sleeve_type": "Long Sleeve",
+  "colors": [
+    "Black",
+    "Bottle Green",
+    "Charcoal",
+    "Heather Grey",
+    "Hot Pink",
+    "Jade",
+    "Kelly Green",
+    "Maroon",
+    "Military Green",
+    "Navy",
+    "Olive",
+    "Orange",
+    "Pink",
+    "Purple",
+    "Red",
+    "Royal",
+    "Sapphire Blue",
+    "Sky",
+    "Violet",
+    "White",
+    "Yellow"
+  ],
+  "sizes": [
+    "2 YRS",
+    "3/4 YRS",
+    "5/6 YRS",
+    "7/8 YRS",
+    "9/10 YRS",
+    "11/13 YRS"
+  ],
+  "size_code_map": {
+    "2 YRS": "2Y",
+    "3/4 YRS": "34Y",
+    "5/6 YRS": "56Y",
+    "7/8 YRS": "78Y",
+    "9/10 YRS": "910Y",
+    "11/13 YRS": "1113Y"
+  },
+  "color_sku_map": {
+    "Black": "503BK",
+    "Bottle Green": "503BG",
+    "Charcoal": "503CH",
+    "Heather Grey": "503HG",
+    "Hot Pink": "503HP",
+    "Jade": "503JA",
+    "Kelly Green": "503KG",
+    "Maroon": "503MR",
+    "Military Green": "503MG",
+    "Navy": "503NY",
+    "Olive": "503OL",
+    "Orange": "503OR",
+    "Pink": "503PI",
+    "Purple": "503PR",
+    "Red": "503RD",
+    "Royal": "503RY",
+    "Sapphire Blue": "503SP",
+    "Sky": "503SK",
+    "Violet": "503VI",
+    "White": "503WH",
+    "Yellow": "503YW"
+  },
+  "extra_parent_fields": {
+    "outer_material_type": "Synthetic",
+    "material_type1": "50% Polyester, 50% Cotton",
+    "fabric_type": "Polycotton",
+    "weave_type": "Knit",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Age",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
+  },
+  "extra_child_fields": {
+    "outer_material_type": "Synthetic",
+    "material_type1": "50% Polyester, 50% Cotton",
+    "fabric_type": "Polycotton",
+    "weave_type": "Knit",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Age",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
+  },
+  "field_aliases": {
+    "apparel_size_system": [
+      "shirt_size_system",
+      "tops_size_system",
+      "outerwear_size_system"
+    ],
+    "apparel_size_class": [
+      "shirt_size_class",
+      "tops_size_class",
+      "outerwear_size_class"
+    ],
+    "apparel_size": [
+      "shirt_size",
+      "tops_size_value",
+      "outerwear_size_value"
+    ],
+    "apparel_body_type": [
+      "shirt_body_type",
+      "tops_body_type",
+      "outerwear_body_type"
+    ],
+    "apparel_height_type": [
+      "shirt_height_type",
+      "tops_height_type",
+      "outerwear_height_type"
+    ],
+    "outer_material_type": [
+      "material_type",
+      "material_type1",
+      "fabric_type"
+    ]
+  }
+}
