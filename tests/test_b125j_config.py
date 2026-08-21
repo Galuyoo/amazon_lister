@@ -19,4 +19,4 @@ def test_b125j_has_required_bag_dimensions_and_valid_capacity_unit():
     for field_group in ("extra_parent_fields", "extra_child_fields"):
         fields = profile[field_group]
         assert {key: fields.get(key) for key in expected_dimensions} == expected_dimensions
-        assert fields["capacity_unit_of_measure"] == "Litres"
+        assert fields["capacity_unit_of_measure"] == "L"
