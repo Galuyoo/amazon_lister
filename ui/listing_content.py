@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import MutableMapping
+from hashlib import sha256
 from typing import Any, Callable
 
 import streamlit as st
@@ -12,6 +13,41 @@ AI_JSON_INPUT_KEY = "listing_content_ai_json_input"
 AI_VALIDATION_RESULT_KEY = "listing_content_ai_validation_result"
 AI_VALIDATE_BUTTON_KEY = "listing_content_ai_validate_btn"
 AI_APPLY_BUTTON_KEY = "listing_content_ai_apply_btn"
+AI_JSON_UPLOAD_KEY = "listing_content_ai_json_upload"
+
+
+def resolve_listing_content_import_source(
+    pasted_text: str,
+    uploaded_file: Any = None,
+) -> dict[str, Any]:
+    if uploaded_file is None:
+        raw_bytes = pasted_text.encode("utf-8")
+        return {
+            "raw_text": pasted_text,
+            "source_identity": f"paste:{sha256(raw_bytes).hexdigest()}",
+            "source_label": "pasted JSON",
+            "error": "",
+        }
+
+    raw_bytes = uploaded_file.getvalue()
+    filename = str(getattr(uploaded_file, "name", "uploaded.json") or "uploaded.json")
+    source_identity = f"upload:{filename}:{sha256(raw_bytes).hexdigest()}"
+    try:
+        raw_text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return {
+            "raw_text": None,
+            "source_identity": source_identity,
+            "source_label": f"uploaded JSON file: {filename}",
+            "error": "The uploaded JSON file is not valid UTF-8 text.",
+        }
+
+    return {
+        "raw_text": raw_text,
+        "source_identity": source_identity,
+        "source_label": f"uploaded JSON file: {filename}",
+        "error": "",
+    }
 
 
 def apply_validated_listing_content(
@@ -20,10 +56,16 @@ def apply_validated_listing_content(
     content_editor_keys: dict[str, Any],
     session_state: MutableMapping[str, Any],
     sync_content_editor_to_canonical_state: Callable[..., None],
+    current_source_identity: str | None = None,
 ) -> bool:
     if not isinstance(validation_record, dict):
         return False
     if validation_record.get("raw_text") != current_raw_text:
+        return False
+    if (
+        current_source_identity is not None
+        and validation_record.get("source_identity") != current_source_identity
+    ):
         return False
 
     result = validation_record.get("result")
@@ -61,23 +103,50 @@ def render_ai_listing_content_import(
     sync_content_editor_to_canonical_state: Callable[..., None],
 ) -> None:
     with st.expander("Import AI listing content", expanded=False):
-        raw_text = st.text_area(
+        uploaded_file = st.file_uploader(
+            "Upload JSON file",
+            type=["json"],
+            key=AI_JSON_UPLOAD_KEY,
+        )
+        st.caption("OR")
+        pasted_text = st.text_area(
             "AI listing content JSON",
             height=220,
             key=AI_JSON_INPUT_KEY,
         )
+        import_source = resolve_listing_content_import_source(pasted_text, uploaded_file)
+        st.caption(f"Current source: {import_source['source_label']}")
+        source_error = str(import_source.get("error", "") or "")
+        if source_error:
+            st.error(source_error)
+
         validate_clicked = st.button(
             "Validate JSON",
             key=AI_VALIDATE_BUTTON_KEY,
+            disabled=bool(source_error),
         )
         if validate_clicked:
             st.session_state[AI_VALIDATION_RESULT_KEY] = {
-                "raw_text": raw_text,
-                "result": parse_listing_content_json(raw_text),
+                "raw_text": import_source["raw_text"],
+                "source_identity": import_source["source_identity"],
+                "result": parse_listing_content_json(import_source["raw_text"]),
             }
+
+        if source_error:
+            return
 
         validation_record = st.session_state.get(AI_VALIDATION_RESULT_KEY)
         if not isinstance(validation_record, dict):
+            return
+
+        raw_text = import_source["raw_text"]
+        source_identity = import_source["source_identity"]
+        is_stale = (
+            validation_record.get("raw_text") != raw_text
+            or validation_record.get("source_identity") != source_identity
+        )
+        if is_stale:
+            st.warning("The current import source has changed. Validate it again before applying.")
             return
 
         result = validation_record.get("result", {})
@@ -106,14 +175,9 @@ def render_ai_listing_content_import(
         st.markdown("**Search terms**")
         st.write(content.get("generic_keywords", ""))
 
-        is_stale = validation_record.get("raw_text") != raw_text
-        if is_stale:
-            st.warning("The pasted JSON has changed. Validate it again before applying.")
-
         apply_clicked = st.button(
             "Apply to Listing Content",
             key=AI_APPLY_BUTTON_KEY,
-            disabled=is_stale,
         )
         if apply_clicked and apply_validated_listing_content(
             validation_record,
@@ -121,6 +185,7 @@ def render_ai_listing_content_import(
             content_editor_keys,
             st.session_state,
             sync_content_editor_to_canonical_state,
+            current_source_identity=source_identity,
         ):
             st.success("Applied AI content to the editable Listing Content fields.")
 

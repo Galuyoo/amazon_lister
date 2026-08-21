@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 from pathlib import Path
 
 from ui import listing_content
@@ -15,9 +16,23 @@ EDITOR_KEYS = {
 }
 
 
-def valid_record(*, warnings: list[str] | None = None) -> dict[str, object]:
+class UploadedFile:
+    def __init__(self, content: bytes, name: str = "listing.json") -> None:
+        self.name = name
+        self._content = content
+
+    def getvalue(self) -> bytes:
+        return self._content
+
+
+def valid_record(
+    *,
+    warnings: list[str] | None = None,
+    source_identity: str | None = None,
+) -> dict[str, object]:
     return {
         "raw_text": "validated raw text",
+        **({"source_identity": source_identity} if source_identity is not None else {}),
         "result": {
             "valid": True,
             "content": {
@@ -33,7 +48,11 @@ def valid_record(*, warnings: list[str] | None = None) -> dict[str, object]:
     }
 
 
-def apply_record(record: object, raw_text: str = "validated raw text"):
+def apply_record(
+    record: object,
+    raw_text: str = "validated raw text",
+    source_identity: str | None = None,
+):
     state = {key: f"original {key}" for key in [
         EDITOR_KEYS["title"],
         EDITOR_KEYS["description"],
@@ -47,6 +66,7 @@ def apply_record(record: object, raw_text: str = "validated raw text"):
         EDITOR_KEYS,
         state,
         lambda *values: sync_calls.append(values),
+        current_source_identity=source_identity,
     )
     return applied, state, sync_calls
 
@@ -66,6 +86,116 @@ def test_import_ui_uses_parser_and_stable_widget_keys() -> None:
     assert listing_content.AI_VALIDATE_BUTTON_KEY == "listing_content_ai_validate_btn"
     assert listing_content.AI_APPLY_BUTTON_KEY == "listing_content_ai_apply_btn"
     assert listing_content.AI_VALIDATION_RESULT_KEY == "listing_content_ai_validation_result"
+    assert listing_content.AI_JSON_UPLOAD_KEY == "listing_content_ai_json_upload"
+
+
+def test_json_uploader_accepts_only_json_and_has_stable_key() -> None:
+    tree = ast.parse(Path(listing_content.__file__).read_text(encoding="utf-8"))
+    uploader = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "file_uploader"
+    )
+    keywords = {keyword.arg: ast.unparse(keyword.value) for keyword in uploader.keywords}
+
+    assert ast.literal_eval(uploader.args[0]) == "Upload JSON file"
+    assert keywords["type"] == "['json']"
+    assert keywords["key"] == "AI_JSON_UPLOAD_KEY"
+
+
+def test_uploaded_utf8_json_uses_existing_parser_and_can_be_applied() -> None:
+    payload = {
+        "schema_version": 1,
+        "title": "A" * 150,
+        "bullet_points": ["B" * 150 for _ in range(5)],
+        "product_description": "D" * 1000,
+        "generic_keywords": "useful " * 20,
+    }
+    source = listing_content.resolve_listing_content_import_source(
+        "ignored pasted text",
+        UploadedFile(json.dumps(payload).encode("utf-8")),
+    )
+    result = listing_content.parse_listing_content_json(source["raw_text"])
+    record = {
+        "raw_text": source["raw_text"],
+        "source_identity": source["source_identity"],
+        "result": result,
+    }
+    state = {}
+    sync_calls = []
+
+    applied = listing_content.apply_validated_listing_content(
+        record,
+        source["raw_text"],
+        EDITOR_KEYS,
+        state,
+        lambda *values: sync_calls.append(values),
+        current_source_identity=source["source_identity"],
+    )
+
+    assert result["valid"] is True
+    assert applied is True
+    assert state[EDITOR_KEYS["title"]] == payload["title"]
+    assert len([state[key] for key in EDITOR_KEYS["bullets"]]) == 5
+    assert len(sync_calls) == 1
+
+
+def test_uploaded_invalid_json_cannot_be_applied() -> None:
+    source = listing_content.resolve_listing_content_import_source("", UploadedFile(b"{invalid"))
+    result = listing_content.parse_listing_content_json(source["raw_text"])
+    record = {
+        "raw_text": source["raw_text"],
+        "source_identity": source["source_identity"],
+        "result": result,
+    }
+
+    applied, state, sync_calls = apply_record(
+        record,
+        raw_text=source["raw_text"],
+        source_identity=source["source_identity"],
+    )
+
+    assert result["valid"] is False
+    assert applied is False
+    assert all(value.startswith("original ") for value in state.values())
+    assert sync_calls == []
+
+
+def test_invalid_utf8_upload_is_rejected_safely() -> None:
+    source = listing_content.resolve_listing_content_import_source("", UploadedFile(b"\xff\xfe"))
+
+    assert source["raw_text"] is None
+    assert source["error"] == "The uploaded JSON file is not valid UTF-8 text."
+
+
+def test_changing_uploaded_file_invalidates_validation() -> None:
+    first_source = listing_content.resolve_listing_content_import_source("", UploadedFile(b"{}", "first.json"))
+    second_source = listing_content.resolve_listing_content_import_source("", UploadedFile(b"{}", "second.json"))
+    record = valid_record(source_identity=first_source["source_identity"])
+
+    applied, state, sync_calls = apply_record(
+        record,
+        source_identity=second_source["source_identity"],
+    )
+
+    assert applied is False
+    assert all(value.startswith("original ") for value in state.values())
+    assert sync_calls == []
+
+
+def test_uploaded_file_takes_precedence_and_paste_path_is_unchanged() -> None:
+    upload_source = listing_content.resolve_listing_content_import_source(
+        "pasted content",
+        UploadedFile(b"uploaded content"),
+    )
+    paste_source = listing_content.resolve_listing_content_import_source("pasted content")
+
+    assert upload_source["raw_text"] == "uploaded content"
+    assert upload_source["source_label"].startswith("uploaded JSON file")
+    assert paste_source["raw_text"] == "pasted content"
+    assert paste_source["source_label"] == "pasted JSON"
 
 
 def test_valid_result_populates_all_existing_editor_keys_and_syncs_canonical_state() -> None:
