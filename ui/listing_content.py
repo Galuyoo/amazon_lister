@@ -1,8 +1,128 @@
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from typing import Any, Callable
 
 import streamlit as st
+
+from services.listing_content_import import parse_listing_content_json
+
+
+AI_JSON_INPUT_KEY = "listing_content_ai_json_input"
+AI_VALIDATION_RESULT_KEY = "listing_content_ai_validation_result"
+AI_VALIDATE_BUTTON_KEY = "listing_content_ai_validate_btn"
+AI_APPLY_BUTTON_KEY = "listing_content_ai_apply_btn"
+
+
+def apply_validated_listing_content(
+    validation_record: Any,
+    current_raw_text: str,
+    content_editor_keys: dict[str, Any],
+    session_state: MutableMapping[str, Any],
+    sync_content_editor_to_canonical_state: Callable[..., None],
+) -> bool:
+    if not isinstance(validation_record, dict):
+        return False
+    if validation_record.get("raw_text") != current_raw_text:
+        return False
+
+    result = validation_record.get("result")
+    if not isinstance(result, dict) or not result.get("valid"):
+        return False
+
+    content = result.get("content")
+    if not isinstance(content, dict):
+        return False
+    bullets = content.get("bullet_points")
+    if not isinstance(bullets, list) or len(bullets) != 5:
+        return False
+
+    title = content.get("title", "")
+    product_description = content.get("product_description", "")
+    generic_keywords = content.get("generic_keywords", "")
+    session_state[content_editor_keys["title"]] = title
+    session_state[content_editor_keys["description"]] = product_description
+    session_state[content_editor_keys["keywords"]] = generic_keywords
+    for index, bullet in enumerate(bullets):
+        session_state[content_editor_keys["bullets"][index]] = bullet
+
+    sync_content_editor_to_canonical_state(
+        title,
+        bullets,
+        product_description,
+        generic_keywords,
+    )
+    return True
+
+
+def render_ai_listing_content_import(
+    *,
+    content_editor_keys: dict[str, Any],
+    sync_content_editor_to_canonical_state: Callable[..., None],
+) -> None:
+    with st.expander("Import AI listing content", expanded=False):
+        raw_text = st.text_area(
+            "AI listing content JSON",
+            height=220,
+            key=AI_JSON_INPUT_KEY,
+        )
+        validate_clicked = st.button(
+            "Validate JSON",
+            key=AI_VALIDATE_BUTTON_KEY,
+        )
+        if validate_clicked:
+            st.session_state[AI_VALIDATION_RESULT_KEY] = {
+                "raw_text": raw_text,
+                "result": parse_listing_content_json(raw_text),
+            }
+
+        validation_record = st.session_state.get(AI_VALIDATION_RESULT_KEY)
+        if not isinstance(validation_record, dict):
+            return
+
+        result = validation_record.get("result", {})
+        if not isinstance(result, dict):
+            return
+
+        for error in result.get("errors", []):
+            st.error(error)
+        for warning in result.get("warnings", []):
+            st.warning(warning)
+
+        if not result.get("valid"):
+            return
+
+        content = result.get("content", {})
+        if not isinstance(content, dict):
+            return
+
+        st.markdown("**Title**")
+        st.write(content.get("title", ""))
+        st.markdown("**Bullet points**")
+        for index, bullet in enumerate(content.get("bullet_points", []), start=1):
+            st.write(f"{index}. {bullet}")
+        st.markdown("**Product description**")
+        st.write(content.get("product_description", ""))
+        st.markdown("**Search terms**")
+        st.write(content.get("generic_keywords", ""))
+
+        is_stale = validation_record.get("raw_text") != raw_text
+        if is_stale:
+            st.warning("The pasted JSON has changed. Validate it again before applying.")
+
+        apply_clicked = st.button(
+            "Apply to Listing Content",
+            key=AI_APPLY_BUTTON_KEY,
+            disabled=is_stale,
+        )
+        if apply_clicked and apply_validated_listing_content(
+            validation_record,
+            raw_text,
+            content_editor_keys,
+            st.session_state,
+            sync_content_editor_to_canonical_state,
+        ):
+            st.success("Applied AI content to the editable Listing Content fields.")
 
 
 def render_listing_content(
@@ -86,6 +206,11 @@ def render_listing_content(
                 st.session_state["applied_listing_memory_key_v2"] = current_memory_fingerprint
                 st.session_state["applied_listing_memory_widget_key_v2"] = current_memory_fingerprint
             st.success("Filled editable content fields from listing_inputs.json.")
+
+    render_ai_listing_content_import(
+        content_editor_keys=CONTENT_EDITOR_KEYS,
+        sync_content_editor_to_canonical_state=sync_content_editor_to_canonical_state,
+    )
 
     title = st.text_input(
         "Product title",
