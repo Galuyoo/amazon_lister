@@ -97,13 +97,19 @@ def format_dropbox_error(exc: Exception) -> str:
         return "Dropbox returned a temporary server error. Retry the folder list shortly."
     if any(isinstance(error, RequestException) for error in error_chain):
         return "The app could not reach Dropbox over the network. Retry the folder list shortly."
+    if any(isinstance(error, ApiError) and error.error is None for error in error_chain):
+        return "Dropbox returned an incomplete temporary API response. Retry the folder list shortly."
     if any(isinstance(error, ApiError) for error in error_chain):
         return f"Dropbox rejected the folder request: {exc}"
     return f"{type(exc).__name__}: {exc}"
 
 
 def _is_retryable_dropbox_read_error(exc: Exception) -> bool:
-    if isinstance(exc, (AuthError, ApiError, ValueError)):
+    if isinstance(exc, AuthError):
+        return False
+    if isinstance(exc, ApiError):
+        return exc.error is None
+    if isinstance(exc, ValueError):
         return False
     return True
 

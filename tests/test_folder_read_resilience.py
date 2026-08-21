@@ -4,6 +4,7 @@ import sys
 from unittest.mock import Mock
 
 import pytest
+from dropbox.exceptions import ApiError
 from requests.exceptions import ConnectionError
 
 from utils import dropbox_client
@@ -44,6 +45,20 @@ def test_folder_list_rebuilds_client_and_retries_transient_failure(monkeypatch) 
     assert read_once.call_count == 2
     reset_client.assert_called_once_with()
     sleep.assert_called_once_with(0.75)
+
+
+def test_folder_list_retries_dropbox_api_error_without_route_details(monkeypatch) -> None:
+    incomplete_response = ApiError("request-id", None, None, None)
+    read_once = Mock(side_effect=[incomplete_response, ["Folder A"]])
+    reset_client = Mock()
+    monkeypatch.setattr(dropbox_client, "_list_folder_names_once", read_once)
+    monkeypatch.setattr(dropbox_client, "reset_dropbox_client", reset_client)
+    monkeypatch.setattr(dropbox_client.time, "sleep", Mock())
+
+    assert dropbox_client.list_folder_names("/Amazon/_stage") == ["Folder A"]
+    assert read_once.call_count == 2
+    reset_client.assert_called_once_with()
+    assert "temporary API response" in dropbox_client.format_dropbox_error(incomplete_response)
 
 
 def test_folder_list_does_not_retry_configuration_error(monkeypatch) -> None:
