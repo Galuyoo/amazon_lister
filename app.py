@@ -6340,6 +6340,16 @@ def find_template_matches_for_staged_folder(
                 seen_slugs.add(profile.get("_slug", ""))
                 break
 
+    if bounded_match("H01") or bounded_match("H02"):
+        for profile in profiles:
+            if (
+                str(profile.get("_family_slug", "")).strip().upper() == "HOODIE"
+                and str(profile.get("template_key", "")).strip().upper() == "GENERIC_HOODIES"
+            ):
+                matches.append((5, profile))
+                seen_slugs.add(profile.get("_slug", ""))
+                break
+
     for profile in profiles:
         template_key = str(profile.get("template_key", "")).strip()
         parent_sku = str(profile.get("parent_sku", "")).strip()

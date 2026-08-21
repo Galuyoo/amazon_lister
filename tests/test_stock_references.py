@@ -10,6 +10,7 @@ from services.stock_references import (
     sanitize_sku_part,
     slugify_part,
 )
+from services.quality_checks import build_variant_combinations
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +84,64 @@ def test_generic_shirts_adult_child_sku_order() -> None:
     )
 
     assert sku == "PRINT-IMBSE-T01-RED-M"
+
+
+def test_generic_hoodies_config_and_child_sku_codes() -> None:
+    profile = load_profile("templates/HOODIE/Generic Hoodies/config.json")
+
+    assert profile["design_sku_map"] == {
+        "Adult Hoodie": "H01",
+        "Kids Hoodie": "H02",
+    }
+    assert profile["design_size_map"]["Adult Hoodie"] == [
+        "XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"
+    ]
+    assert profile["design_size_map"]["Kids Hoodie"] == [
+        "2 YRS", "3/4 YRS", "5/6 YRS", "7/8 YRS", "9/10 YRS", "11/13 YRS"
+    ]
+    assert "Brown" in profile["design_color_map"]["Adult Hoodie"]
+    assert "Brown" not in profile["design_color_map"]["Kids Hoodie"]
+
+    adult_sku = build_clear_child_sku(
+        profile,
+        "PRINT-IMBSE",
+        {"design": "Adult Hoodie", "color": "Red", "size": "M"},
+    )
+    kids_sku = build_clear_child_sku(
+        profile,
+        "PRINT-IMBSE",
+        {"design": "Kids Hoodie", "color": "Red", "size": "3/4 YRS"},
+    )
+
+    assert adult_sku == "PRINT-IMBSE-H01-RED-M"
+    assert kids_sku == "PRINT-IMBSE-H02-RED-34Y"
+
+    combinations = build_variant_combinations(
+        profile,
+        {
+            "design": ["Adult Hoodie", "Kids Hoodie"],
+            "color": profile["colors"],
+            "size": profile["sizes"],
+        },
+    )
+    assert len(combinations) == (22 * 10) + (21 * 6)
+    assert {
+        "design": "Kids Hoodie",
+        "color": "Brown",
+        "size": "3/4 YRS",
+    } not in combinations
+
+
+def test_uc503_standalone_profile_contract() -> None:
+    profile = load_profile("templates/HOODIE/UC503/config.json")
+
+    assert profile["sizes"] == [
+        "2 YRS", "3/4 YRS", "5/6 YRS", "7/8 YRS", "9/10 YRS", "11/13 YRS"
+    ]
+    assert "Brown" not in profile["colors"]
+    assert profile["brand_name"] == "Generic"
+    assert "stock_reference_key" not in profile
+    assert len(profile["colors"]) * len(profile["sizes"]) == 126
 
 
 def test_uc301_red_child_sku_uses_red_token() -> None:
