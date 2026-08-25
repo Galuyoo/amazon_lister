@@ -71,6 +71,9 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
         "parent_main_image_url": payload.get("parent_main_image_url", ""),
     }
 
+    if "mpn" in payload:
+        memory_payload["mpn"] = payload.get("mpn")
+
     original_finished_folder_name = str(payload.get("original_finished_folder_name", "")).strip()
     if original_finished_folder_name:
         memory_payload["original_finished_folder_name"] = original_finished_folder_name

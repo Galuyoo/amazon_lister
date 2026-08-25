@@ -29,6 +29,7 @@ from services.listing_memory import (
     normalize_variant_quantity,
 )
 from services.quality_checks import validate_listing_quality, words_repeated_at_least
+from services.staged_listing_tasks import create_staged_listing_task
 from services.stock_references import (
     MAX_AMAZON_SKU_LENGTH,
     build_child_sku_details,
@@ -50,8 +51,10 @@ from utils.dropbox_client import (
     list_folder_files,
     list_folder_names,
     create_folder_if_missing,
+    create_folder_exclusive,
     move_dropbox_folder,
     path_exists,
+    path_exists_strict,
     upload_text_file,
     upload_binary_file,
     download_text_file,
@@ -1732,6 +1735,22 @@ def save_listing_inputs_json_to_dropbox(
         }
 
     return json_path
+
+
+def create_staged_listing_task_in_dropbox(
+    *,
+    profile: dict[str, Any],
+    payload: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+) -> dict[str, Any]:
+    return create_staged_listing_task(
+        profile=profile,
+        payload=payload,
+        stage_root=dropbox_cfg.get("stage_root", ""),
+        destination_exists=path_exists_strict,
+        create_folder=create_folder_exclusive,
+        save_listing_memory=save_listing_inputs_json_to_dropbox,
+    )
 
 
 def load_listing_memory_from_dropbox(folder_path: str) -> dict[str, Any]:
@@ -7959,6 +7978,8 @@ def generate_approved_listing(
         parent_main_image_url=str(listing_memory.get("parent_main_image_url", "") or ""),
     )
     generation_payload = generation_prep["payload"]
+    if "mpn" in listing_memory:
+        generation_payload["mpn"] = listing_memory.get("mpn")
     original_finished_folder_name = str(listing_memory.get("original_finished_folder_name", "")).strip()
     if original_finished_folder_name:
         generation_payload["original_finished_folder_name"] = original_finished_folder_name
@@ -9461,12 +9482,21 @@ def main() -> None:
             reset_restaged_selection_state=reset_restaged_selection_state,
             list_folder_names=list_folder_names,
             scan_staged_folder_readiness=scan_staged_folder_readiness,
+            merchant_shipping_group_options=MERCHANT_SHIPPING_GROUP_OPTIONS,
+            sku_decoration_options=SKU_DECORATION_OPTIONS,
+            default_variant_quantity=DEFAULT_VARIANT_QUANTITY,
+            get_default_sku_decoration_code=get_default_sku_decoration_code,
+            sanitize_sku=sanitize_sku,
+            generate_unique_sku=generate_unique_sku,
+            get_default=get_default,
+            build_parent_sku_from_context=build_parent_sku_from_context,
+            create_listing_task=create_staged_listing_task_in_dropbox,
         )
 
     folder_source = st.session_state.get("active_folder_source_mode", folder_source)
     if folder_source == "Use staged folder":
         staged_folder_name = st.session_state.get("active_staged_folder_select") or active_staged_folder_name
-    else:
+    elif folder_source == "Restage finished folder":
         selected_finished_folder = st.session_state.get("active_finished_folder_select")
 
     listing_memory = dict(active_listing_memory)
@@ -10171,6 +10201,8 @@ def main() -> None:
     )
 
     generation_payload = generation_prep["payload"]
+    if "mpn" in listing_memory:
+        generation_payload["mpn"] = listing_memory.get("mpn")
     original_finished_folder_name = str(listing_memory.get("original_finished_folder_name", "")).strip()
     if original_finished_folder_name:
         generation_payload["original_finished_folder_name"] = original_finished_folder_name

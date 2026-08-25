@@ -17,6 +17,28 @@ def clean_up_client_module_after_tests():
     sys.modules.pop("utils.dropbox_client", None)
 
 
+def test_public_dropbox_helper_api_remains_importable() -> None:
+    from utils.dropbox_client import (
+        create_folder_exclusive,
+        create_folder_if_missing,
+        format_dropbox_error,
+        list_folder_names,
+        move_dropbox_folder,
+        path_exists,
+        upload_text_file,
+    )
+
+    assert all(callable(helper) for helper in (
+        format_dropbox_error,
+        list_folder_names,
+        create_folder_if_missing,
+        move_dropbox_folder,
+        path_exists,
+        upload_text_file,
+        create_folder_exclusive,
+    ))
+
+
 def test_dropbox_client_has_bounded_timeout_and_sdk_retries(monkeypatch) -> None:
     client = Mock()
     client.users_get_current_account.return_value = object()
@@ -81,3 +103,34 @@ def test_dropbox_error_messages_distinguish_auth_and_network_failures() -> None:
     assert "network" in dropbox_client.format_dropbox_error(
         ConnectionError("connection timed out")
     ).lower()
+
+
+def test_exclusive_folder_create_raises_on_existing_destination(monkeypatch) -> None:
+    client = Mock()
+    client.files_create_folder_v2.side_effect = ApiError(
+        "request-id",
+        "path/conflict/folder",
+        None,
+        None,
+    )
+    monkeypatch.setattr(dropbox_client, "get_dropbox_client", Mock(return_value=client))
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        dropbox_client.create_folder_exclusive("/Amazon/_stage/ADMIN-MPN-001")
+
+    client.files_create_folder_v2.assert_called_once_with(
+        "/Amazon/_stage/ADMIN-MPN-001",
+        autorename=False,
+    )
+
+
+def test_strict_path_check_only_treats_not_found_as_missing(monkeypatch) -> None:
+    client = Mock()
+    client.files_get_metadata.side_effect = ApiError("request-id", "path/not_found", None, None)
+    monkeypatch.setattr(dropbox_client, "get_dropbox_client", Mock(return_value=client))
+
+    assert dropbox_client.path_exists_strict("/Amazon/_stage/NEW-MPN") is False
+
+    client.files_get_metadata.side_effect = ApiError("request-id", None, None, None)
+    with pytest.raises(ValueError, match="path check failed"):
+        dropbox_client.path_exists_strict("/Amazon/_stage/NEW-MPN")

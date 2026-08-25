@@ -4,6 +4,247 @@ from typing import Any, Callable
 
 import streamlit as st
 
+from services.staged_listing_tasks import (
+    build_staged_listing_task_payload,
+    get_task_size_options,
+)
+
+
+FOLDER_SOURCE_OPTIONS = [
+    "Use staged folder",
+    "Restage finished folder",
+    "Create staged folder",
+]
+
+CREATE_TASK_WIDGET_KEYS = [
+    "create_task_mpn",
+    "create_task_price",
+    "create_task_quantity",
+    "create_task_shipping_group",
+    "create_task_sizes",
+    "create_task_sku_decoration_choice",
+    "create_task_custom_sku_decoration_code",
+    "create_task_manual_sku_listing_code",
+    "create_task_generated_sku_listing_code",
+    "create_task_profile_key",
+]
+
+
+def resolve_staged_task_sku_context(
+    *,
+    profile: dict[str, Any],
+    decoration_choice: str,
+    custom_decoration_code: str,
+    manual_listing_code: str,
+    generated_listing_code: str,
+    sanitize_sku: Callable[[str], str],
+    get_default: Callable[..., Any],
+    build_parent_sku_from_context: Callable[[dict[str, Any], str, str], str],
+) -> dict[str, str]:
+    sku_decoration_code = sanitize_sku(
+        custom_decoration_code if decoration_choice == "Custom" else decoration_choice
+    ).upper()
+    manual_sku_listing_code = sanitize_sku(manual_listing_code).upper()
+    generated_sku_listing_code = sanitize_sku(generated_listing_code).upper()
+    sku_listing_code = manual_sku_listing_code or generated_sku_listing_code
+    return {
+        "sku_decoration_code": sku_decoration_code,
+        "manual_sku_listing_code": manual_sku_listing_code,
+        "generated_sku_listing_code": generated_sku_listing_code,
+        "sku_listing_code": sku_listing_code,
+        "base_parent_sku": str(get_default(profile, "parent_sku", "")).strip(),
+        "parent_sku": build_parent_sku_from_context(
+            profile,
+            sku_decoration_code,
+            sku_listing_code,
+        ),
+    }
+
+
+def apply_created_task_ui_state(
+    *,
+    result: dict[str, Any],
+    session_state: Any,
+    refresh_cached_folder_names: Callable[..., None],
+    clear_cached_listing_memory: Callable[..., None],
+    clear_runtime_caches: Callable[..., None],
+    set_workflow_flash: Callable[..., None],
+) -> None:
+    folder_name = result["folder_name"]
+    refresh_cached_folder_names("stage")
+    clear_cached_listing_memory(result.get("folder_path", ""))
+    clear_runtime_caches()
+    session_state["stage_folder_list_loaded"] = True
+    session_state["auto_switch_to_staged"] = True
+    session_state["pending_staged_folder_selection_on_rerun"] = folder_name
+    session_state["reset_create_task_form_on_rerun"] = True
+    session_state["pending_perf_action_label"] = "create staged listing task"
+    set_workflow_flash(
+        "success",
+        f"Created listing task: {folder_name}",
+        f"Saved listing inputs to {result.get('listing_memory_path', '')}.",
+    )
+
+
+def render_create_staged_listing_task_form(
+    *,
+    profile: dict[str, Any],
+    dropbox_cfg: dict[str, Any],
+    merchant_shipping_group_options: list[str],
+    sku_decoration_options: list[str],
+    default_variant_quantity: int,
+    get_default_sku_decoration_code: Callable[..., str],
+    sanitize_sku: Callable[[str], str],
+    generate_unique_sku: Callable[[int], str],
+    get_default: Callable[..., Any],
+    build_parent_sku_from_context: Callable[[dict[str, Any], str, str], str],
+    create_listing_task: Callable[..., dict[str, Any]],
+    refresh_cached_folder_names: Callable[..., None],
+    clear_cached_listing_memory: Callable[..., None],
+    clear_runtime_caches: Callable[..., None],
+    set_workflow_flash: Callable[..., None],
+) -> None:
+    if st.session_state.pop("reset_create_task_form_on_rerun", False):
+        for key in CREATE_TASK_WIDGET_KEYS:
+            st.session_state.pop(key, None)
+
+    profile_key = str(profile.get("template_key") or profile.get("_slug") or "")
+    if st.session_state.get("create_task_profile_key") != profile_key:
+        for key in [
+            "create_task_sizes",
+            "create_task_sku_decoration_choice",
+            "create_task_custom_sku_decoration_code",
+        ]:
+            st.session_state.pop(key, None)
+        st.session_state["create_task_profile_key"] = profile_key
+
+    default_decoration_code = get_default_sku_decoration_code(profile)
+    st.session_state.setdefault(
+        "create_task_sku_decoration_choice",
+        default_decoration_code if default_decoration_code in sku_decoration_options else "Custom",
+    )
+    st.session_state.setdefault(
+        "create_task_custom_sku_decoration_code",
+        "" if default_decoration_code in sku_decoration_options else default_decoration_code,
+    )
+    st.session_state.setdefault(
+        "create_task_generated_sku_listing_code",
+        f"D{generate_unique_sku(5)}",
+    )
+    st.session_state.setdefault("create_task_quantity", default_variant_quantity)
+
+    size_options = get_task_size_options(profile)
+    with st.form("create_staged_listing_task_form"):
+        mpn = st.text_input("MPN", key="create_task_mpn")
+        price_col, quantity_col = st.columns(2)
+        with price_col:
+            price = st.number_input(
+                "Price",
+                min_value=0.0,
+                step=0.01,
+                format="%.2f",
+                key="create_task_price",
+            )
+        with quantity_col:
+            quantity = st.number_input(
+                "Quantity",
+                min_value=0,
+                step=1,
+                key="create_task_quantity",
+            )
+        merchant_shipping_group_name = st.selectbox(
+            "Merchant Shipping Group",
+            merchant_shipping_group_options,
+            key="create_task_shipping_group",
+            help="Leave empty to skip this Amazon field.",
+        )
+        selected_sizes = st.multiselect(
+            "Sizes",
+            size_options,
+            key="create_task_sizes",
+        )
+
+        st.subheader("SKU setup")
+        decoration_choice = st.selectbox(
+            "Decoration code",
+            sku_decoration_options,
+            key="create_task_sku_decoration_choice",
+        )
+        custom_decoration_code = ""
+        if decoration_choice == "Custom":
+            custom_decoration_code = st.text_input(
+                "Custom decoration code",
+                key="create_task_custom_sku_decoration_code",
+            )
+        manual_listing_code = st.text_input(
+            "Listing/design code (optional)",
+            key="create_task_manual_sku_listing_code",
+            placeholder=st.session_state["create_task_generated_sku_listing_code"],
+            help="Leave blank to use the generated unique design identifier.",
+        )
+
+        sku_context = resolve_staged_task_sku_context(
+            profile=profile,
+            decoration_choice=decoration_choice,
+            custom_decoration_code=custom_decoration_code,
+            manual_listing_code=manual_listing_code,
+            generated_listing_code=st.session_state["create_task_generated_sku_listing_code"],
+            sanitize_sku=sanitize_sku,
+            get_default=get_default,
+            build_parent_sku_from_context=build_parent_sku_from_context,
+        )
+        if manual_listing_code:
+            st.caption(f"Parent SKU: `{sku_context['parent_sku']}`")
+        else:
+            st.caption(f"Generated listing code: `{sku_context['generated_sku_listing_code']}`")
+            st.caption(f"Parent SKU: `{sku_context['parent_sku']}`")
+
+        create_clicked = st.form_submit_button(
+            "Create Listing Task",
+            key="create_staged_listing_task_btn",
+            width="stretch",
+        )
+
+    if not create_clicked:
+        return
+
+    task_result = build_staged_listing_task_payload(
+        profile=profile,
+        mpn=mpn,
+        price=price,
+        quantity=quantity,
+        merchant_shipping_group_name=merchant_shipping_group_name,
+        selected_sizes=selected_sizes,
+        assets_prepared_by=st.session_state.get("assets_prepared_by", ""),
+        **sku_context,
+    )
+    if not task_result["valid"]:
+        for error in task_result["errors"]:
+            st.error(error)
+        return
+
+    result = create_listing_task(
+        profile=profile,
+        payload=task_result["payload"],
+        dropbox_cfg=dropbox_cfg,
+    )
+    if result.get("status") != "Success":
+        if result.get("status") == "Partial failure":
+            refresh_cached_folder_names("stage")
+            st.session_state["stage_folder_list_loaded"] = True
+        st.error(result.get("error") or "Could not create the staged listing task.")
+        return
+
+    apply_created_task_ui_state(
+        result=result,
+        session_state=st.session_state,
+        refresh_cached_folder_names=refresh_cached_folder_names,
+        clear_cached_listing_memory=clear_cached_listing_memory,
+        clear_runtime_caches=clear_runtime_caches,
+        set_workflow_flash=set_workflow_flash,
+    )
+    st.rerun()
+
 
 def render_product_setup_controls(
     *,
@@ -30,6 +271,15 @@ def render_product_setup_controls(
     reset_restaged_selection_state: Callable[..., None],
     list_folder_names: Callable[[str], list[str]],
     scan_staged_folder_readiness: Callable[..., dict[str, Any]],
+    merchant_shipping_group_options: list[str],
+    sku_decoration_options: list[str],
+    default_variant_quantity: int,
+    get_default_sku_decoration_code: Callable[..., str],
+    sanitize_sku: Callable[[str], str],
+    generate_unique_sku: Callable[[int], str],
+    get_default: Callable[..., Any],
+    build_parent_sku_from_context: Callable[[dict[str, Any], str, str], str],
+    create_listing_task: Callable[..., dict[str, Any]],
 ) -> tuple[str, str | None, str | None]:
     staged_folder_name = None
     selected_finished_folder = None
@@ -38,11 +288,11 @@ def render_product_setup_controls(
     with top_left_col:
         st.subheader("Folder workflow")
         active_folder_source = st.session_state.get("active_folder_source_mode", "Use staged folder")
-        if active_folder_source in ["Use staged folder", "Restage finished folder"]:
+        if active_folder_source in FOLDER_SOURCE_OPTIONS:
             st.session_state.setdefault("folder_source_mode", active_folder_source)
         folder_source = st.radio(
             "Choose Folder Source",
-            ["Use staged folder", "Restage finished folder"],
+            FOLDER_SOURCE_OPTIONS,
             key="folder_source_mode",
         )
 
@@ -78,7 +328,7 @@ def render_product_setup_controls(
                     clear_cached_listing_memory()
                     clear_runtime_caches()
                     st.rerun()
-        else:
+        elif folder_source == "Restage finished folder":
             if not finished_folder_names:
                 finished_folder_names = get_cached_folder_names("finished", finished_root, "finished folders")
             active_finished_folder = st.session_state.get("active_finished_folder_select", "")
@@ -132,6 +382,24 @@ def render_product_setup_controls(
                 except Exception as exc:
                     st.error(f"Could not restage folder: {exc}")
                     st.stop()
+        else:
+            render_create_staged_listing_task_form(
+                profile=profile,
+                dropbox_cfg=dropbox_cfg,
+                merchant_shipping_group_options=merchant_shipping_group_options,
+                sku_decoration_options=sku_decoration_options,
+                default_variant_quantity=default_variant_quantity,
+                get_default_sku_decoration_code=get_default_sku_decoration_code,
+                sanitize_sku=sanitize_sku,
+                generate_unique_sku=generate_unique_sku,
+                get_default=get_default,
+                build_parent_sku_from_context=build_parent_sku_from_context,
+                create_listing_task=create_listing_task,
+                refresh_cached_folder_names=refresh_cached_folder_names,
+                clear_cached_listing_memory=clear_cached_listing_memory,
+                clear_runtime_caches=clear_runtime_caches,
+                set_workflow_flash=set_workflow_flash,
+            )
 
         with st.expander("Staged folder readiness", expanded=False):
             st.caption("Scan staged folders to see which ones are ready to generate.")

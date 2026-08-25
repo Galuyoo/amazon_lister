@@ -214,6 +214,16 @@ def test_existing_single_listing_json_shape_remains_compatible() -> None:
     assert "group_items" not in loaded
 
 
+def test_mpn_is_additive_and_preserved_exactly_when_present() -> None:
+    payload = sample_payload()
+    payload["mpn"] = "Admin MPN-001"
+
+    memory = build_listing_memory_payload(sample_profile(), payload)
+
+    assert memory["mpn"] == "Admin MPN-001"
+    assert "mpn" not in build_listing_memory_payload(sample_profile(), sample_payload())
+
+
 def test_importing_listing_memory_does_not_import_streamlit_or_dropbox() -> None:
     for module_name in list(sys.modules):
         if module_name == "services.listing_memory" or module_name.startswith("streamlit"):

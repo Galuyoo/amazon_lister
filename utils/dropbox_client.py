@@ -197,6 +197,27 @@ def create_folder_if_missing(path: str) -> None:
     raise ValueError(f"Dropbox folder create failed for {path}: {last_error}")
 
 
+def path_exists_strict(path: str) -> bool:
+    dbx = get_dropbox_client()
+    try:
+        dbx.files_get_metadata(path)
+        return True
+    except ApiError as exc:
+        if "not_found" in str(exc.error).lower():
+            return False
+        raise ValueError(f"Dropbox path check failed for {path}: {exc}") from exc
+
+
+def create_folder_exclusive(path: str) -> None:
+    dbx = get_dropbox_client()
+    try:
+        dbx.files_create_folder_v2(path, autorename=False)
+    except ApiError as exc:
+        if "conflict" in str(exc.error).lower():
+            raise FileExistsError(f"Dropbox folder already exists: {path}") from exc
+        raise ValueError(f"Dropbox folder create failed for {path}: {exc}") from exc
+
+
 def move_dropbox_folder(from_path: str, to_path: str) -> str:
     dbx = get_dropbox_client()
     try:
