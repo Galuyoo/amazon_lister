@@ -60,6 +60,9 @@ def test_create_task_form_has_stable_widgets_and_no_listing_content_key_changes(
     assert all(item in source for item in expected_widget_contract)
     assert "content_title_input_v3" not in source
     assert "content_bullet_1_v3" not in source
+    assert '"Create grouped Christmas task"' in source
+    assert 'key="create_task_grouped_christmas"' in source
+    assert "build_grouped_christmas_staged_task_payload(" in source
 
 
 def test_task_sku_context_reuses_passed_existing_helpers() -> None:

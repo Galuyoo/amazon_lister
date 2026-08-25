@@ -2,6 +2,7 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 import io
+import os
 import time
 import json
 import re
@@ -28,7 +29,12 @@ from services.listing_memory import (
     normalize_merchant_shipping_group,
     normalize_variant_quantity,
 )
+from services.christmas_project_grouping import (
+    build_christmas_group_image_manifest,
+    is_grouped_christmas_memory,
+)
 from services.quality_checks import validate_listing_quality, words_repeated_at_least
+from services.runtime_flags import dev_tools_enabled
 from services.staged_listing_tasks import create_staged_listing_task
 from services.stock_references import (
     MAX_AMAZON_SKU_LENGTH,
@@ -1750,6 +1756,38 @@ def create_staged_listing_task_in_dropbox(
         destination_exists=path_exists_strict,
         create_folder=create_folder_exclusive,
         save_listing_memory=save_listing_inputs_json_to_dropbox,
+    )
+
+
+def load_grouped_christmas_image_manifest_from_dropbox(
+    *,
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+    return build_christmas_group_image_manifest(
+        list_folder_files(folder_path),
+        profile,
+    )
+
+
+def save_grouped_christmas_draft_to_dropbox(
+    *,
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+    profile: dict[str, Any],
+    payload: dict[str, Any],
+) -> str:
+    if not is_grouped_christmas_memory(payload):
+        raise ValueError("Grouped Christmas draft memory is required.")
+    folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+    return save_listing_inputs_json_to_dropbox(profile, payload, folder_path)
+
+
+def load_grouped_christmas_test_content() -> str:
+    return (BASE_DIR / "samples" / "christmas_grouped_listing_content_test.json").read_text(
+        encoding="utf-8"
     )
 
 
@@ -9517,6 +9555,7 @@ def main() -> None:
                 "generic_keywords": listing_memory.get("generic_keywords", ""),
                 "selected_variants": listing_memory.get("selected_variants", {}),
                 "size_price_map": listing_memory.get("size_price_map", {}),
+                "listing_group": listing_memory.get("listing_group", {}),
                 "sku_decoration_code": listing_memory.get("sku_decoration_code", ""),
                 "manual_sku_listing_code": listing_memory.get("manual_sku_listing_code", ""),
                 "generated_sku_listing_code": listing_memory.get("generated_sku_listing_code", ""),
@@ -10002,6 +10041,23 @@ def main() -> None:
             build_parent_sku_from_context=build_parent_sku_from_context,
             render_variant_combinations_preview=render_variant_combinations_preview,
             build_size_price_inputs=build_size_price_inputs,
+            load_grouped_image_manifest=lambda folder_name, selected_profile: (
+                load_grouped_christmas_image_manifest_from_dropbox(
+                    dropbox_cfg=dropbox_cfg,
+                    staged_folder_name=folder_name,
+                    profile=selected_profile,
+                )
+            ),
+            save_grouped_draft=lambda selected_profile, payload, folder_name: (
+                save_grouped_christmas_draft_to_dropbox(
+                    dropbox_cfg=dropbox_cfg,
+                    staged_folder_name=folder_name,
+                    profile=selected_profile,
+                    payload=payload,
+                )
+            ),
+            dev_tools_enabled=dev_tools_enabled(os.environ, st.secrets),
+            load_grouped_test_json=load_grouped_christmas_test_content,
         )
         title = listing_content_result["title"]
         bullets = listing_content_result["bullets"]
@@ -10056,6 +10112,10 @@ def main() -> None:
     render_inline_loading_debug()
     render_rerun_cause_debug()
     save_debug_state_snapshot()
+
+    if ready_clicked and is_grouped_christmas_memory(listing_memory):
+        st.error("Grouped Christmas submission will be enabled after grouped review fan-out is available.")
+        st.stop()
 
     if not score_clicked and not ready_clicked:
         return

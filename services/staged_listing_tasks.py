@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import math
 from typing import Any, Callable
+from uuid import uuid4
 
+from services.christmas_project_grouping import (
+    build_christmas_group_selected_variants,
+    initialize_christmas_listing_group,
+)
 from services.listing_memory import (
     DEFAULT_HANDLING_TIME_DAYS,
     MERCHANT_SHIPPING_GROUP_OPTIONS,
@@ -32,6 +37,73 @@ def get_task_size_options(profile: dict[str, Any]) -> list[str]:
     return list(profile.get("sizes", []))
 
 
+def _validate_common_task_fields(
+    *,
+    profile: dict[str, Any],
+    mpn: Any,
+    quantity: Any,
+    merchant_shipping_group_name: Any,
+    sku_decoration_code: str,
+    sku_listing_code: str,
+    base_parent_sku: str,
+    parent_sku: str,
+) -> tuple[list[str], int, str]:
+    errors = validate_mpn(mpn)
+    try:
+        normalized_quantity = int(quantity)
+    except (TypeError, ValueError):
+        normalized_quantity = 0
+    if isinstance(quantity, float) and not quantity.is_integer():
+        normalized_quantity = 0
+    if normalized_quantity <= 0:
+        errors.append("Quantity must be greater than zero.")
+
+    shipping_group = str(merchant_shipping_group_name or "").strip()
+    if shipping_group not in MERCHANT_SHIPPING_GROUP_OPTIONS:
+        errors.append("Merchant Shipping Group must use an existing allowed option.")
+    if not str(sku_decoration_code or "").strip():
+        errors.append("Decoration code is required.")
+    if not str(sku_listing_code or "").strip():
+        errors.append("A generated or manual listing/design code is required.")
+    if not str(base_parent_sku or "").strip() or not str(parent_sku or "").strip():
+        errors.append("The selected garment template cannot produce a parent SKU.")
+    return errors, normalized_quantity, shipping_group
+
+
+def _build_common_task_payload(
+    *,
+    profile: dict[str, Any],
+    mpn: Any,
+    quantity: int,
+    merchant_shipping_group_name: str,
+    sku_decoration_code: str,
+    manual_sku_listing_code: str,
+    generated_sku_listing_code: str,
+    sku_listing_code: str,
+    base_parent_sku: str,
+    parent_sku: str,
+    assets_prepared_by: str,
+) -> dict[str, Any]:
+    return {
+        "mpn": mpn,
+        "title": "",
+        "bullet_points": [],
+        "product_description": "",
+        "generic_keywords": "",
+        "write_parent_starting_price": bool(profile.get("write_parent_starting_price", False)),
+        "quantity": quantity,
+        "handling_time_days": DEFAULT_HANDLING_TIME_DAYS,
+        "merchant_shipping_group_name": merchant_shipping_group_name,
+        "sku_decoration_code": str(sku_decoration_code or ""),
+        "manual_sku_listing_code": str(manual_sku_listing_code or ""),
+        "generated_sku_listing_code": str(generated_sku_listing_code or ""),
+        "sku_listing_code": str(sku_listing_code or ""),
+        "base_parent_sku": str(base_parent_sku or ""),
+        "parent_sku": str(parent_sku or ""),
+        "assets_prepared_by": str(assets_prepared_by or ""),
+    }
+
+
 def build_staged_listing_task_payload(
     *,
     profile: dict[str, Any],
@@ -48,7 +120,16 @@ def build_staged_listing_task_payload(
     parent_sku: str,
     assets_prepared_by: str = "",
 ) -> dict[str, Any]:
-    errors = validate_mpn(mpn)
+    errors, normalized_quantity, shipping_group = _validate_common_task_fields(
+        profile=profile,
+        mpn=mpn,
+        quantity=quantity,
+        merchant_shipping_group_name=merchant_shipping_group_name,
+        sku_decoration_code=sku_decoration_code,
+        sku_listing_code=sku_listing_code,
+        base_parent_sku=base_parent_sku,
+        parent_sku=parent_sku,
+    )
     available_sizes = get_task_size_options(profile)
     selected_sizes = list(selected_sizes or [])
 
@@ -59,53 +140,89 @@ def build_staged_listing_task_payload(
     if not math.isfinite(normalized_price) or normalized_price <= 0:
         errors.append("Price must be greater than zero.")
 
-    try:
-        normalized_quantity = int(quantity)
-    except (TypeError, ValueError):
-        normalized_quantity = 0
-    if isinstance(quantity, float) and not quantity.is_integer():
-        normalized_quantity = 0
-    if normalized_quantity <= 0:
-        errors.append("Quantity must be greater than zero.")
-
     if not selected_sizes:
         errors.append("Select at least one size.")
     elif any(size not in available_sizes for size in selected_sizes):
         errors.append("Selected sizes must come from the selected garment template.")
 
-    shipping_group = str(merchant_shipping_group_name or "").strip()
-    if shipping_group not in MERCHANT_SHIPPING_GROUP_OPTIONS:
-        errors.append("Merchant Shipping Group must use an existing allowed option.")
-
-    if not str(sku_decoration_code or "").strip():
-        errors.append("Decoration code is required.")
-    if not str(sku_listing_code or "").strip():
-        errors.append("A generated or manual listing/design code is required.")
-    if not str(base_parent_sku or "").strip() or not str(parent_sku or "").strip():
-        errors.append("The selected garment template cannot produce a parent SKU.")
-
-    payload = {
-        "mpn": mpn,
-        "title": "",
-        "bullet_points": [],
-        "product_description": "",
-        "generic_keywords": "",
+    payload = _build_common_task_payload(
+        profile=profile,
+        mpn=mpn,
+        quantity=normalized_quantity,
+        merchant_shipping_group_name=shipping_group,
+        sku_decoration_code=sku_decoration_code,
+        manual_sku_listing_code=manual_sku_listing_code,
+        generated_sku_listing_code=generated_sku_listing_code,
+        sku_listing_code=sku_listing_code,
+        base_parent_sku=base_parent_sku,
+        parent_sku=parent_sku,
+        assets_prepared_by=assets_prepared_by,
+    )
+    payload.update({
         "selected_variants": {"size": list(selected_sizes)},
         "size_price_map": {size: normalized_price for size in selected_sizes},
         "price_input_mode": "",
         "use_same_price_for_all_sizes": True,
-        "write_parent_starting_price": bool(profile.get("write_parent_starting_price", False)),
-        "quantity": normalized_quantity,
-        "handling_time_days": DEFAULT_HANDLING_TIME_DAYS,
-        "merchant_shipping_group_name": shipping_group,
-        "sku_decoration_code": str(sku_decoration_code or ""),
-        "manual_sku_listing_code": str(manual_sku_listing_code or ""),
-        "generated_sku_listing_code": str(generated_sku_listing_code or ""),
-        "sku_listing_code": str(sku_listing_code or ""),
-        "base_parent_sku": str(base_parent_sku or ""),
-        "parent_sku": str(parent_sku or ""),
-        "assets_prepared_by": str(assets_prepared_by or ""),
-    }
+    })
+    return {"valid": not errors, "errors": errors, "payload": payload}
+
+
+def build_grouped_christmas_staged_task_payload(
+    *,
+    profile: dict[str, Any],
+    mpn: Any,
+    quantity: Any,
+    merchant_shipping_group_name: Any,
+    sku_decoration_code: str,
+    manual_sku_listing_code: str,
+    generated_sku_listing_code: str,
+    sku_listing_code: str,
+    base_parent_sku: str,
+    parent_sku: str,
+    assets_prepared_by: str = "",
+    task_id: str = "",
+) -> dict[str, Any]:
+    errors, normalized_quantity, shipping_group = _validate_common_task_fields(
+        profile=profile,
+        mpn=mpn,
+        quantity=quantity,
+        merchant_shipping_group_name=merchant_shipping_group_name,
+        sku_decoration_code=sku_decoration_code,
+        sku_listing_code=sku_listing_code,
+        base_parent_sku=base_parent_sku,
+        parent_sku=parent_sku,
+    )
+    try:
+        selected_variants = build_christmas_group_selected_variants(profile)
+        listing_group = initialize_christmas_listing_group(
+            profile,
+            task_id or str(uuid4()),
+        )
+    except ValueError as exc:
+        errors.append(str(exc))
+        selected_variants = {}
+        listing_group = {}
+
+    payload = _build_common_task_payload(
+        profile=profile,
+        mpn=mpn,
+        quantity=normalized_quantity,
+        merchant_shipping_group_name=shipping_group,
+        sku_decoration_code=sku_decoration_code,
+        manual_sku_listing_code=manual_sku_listing_code,
+        generated_sku_listing_code=generated_sku_listing_code,
+        sku_listing_code=sku_listing_code,
+        base_parent_sku=base_parent_sku,
+        parent_sku=parent_sku,
+        assets_prepared_by=assets_prepared_by,
+    )
+    payload.update({
+        "selected_variants": selected_variants,
+        "size_price_map": {},
+        "price_input_mode": "Use one price per cluster",
+        "use_same_price_for_all_sizes": False,
+        "listing_group": listing_group,
+    })
     return {"valid": not errors, "errors": errors, "payload": payload}
 
 

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "group_type": "christmas_project",
+  "members": {
+    "tshirt": {
+      "schema_version": 1,
+      "title": "TEST DATA ONLY Custom Printed Christmas T-Shirt for Adult and Kids Sizes, Synthetic Development Listing with Festive Graphic, Everyday Comfort and Seasonal Gift Style",
+      "bullet_points": [
+        "TEST BULLET ONE - This synthetic development copy describes a comfortable Christmas T-shirt concept for adults and children while clearly indicating that the wording exists only for application testing.",
+        "TEST BULLET TWO - The fictional festive graphic is presented as a bright seasonal design suitable for checking titles, content persistence, grouped drafts and independent family editing behavior.",
+        "TEST BULLET THREE - Adult and kids size coverage is mentioned solely to exercise configured Christmas Project variants, validation limits and exact grouped listing content storage during development.",
+        "TEST BULLET FOUR - This deliberately artificial product statement provides enough text for Amazon listing validation without including customer information, confidential details or genuine commercial claims.",
+        "TEST BULLET FIVE - Use this sample to verify JSON upload, pasted content, validation, preview, grouped application, draft saving and reopening before replacing every field with approved production copy."
+      ],
+      "product_description": "TEST DESCRIPTION ONLY. This is synthetic development content for the grouped Christmas T-shirt listing and is not intended for publication. It exists to exercise the complete draft workflow while keeping every field obviously artificial and free from customer information. The sample represents adult and kids T-shirt designs in one future listing family, with configured colours and sizes still controlled by the Christmas Project profile. Developers can use the text to verify JSON parsing, validation, widget hydration, member isolation, draft persistence and reopening behavior. No statement in this paragraph should be interpreted as an approved product claim. The application must continue treating prices, inventory, images, SKU identity, shipping settings and workflow metadata as separate concerns. Applying this sample changes only the four listing-content fields and five bullet values for this family. Saving remains an explicit operator action after the preview has been reviewed. This additional synthetic wording extends the description beyond the recommended validation target so the development shortcut can exercise the normal success path without avoidable length warnings. The final production listing must replace all test wording with accurate, reviewed information derived from the actual garment and design. TEST END.",
+      "generic_keywords": "test synthetic christmas tshirt adult kids development fixture festive graphic grouped draft validation sample clothing seasonal content workflow preview"
+    },
+    "sweatshirt": {
+      "schema_version": 1,
+      "title": "TEST DATA ONLY Custom Printed Christmas Sweatshirt for Adult and Kids Sizes, Synthetic Development Listing with Festive Graphic, Warm Layer and Seasonal Gift Style",
+      "bullet_points": [
+        "TEST BULLET ONE - This synthetic development copy describes a Christmas sweatshirt concept for adults and children while clearly indicating that the wording exists only for application testing.",
+        "TEST BULLET TWO - The fictional festive graphic is presented as a bright seasonal design suitable for checking titles, content persistence, grouped drafts and independent family editing behavior.",
+        "TEST BULLET THREE - Adult and kids size coverage is mentioned solely to exercise configured Christmas Project variants, validation limits and exact grouped listing content storage during development.",
+        "TEST BULLET FOUR - This deliberately artificial product statement provides enough text for Amazon listing validation without including customer information, confidential details or genuine commercial claims.",
+        "TEST BULLET FIVE - Use this sample to verify JSON upload, pasted content, validation, preview, grouped application, draft saving and reopening before replacing every field with approved production copy."
+      ],
+      "product_description": "TEST DESCRIPTION ONLY. This is synthetic development content for the grouped Christmas sweatshirt listing and is not intended for publication. It exists to exercise the complete draft workflow while keeping every field obviously artificial and free from customer information. The sample represents adult and kids sweatshirt designs in one future listing family, with configured colours and sizes still controlled by the Christmas Project profile. Developers can use the text to verify JSON parsing, validation, widget hydration, member isolation, draft persistence and reopening behavior. No statement in this paragraph should be interpreted as an approved product claim. The application must continue treating prices, inventory, images, SKU identity, shipping settings and workflow metadata as separate concerns. Applying this sample changes only the four listing-content fields and five bullet values for this family. Saving remains an explicit operator action after the preview has been reviewed. This additional synthetic wording extends the description beyond the recommended validation target so the development shortcut can exercise the normal success path without avoidable length warnings. The final production listing must replace all test wording with accurate, reviewed information derived from the actual garment and design. TEST END.",
+      "generic_keywords": "test synthetic christmas sweatshirt adult kids development fixture festive graphic grouped draft validation sample clothing seasonal content workflow preview"
+    },
+    "hoodie": {
+      "schema_version": 1,
+      "title": "TEST DATA ONLY Custom Printed Christmas Hoodie for Adult and Kids Sizes, Synthetic Development Listing with Festive Graphic, Warm Layer and Seasonal Gift Style",
+      "bullet_points": [
+        "TEST BULLET ONE - This synthetic development copy describes a comfortable Christmas hoodie concept for adults and children while clearly indicating that the wording exists only for application testing.",
+        "TEST BULLET TWO - The fictional festive graphic is presented as a bright seasonal design suitable for checking titles, content persistence, grouped drafts and independent family editing behavior.",
+        "TEST BULLET THREE - Adult and kids size coverage is mentioned solely to exercise configured Christmas Project variants, validation limits and exact grouped listing content storage during development.",
+        "TEST BULLET FOUR - This deliberately artificial product statement provides enough text for Amazon listing validation without including customer information, confidential details or genuine commercial claims.",
+        "TEST BULLET FIVE - Use this sample to verify JSON upload, pasted content, validation, preview, grouped application, draft saving and reopening before replacing every field with approved production copy."
+      ],
+      "product_description": "TEST DESCRIPTION ONLY. This is synthetic development content for the grouped Christmas hoodie listing and is not intended for publication. It exists to exercise the complete draft workflow while keeping every field obviously artificial and free from customer information. The sample represents adult and kids hoodie designs in one future listing family, with Black and Navy coverage still controlled by the Christmas Project profile. Developers can use the text to verify JSON parsing, validation, widget hydration, member isolation, draft persistence and reopening behavior. No statement in this paragraph should be interpreted as an approved product claim. The application must continue treating prices, inventory, images, SKU identity, shipping settings and workflow metadata as separate concerns. Applying this sample changes only the four listing-content fields and five bullet values for this family. Saving remains an explicit operator action after the preview has been reviewed. This additional synthetic wording extends the description beyond the recommended validation target so the development shortcut can exercise the normal success path without avoidable length warnings. The final production listing must replace all test wording with accurate, reviewed information derived from the actual garment and design. TEST END.",
+      "generic_keywords": "test synthetic christmas hoodie adult kids development fixture festive graphic grouped draft validation sample clothing seasonal content workflow preview"
+    }
+  }
+}

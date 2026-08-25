@@ -4,7 +4,9 @@ from typing import Any, Callable
 
 import streamlit as st
 
+from services.christmas_project_grouping import validate_christmas_group_config
 from services.staged_listing_tasks import (
+    build_grouped_christmas_staged_task_payload,
     build_staged_listing_task_payload,
     get_task_size_options,
 )
@@ -27,6 +29,7 @@ CREATE_TASK_WIDGET_KEYS = [
     "create_task_manual_sku_listing_code",
     "create_task_generated_sku_listing_code",
     "create_task_profile_key",
+    "create_task_grouped_christmas",
 ]
 
 
@@ -114,6 +117,7 @@ def render_create_staged_listing_task_form(
             "create_task_sizes",
             "create_task_sku_decoration_choice",
             "create_task_custom_sku_decoration_code",
+            "create_task_grouped_christmas",
         ]:
             st.session_state.pop(key, None)
         st.session_state["create_task_profile_key"] = profile_key
@@ -134,35 +138,60 @@ def render_create_staged_listing_task_form(
     st.session_state.setdefault("create_task_quantity", default_variant_quantity)
 
     size_options = get_task_size_options(profile)
+    grouped_christmas_available = bool(
+        profile_key.upper() == "CP"
+        and not validate_christmas_group_config(profile)
+    )
+    grouped_christmas = False
+    if grouped_christmas_available:
+        grouped_christmas = st.checkbox(
+            "Create grouped Christmas task",
+            key="create_task_grouped_christmas",
+            help="Creates one staged draft for T-Shirt, Sweatshirt, and Hoodie listing content.",
+        )
+
     with st.form("create_staged_listing_task_form"):
         mpn = st.text_input("MPN", key="create_task_mpn")
-        price_col, quantity_col = st.columns(2)
-        with price_col:
-            price = st.number_input(
-                "Price",
-                min_value=0.0,
-                step=0.01,
-                format="%.2f",
-                key="create_task_price",
-            )
-        with quantity_col:
+        if grouped_christmas:
             quantity = st.number_input(
                 "Quantity",
                 min_value=0,
                 step=1,
                 key="create_task_quantity",
             )
+            st.caption(
+                "Creates T-Shirt, Sweatshirt, and Hoodie members using all configured CP designs, colours, and sizes. "
+                "Pricing is configured in Listing content."
+            )
+        else:
+            price_col, quantity_col = st.columns(2)
+            with price_col:
+                price = st.number_input(
+                    "Price",
+                    min_value=0.0,
+                    step=0.01,
+                    format="%.2f",
+                    key="create_task_price",
+                )
+            with quantity_col:
+                quantity = st.number_input(
+                    "Quantity",
+                    min_value=0,
+                    step=1,
+                    key="create_task_quantity",
+                )
         merchant_shipping_group_name = st.selectbox(
             "Merchant Shipping Group",
             merchant_shipping_group_options,
             key="create_task_shipping_group",
             help="Leave empty to skip this Amazon field.",
         )
-        selected_sizes = st.multiselect(
-            "Sizes",
-            size_options,
-            key="create_task_sizes",
-        )
+        if not grouped_christmas:
+            selected_sizes = st.multiselect(
+                "Sizes",
+                size_options,
+                key="create_task_sizes",
+            )
 
         st.subheader("SKU setup")
         decoration_choice = st.selectbox(
@@ -208,16 +237,26 @@ def render_create_staged_listing_task_form(
     if not create_clicked:
         return
 
-    task_result = build_staged_listing_task_payload(
-        profile=profile,
-        mpn=mpn,
-        price=price,
-        quantity=quantity,
-        merchant_shipping_group_name=merchant_shipping_group_name,
-        selected_sizes=selected_sizes,
-        assets_prepared_by=st.session_state.get("assets_prepared_by", ""),
-        **sku_context,
-    )
+    if grouped_christmas:
+        task_result = build_grouped_christmas_staged_task_payload(
+            profile=profile,
+            mpn=mpn,
+            quantity=quantity,
+            merchant_shipping_group_name=merchant_shipping_group_name,
+            assets_prepared_by=st.session_state.get("assets_prepared_by", ""),
+            **sku_context,
+        )
+    else:
+        task_result = build_staged_listing_task_payload(
+            profile=profile,
+            mpn=mpn,
+            price=price,
+            quantity=quantity,
+            merchant_shipping_group_name=merchant_shipping_group_name,
+            selected_sizes=selected_sizes,
+            assets_prepared_by=st.session_state.get("assets_prepared_by", ""),
+            **sku_context,
+        )
     if not task_result["valid"]:
         for error in task_result["errors"]:
             st.error(error)

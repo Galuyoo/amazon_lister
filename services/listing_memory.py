@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 
@@ -73,6 +74,9 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
 
     if "mpn" in payload:
         memory_payload["mpn"] = payload.get("mpn")
+
+    if isinstance(payload.get("listing_group"), dict):
+        memory_payload["listing_group"] = deepcopy(payload.get("listing_group", {}))
 
     original_finished_folder_name = str(payload.get("original_finished_folder_name", "")).strip()
     if original_finished_folder_name:

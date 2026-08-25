@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from copy import deepcopy
 from typing import Any
 
 
 SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 GARMENT_CODE_PATTERN = re.compile(r"^[A-Za-z]+\d+$")
+CHRISTMAS_GROUP_TYPE = "christmas_project"
+CHRISTMAS_GROUP_SCHEMA_VERSION = 1
 
 
 def _text(value: Any) -> str:
@@ -206,6 +209,184 @@ def derive_christmas_group_members(profile: dict[str, Any]) -> dict[str, dict[st
         }
 
     return derived
+
+
+def is_grouped_christmas_memory(listing_memory: dict[str, Any]) -> bool:
+    listing_group = listing_memory.get("listing_group")
+    return bool(
+        isinstance(listing_group, dict)
+        and listing_group.get("group_type") == CHRISTMAS_GROUP_TYPE
+    )
+
+
+def build_christmas_group_selected_variants(profile: dict[str, Any]) -> dict[str, list[str]]:
+    members = derive_christmas_group_members(profile)
+    dimensions = {
+        _text(dimension.get("name")).casefold(): list(dimension.get("options", []) or [])
+        for dimension in profile.get("variant_dimensions", [])
+        if isinstance(dimension, dict)
+    }
+
+    designs = [
+        design
+        for member in members.values()
+        for design in member["designs"]
+    ]
+    allowed_colours = {
+        colour.casefold()
+        for member in members.values()
+        for colour in member["allowed_colours"]
+    }
+    allowed_sizes = {
+        size.casefold()
+        for member in members.values()
+        for sizes in member["sizes_by_design"].values()
+        for size in sizes
+    }
+
+    colour_options = dimensions.get("color", dimensions.get("colour", []))
+    size_options = dimensions.get("size", [])
+    return {
+        "design": list(designs),
+        "color": [
+            _text(colour)
+            for colour in colour_options
+            if _text(colour).casefold() in allowed_colours
+        ],
+        "size": [
+            _text(size)
+            for size in size_options
+            if _text(size).casefold() in allowed_sizes
+        ],
+    }
+
+
+def normalize_christmas_group_member_content(content: Any) -> dict[str, Any]:
+    content = content if isinstance(content, dict) else {}
+    bullets = content.get("bullet_points", [])
+    bullets = list(bullets) if isinstance(bullets, list) else []
+    return {
+        "title": str(content.get("title", "") or ""),
+        "bullet_points": [str(value or "") for value in (bullets + ["", "", "", "", ""])[:5]],
+        "product_description": str(content.get("product_description", "") or ""),
+        "generic_keywords": str(content.get("generic_keywords", "") or ""),
+    }
+
+
+def validate_christmas_group_member_content(content: Any) -> list[str]:
+    normalized = normalize_christmas_group_member_content(content)
+    errors: list[str] = []
+    if not normalized["title"].strip():
+        errors.append("Title is required.")
+    if any(not bullet.strip() for bullet in normalized["bullet_points"]):
+        errors.append("All five bullet points are required.")
+    if not normalized["product_description"].strip():
+        errors.append("Product description is required.")
+    if not normalized["generic_keywords"].strip():
+        errors.append("Generic keywords are required.")
+    return errors
+
+
+def normalize_christmas_listing_group(
+    profile: dict[str, Any],
+    listing_group: Any,
+    *,
+    task_id: str = "",
+) -> dict[str, Any]:
+    members = derive_christmas_group_members(profile)
+    existing_group = deepcopy(listing_group) if isinstance(listing_group, dict) else {}
+    normalized_task_id = _text(existing_group.get("task_id") or task_id)
+    if not normalized_task_id:
+        raise ValueError("Christmas grouped listing task_id is required.")
+
+    existing_members = existing_group.get("members", {})
+    existing_members = existing_members if isinstance(existing_members, dict) else {}
+    normalized_members: dict[str, dict[str, Any]] = {}
+    for member_key, definition in members.items():
+        existing_member = existing_members.get(member_key, {})
+        existing_member = dict(existing_member) if isinstance(existing_member, dict) else {}
+        existing_member["designs"] = list(definition["designs"])
+        existing_member["content"] = normalize_christmas_group_member_content(
+            existing_member.get("content", {})
+        )
+        normalized_members[member_key] = existing_member
+
+    normalized_group = dict(existing_group)
+    normalized_group.update({
+        "schema_version": CHRISTMAS_GROUP_SCHEMA_VERSION,
+        "group_type": CHRISTMAS_GROUP_TYPE,
+        "task_id": normalized_task_id,
+        "members": normalized_members,
+    })
+    return normalized_group
+
+
+def initialize_christmas_listing_group(
+    profile: dict[str, Any],
+    task_id: str,
+) -> dict[str, Any]:
+    return normalize_christmas_listing_group(profile, {}, task_id=task_id)
+
+
+def normalize_christmas_grouped_draft(
+    profile: dict[str, Any],
+    payload: dict[str, Any],
+    member_contents: dict[str, Any],
+) -> dict[str, Any]:
+    normalized = deepcopy(dict(payload or {}))
+    listing_group = normalize_christmas_listing_group(
+        profile,
+        normalized.get("listing_group", {}),
+    )
+    for member_key, member in listing_group["members"].items():
+        if member_key in member_contents:
+            member["content"] = normalize_christmas_group_member_content(
+                member_contents[member_key]
+            )
+    normalized["listing_group"] = listing_group
+    normalized["selected_variants"] = build_christmas_group_selected_variants(profile)
+    return normalized
+
+
+def partition_christmas_group_price_map(
+    profile: dict[str, Any],
+    size_price_map: dict[str, Any],
+) -> dict[str, dict[str, float]]:
+    members = derive_christmas_group_members(profile)
+    design_owner = {
+        design.casefold(): (member_key, design)
+        for member_key, member in members.items()
+        for design in member["designs"]
+    }
+    partitioned: dict[str, dict[str, float]] = {
+        member_key: {}
+        for member_key in members
+    }
+
+    for raw_key, raw_price in dict(size_price_map or {}).items():
+        price_key = str(raw_key or "")
+        parts = price_key.split("||")
+        if len(parts) != 2:
+            continue
+        design, size = (_text(part) for part in parts)
+        owner = design_owner.get(design.casefold())
+        if not owner:
+            continue
+        member_key, canonical_design = owner
+        canonical_sizes = {
+            configured_size.casefold(): configured_size
+            for configured_size in members[member_key]["sizes_by_design"][canonical_design]
+        }
+        canonical_size = canonical_sizes.get(size.casefold())
+        if canonical_size is None:
+            continue
+        canonical_key = f"{canonical_design}||{canonical_size}"
+        try:
+            partitioned[member_key][canonical_key] = float(raw_price)
+        except (TypeError, ValueError):
+            partitioned[member_key][canonical_key] = 0.0
+
+    return partitioned
 
 
 def parse_christmas_group_image_filename(
