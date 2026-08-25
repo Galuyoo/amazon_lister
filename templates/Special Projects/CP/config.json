@@ -250,6 +250,39 @@
       "White"
     ]
   },
+  "grouped_listing": {
+    "schema_version": 1,
+    "group_type": "christmas_project",
+    "members": [
+      {
+        "key": "tshirt",
+        "label": "T-Shirt",
+        "folder_suffix": "TSHIRT",
+        "designs": [
+          "Adult T-Shirt",
+          "Kids T-Shirt"
+        ]
+      },
+      {
+        "key": "sweatshirt",
+        "label": "Sweatshirt",
+        "folder_suffix": "SWEATSHIRT",
+        "designs": [
+          "Adult Sweatshirt",
+          "Kids Sweatshirt"
+        ]
+      },
+      {
+        "key": "hoodie",
+        "label": "Hoodie",
+        "folder_suffix": "HOODIE",
+        "designs": [
+          "Adult Hoodie",
+          "Kids Hoodie"
+        ]
+      }
+    ]
+  },
   "design_field_overrides": {
     "Adult T-Shirt": {
       "feed_product_type": "shirt",
