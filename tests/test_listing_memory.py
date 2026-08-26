@@ -224,6 +224,24 @@ def test_mpn_is_additive_and_preserved_exactly_when_present() -> None:
     assert "mpn" not in build_listing_memory_payload(sample_profile(), sample_payload())
 
 
+def test_source_group_is_additive_and_preserved_without_mutation() -> None:
+    payload = sample_payload()
+    payload["source_group"] = {
+        "schema_version": 1,
+        "group_type": "christmas_project",
+        "task_id": "task-1",
+        "member_key": "hoodie",
+        "source_mpn": "CHRTST",
+        "materialization_hash": "abc123",
+    }
+
+    memory = build_listing_memory_payload(sample_profile(), payload)
+
+    assert memory["source_group"] == payload["source_group"]
+    assert memory["source_group"] is not payload["source_group"]
+    assert "source_group" not in build_listing_memory_payload(sample_profile(), sample_payload())
+
+
 def test_importing_listing_memory_does_not_import_streamlit_or_dropbox() -> None:
     for module_name in list(sys.modules):
         if module_name == "services.listing_memory" or module_name.startswith("streamlit"):

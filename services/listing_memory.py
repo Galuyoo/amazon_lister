@@ -78,6 +78,9 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
     if isinstance(payload.get("listing_group"), dict):
         memory_payload["listing_group"] = deepcopy(payload.get("listing_group", {}))
 
+    if isinstance(payload.get("source_group"), dict):
+        memory_payload["source_group"] = deepcopy(payload.get("source_group", {}))
+
     original_finished_folder_name = str(payload.get("original_finished_folder_name", "")).strip()
     if original_finished_folder_name:
         memory_payload["original_finished_folder_name"] = original_finished_folder_name
