@@ -258,3 +258,116 @@ def test_apply_helper_has_no_workflow_save_dropbox_or_openai_dependency() -> Non
     assert all(term not in source for term in ("dropbox", "save_listing", "submit", "workflow"))
     assert "import app" not in module_source
     assert "import openai" not in module_source
+
+
+class _Context:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+class _ImportStreamlit:
+    def __init__(self, raw_text: str, validation_record: dict) -> None:
+        self.raw_text = raw_text
+        self.session_state = {
+            listing_content.AI_VALIDATION_RESULT_KEY: validation_record,
+        }
+        self.downloads: list[dict] = []
+
+    def expander(self, *_args, **_kwargs):
+        return _Context()
+
+    def markdown(self, *_args, **_kwargs) -> None:
+        pass
+
+    def caption(self, *_args, **_kwargs) -> None:
+        pass
+
+    def write(self, *_args, **_kwargs) -> None:
+        pass
+
+    def text_area(self, label, *_args, **_kwargs):
+        if label == "Optional notes":
+            return "Temporary factual note"
+        return self.raw_text
+
+    def file_uploader(self, *_args, **_kwargs):
+        return None
+
+    def button(self, *_args, **_kwargs) -> bool:
+        return False
+
+    def download_button(self, label, **kwargs) -> None:
+        self.downloads.append({"label": label, **kwargs})
+
+    def error(self, *_args, **_kwargs) -> None:
+        pass
+
+    def warning(self, *_args, **_kwargs) -> None:
+        pass
+
+    def success(self, *_args, **_kwargs) -> None:
+        pass
+
+
+def test_normal_validated_download_uses_normalized_content_without_apply(
+    monkeypatch,
+) -> None:
+    payload = {
+        "schema_version": 1,
+        "title": f"  {'A' * 150}  ",
+        "bullet_points": [f"  {'B' * 150}  " for _ in range(5)],
+        "product_description": f"  {'D' * 1000}  ",
+        "generic_keywords": f"  {'keyword ' * 20}  ",
+    }
+    raw_text = json.dumps(payload)
+    source = listing_content.resolve_listing_content_import_source(raw_text)
+    result = listing_content.parse_listing_content_json(raw_text)
+    validation_record = {
+        "raw_text": raw_text,
+        "source_identity": source["source_identity"],
+        "result": result,
+    }
+    fake_streamlit = _ImportStreamlit(raw_text, validation_record)
+    sync_calls = []
+    monkeypatch.setattr(listing_content, "st", fake_streamlit)
+
+    listing_content.render_ai_listing_content_import(
+        content_editor_keys=EDITOR_KEYS,
+        sync_content_editor_to_canonical_state=lambda *values: sync_calls.append(values),
+        mpn="Bad / MPN",
+        sanitize_sku=lambda value: value.replace(" / ", "-"),
+    )
+
+    validated = next(item for item in fake_streamlit.downloads if item["label"] == "Download validated JSON")
+    assert json.loads(validated["data"]) == result["content"]
+    assert validated["data"] != raw_text
+    assert validated["file_name"] == "BAD-MPN_amazon_listing_content.json"
+    assert validated["mime"] == "application/json"
+    assert sync_calls == []
+    assert fake_streamlit.session_state == {
+        listing_content.AI_VALIDATION_RESULT_KEY: validation_record,
+    }
+
+
+def test_invalid_normal_json_has_no_validated_download(monkeypatch) -> None:
+    raw_text = "{invalid"
+    source = listing_content.resolve_listing_content_import_source(raw_text)
+    validation_record = {
+        "raw_text": raw_text,
+        "source_identity": source["source_identity"],
+        "result": listing_content.parse_listing_content_json(raw_text),
+    }
+    fake_streamlit = _ImportStreamlit(raw_text, validation_record)
+    monkeypatch.setattr(listing_content, "st", fake_streamlit)
+
+    listing_content.render_ai_listing_content_import(
+        content_editor_keys=EDITOR_KEYS,
+        sync_content_editor_to_canonical_state=lambda *_values: None,
+        mpn="NORMAL-001",
+        sanitize_sku=lambda value: value,
+    )
+
+    assert not any(item["label"] == "Download validated JSON" for item in fake_streamlit.downloads)

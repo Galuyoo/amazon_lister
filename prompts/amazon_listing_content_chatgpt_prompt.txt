@@ -6,6 +6,15 @@ The user will normally provide:
 
 Use the attached image as visual evidence and use the user's notes for additional factual details.
 
+CONTEXT
+
+MPN (internal identifier only): $MPN
+
+Optional factual notes:
+$OPTIONAL_NOTES
+
+The MPN is internal context and may be used for the requested output filename. Do not infer product meaning from the MPN and do not add the MPN to the JSON object unless it is naturally required in listing copy, which normally it is not. Optional notes provide additional factual context only and do not override clearly visible evidence without an explicit factual reason.
+
 IMPORTANT FACTUAL RULES
 
 - Do not invent product facts that are not visible in the image or explicitly supplied in the notes.
@@ -75,17 +84,7 @@ Requirements:
 - avoid needless duplicate words;
 - do not include claims that are unsupported by the image or notes.
 
-OUTPUT FORMAT
-
-Return ONLY valid JSON.
-
-Do not include:
-- Markdown code fences;
-- explanations;
-- introductions;
-- headings outside the JSON;
-- notes after the JSON;
-- extra JSON fields.
+OUTPUT OBJECT
 
 The object must contain exactly these five top-level fields:
 
@@ -103,6 +102,18 @@ The object must contain exactly these five top-level fields:
   "generic_keywords": "..."
 }
 
+FILE DELIVERY
+
+1. Build the exact valid JSON object above.
+2. Save it as a UTF-8 JSON file named:
+
+$OUTPUT_FILENAME
+
+3. Attach or provide that .json file as a downloadable file in your response.
+4. Do not merely display the full JSON as ordinary chat text when downloadable file creation is available.
+
+If this ChatGPT interface cannot create downloadable files, return ONLY valid JSON as the raw object and as the only response. Do not include Markdown code fences, explanations, introductions, headings, notes after the JSON or any extra text.
+
 Before returning the result, silently check:
 
 - schema_version is exactly 1;
@@ -115,6 +126,6 @@ Before returning the result, silently check:
 - generic_keywords does not exceed 249 UTF-8 bytes;
 - no brand names appear anywhere;
 - there are no extra JSON fields;
-- the final response is valid JSON only.
+- the downloadable file contains valid JSON only, or the fallback response is raw valid JSON only.
 
 If the image or notes do not provide enough factual detail, produce conservative generic copy based only on what is clearly supported rather than inventing specifications.

@@ -1,0 +1,164 @@
+You are generating Amazon UK listing content for one Christmas design used across three garment families: T-Shirt, Sweatshirt and Hoodie. Each family contains adult and kids size variants.
+
+The user will normally attach ONE representative design or mockup image with this prompt. That image may show only one garment family, such as a Navy sweatshirt.
+
+CONTEXT
+
+MPN (internal identifier only): $MPN
+
+Optional factual notes:
+$OPTIONAL_NOTES
+
+The MPN is internal context. Do not infer the product, design, theme or meaning from the MPN itself. Do not include the MPN in the output JSON or listing copy unless it is naturally necessary, which normally it is not.
+
+Use the attached mockup or design image as the primary visual source for the artwork, wording visible in the design, motifs, visual theme, placement and general appearance. Use optional notes only as additional factual context. If notes conflict with the image, prefer explicit factual notes for non-visual facts, but do not invent unsupported details. If no image is provided, use only useful facts in the notes. If neither source is informative, write conservative generic garment copy without inventing specific visual or design details.
+
+ALL THREE MEMBERS ARE REQUIRED
+
+Regardless of which garment is visible in the representative image, always generate all three members:
+
+- tshirt
+- sweatshirt
+- hoodie
+
+Never return only the garment family pictured in the image. For example, a sweatshirt mockup must still produce T-Shirt, Sweatshirt and Hoodie listing content.
+
+The physical construction of the pictured garment is evidence only for that pictured family. Do not transfer garment construction claims between families. If the image shows a crew-neck sweatshirt, the sweatshirt copy may mention clearly visible sweatshirt features, but do not claim that the T-Shirt has sweatshirt cuffs or long sleeves and do not copy sweatshirt construction claims into Hoodie content. Use conservative family-specific wording whenever construction is not supported.
+
+REPRESENTATIVE COLOUR
+
+The colour visible in the representative mockup is not the colour of the entire Amazon listing. Each family contains multiple application-managed colour variants. Keep grouped listing content colour-neutral by default. Do not put the representative colour in titles or describe the whole family as that colour, such as "Christmas Sweatshirt Navy" or "the navy sweatshirt", unless the optional notes explicitly state that the listing itself is single-colour.
+
+Do not output colour arrays or colour fields. Colours are managed by the application.
+
+ADULT AND KIDS COMBINED
+
+Each member combines Adult and Kids designs:
+
+- tshirt: Adult T-Shirt and Kids T-Shirt
+- sweatshirt: Adult Sweatshirt and Kids Sweatshirt
+- hoodie: Adult Hoodie and Kids Hoodie
+
+Write age-neutral family content that works for both Adult and Kids variants. Do not make a whole member adult-only or kids-only. Prefer neutral contexts such as family festive wear, seasonal outfits, Christmas events and gifting. Do not invent child-safety or age-suitability claims.
+
+PERSONALISATION
+
+Do not claim customisation or personalisation unless the optional notes explicitly state that the product or design is personalised. A representative image alone is not evidence of personalisation.
+
+IMPORTANT FACTUAL RULES
+
+- Do not invent product facts that are not visible in the image or explicitly supplied in the notes.
+- Do not invent licensing, brand, material, fabric composition, manufacturing, dimensions, weight, certification, safety, performance, origin, washing or technical claims.
+- Do not identify or mention visible trademarks, logos, competitor names or brand names.
+- Do not claim a decoration technique unless it is clearly visible or explicitly stated.
+- Write for Amazon UK using natural British English.
+- Avoid exaggerated, unverifiable, promotional or superlative wording such as "best", "number one" or "guaranteed".
+- Do not use emoji or decorative symbols.
+
+FAMILY-SPECIFIC CONTENT
+
+Create distinct listing content for exactly these three member keys, with no additional members:
+
+- tshirt: describe a T-Shirt.
+- sweatshirt: describe a Sweatshirt.
+- hoodie: describe a Hoodie.
+
+All three listings may share the same visible Christmas design or theme, but each title, bullets and description must accurately name and describe its own garment family. Do not blindly duplicate copy with only the garment name replaced.
+
+CONTENT REQUIREMENTS FOR EACH MEMBER
+
+Title:
+- maximum 200 characters;
+- target 150 to 200 characters, ideally 170 to 190;
+- readable and relevant rather than keyword-stuffed;
+- do not repeat the same individual word 3 or more times;
+- do not use "Mother's Day Gift" or unsupported promotional claims.
+
+Bullet points:
+- exactly 5 bullet points;
+- target at least 150 characters per bullet;
+- each bullet should communicate a different supported feature, use case or design detail;
+- use complete natural sentences and avoid repetitive structures.
+
+Product description:
+- maximum 2000 characters;
+- target 1000 to 2000 characters;
+- use readable paragraphs and avoid repeating the bullets word-for-word.
+
+Generic keywords:
+- maximum 249 UTF-8 bytes;
+- target at least 120 bytes while remaining relevant;
+- prefer plain ASCII words for predictable byte length;
+- do not include brands, competitors, punctuation without purpose or needless duplicates.
+
+LISTING CONTENT ONLY
+
+Do not output prices, colours, sizes, SKUs, MPN, quantity, shipping, workflow metadata or image filenames. The application handles those values separately.
+
+OUTPUT CONTRACT
+
+Return exactly this structure with schema_version equal to 1:
+
+{
+  "schema_version": 1,
+  "group_type": "christmas_project",
+  "members": {
+    "tshirt": {
+      "schema_version": 1,
+      "title": "...",
+      "bullet_points": [
+        "...",
+        "...",
+        "...",
+        "...",
+        "..."
+      ],
+      "product_description": "...",
+      "generic_keywords": "..."
+    },
+    "sweatshirt": {
+      "schema_version": 1,
+      "title": "...",
+      "bullet_points": [
+        "...",
+        "...",
+        "...",
+        "...",
+        "..."
+      ],
+      "product_description": "...",
+      "generic_keywords": "..."
+    },
+    "hoodie": {
+      "schema_version": 1,
+      "title": "...",
+      "bullet_points": [
+        "...",
+        "...",
+        "...",
+        "...",
+        "..."
+      ],
+      "product_description": "...",
+      "generic_keywords": "..."
+    }
+  }
+}
+
+Each member object must contain exactly these five fields and no others: schema_version, title, bullet_points, product_description and generic_keywords.
+
+FILE DELIVERY
+
+1. Build the exact valid grouped JSON object above.
+2. Save it as a UTF-8 JSON file named:
+
+$OUTPUT_FILENAME
+
+3. Attach or provide that .json file as a downloadable file in your response.
+4. Do not merely display the full JSON as ordinary chat text when downloadable file creation is available.
+
+The MPN is used only as filename/context information and must not be added to the JSON object.
+
+If this ChatGPT interface cannot create downloadable files, return ONLY valid JSON as the raw grouped object and as the only response. Do not include Markdown code fences, explanations, introductions, headings, notes after the JSON or any extra text.
+
+Before returning, silently verify that all three members are present even when the image shows only one garment, every member has exactly five bullets, all limits are satisfied, copy is colour-neutral unless notes explicitly require a single colour, copy works for combined Adult and Kids variants, no unsupported claims or prohibited fields were added, there are no extra members or fields, and the downloadable file contains valid JSON only or the fallback response is raw valid JSON only.

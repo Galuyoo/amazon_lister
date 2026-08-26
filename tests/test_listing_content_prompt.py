@@ -8,6 +8,7 @@ import pytest
 from services.listing_content_prompt import (
     CANONICAL_PROMPT_PATH,
     load_amazon_listing_content_prompt,
+    render_amazon_listing_content_prompt,
 )
 from ui import listing_content
 
@@ -35,6 +36,23 @@ def test_canonical_prompt_exists_and_contains_required_contract() -> None:
     assert "maximum 2000 characters" in prompt_lower
     assert "maximum 249 utf-8 bytes" in prompt_lower
     assert "do not invent product facts" in prompt_lower
+    assert "save it as a utf-8 json file" in prompt_lower
+    assert "attach or provide that .json file" in prompt_lower
+    assert "cannot create downloadable files" in prompt_lower
+    assert "return only valid json" in prompt_lower
+
+
+def test_normal_prompt_renderer_includes_context_and_download_filename() -> None:
+    prompt = render_amazon_listing_content_prompt(
+        "NORMAL-001",
+        "Use only the visible festive artwork.",
+        "NORMAL-001_amazon_listing_content.json",
+    )
+
+    assert "MPN (internal identifier only): NORMAL-001" in prompt
+    assert "Use only the visible festive artwork." in prompt
+    assert "NORMAL-001_amazon_listing_content.json" in prompt
+    assert "do not add the MPN to the JSON object" in prompt
 
 
 def test_prompt_loader_is_repository_relative() -> None:
@@ -66,6 +84,12 @@ def test_missing_prompt_file_does_not_crash_prompt_ui(monkeypatch: pytest.Monkey
         def caption(self, _value: str) -> None:
             pass
 
+        def write(self, _value: str) -> None:
+            pass
+
+        def text_area(self, *_args, **_kwargs) -> str:
+            return ""
+
         def error(self, value: str) -> None:
             self.errors.append(value)
 
@@ -76,11 +100,11 @@ def test_missing_prompt_file_does_not_crash_prompt_ui(monkeypatch: pytest.Monkey
     monkeypatch.setattr(listing_content, "st", fake_streamlit)
     monkeypatch.setattr(
         listing_content,
-        "load_amazon_listing_content_prompt",
-        lambda: (_ for _ in ()).throw(FileNotFoundError("missing")),
+        "render_amazon_listing_content_prompt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("missing")),
     )
 
-    listing_content.render_chatgpt_prompt_download()
+    listing_content.render_chatgpt_prompt_download(mpn="", sanitize_sku=lambda value: value)
 
     assert fake_streamlit.errors == ["The standard ChatGPT prompt is currently unavailable."]
 
@@ -94,6 +118,9 @@ def test_download_button_uses_canonical_prompt_and_stable_contract() -> None:
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "download_button"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "Download ChatGPT Prompt"
     )
     keywords = {keyword.arg: ast.unparse(keyword.value) for keyword in download.keywords}
 
@@ -108,6 +135,6 @@ def test_download_button_uses_canonical_prompt_and_stable_contract() -> None:
 def test_ui_loads_prompt_without_duplicating_canonical_instructions() -> None:
     module_source = Path(listing_content.__file__).read_text(encoding="utf-8")
 
-    assert "load_amazon_listing_content_prompt()" in module_source
+    assert "render_amazon_listing_content_prompt(" in module_source
     assert "Do not invent materials, fabric composition" not in module_source
     assert "Return ONLY valid JSON" not in module_source

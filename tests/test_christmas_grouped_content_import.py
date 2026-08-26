@@ -221,6 +221,8 @@ render_grouped_christmas_content_import(
     listing_group=listing_group,
     dev_tools_enabled=st.session_state.get('dev_enabled', False),
     load_grouped_test_json=lambda: Path(r'{sample_path}').read_text(encoding='utf-8'),
+    mpn='CHRTST',
+    sanitize_sku=lambda value: value,
 )
 """
     app = AppTest.from_string(app_source).run(timeout=30)
@@ -273,3 +275,154 @@ def test_real_sixteen_image_manifest_is_complete_without_unsupported_hoodie_colo
     assert len(manifest["members"]["hoodie"]["images_by_colour"]) == 2
     assert manifest["members"]["hoodie"]["missing_colours"] == []
     assert manifest["members"]["hoodie"]["allowed_colours"] == ["Black", "Navy"]
+
+
+def test_grouped_validated_download_uses_normalized_members_without_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Context:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeStreamlit:
+        def __init__(self, raw_text: str, validation_record: dict) -> None:
+            self.raw_text = raw_text
+            self.session_state = {
+                "grouped_christmas_validation_attempted": True,
+                "grouped_christmas_validation_result": validation_record,
+            }
+            self.downloads: list[dict] = []
+
+        def expander(self, *_args, **_kwargs):
+            return Context()
+
+        def markdown(self, *_args, **_kwargs) -> None:
+            pass
+
+        def caption(self, *_args, **_kwargs) -> None:
+            pass
+
+        def write(self, *_args, **_kwargs) -> None:
+            pass
+
+        def text_area(self, label, *_args, **_kwargs):
+            return "Temporary note" if label == "Optional notes" else self.raw_text
+
+        def file_uploader(self, *_args, **_kwargs):
+            return None
+
+        def button(self, *_args, **_kwargs) -> bool:
+            return False
+
+        def download_button(self, label, **kwargs) -> None:
+            self.downloads.append({"label": label, **kwargs})
+
+        def error(self, *_args, **_kwargs) -> None:
+            pass
+
+        def warning(self, *_args, **_kwargs) -> None:
+            pass
+
+        def success(self, *_args, **_kwargs) -> None:
+            pass
+
+    raw_text = load_sample_text()
+    source = resolve_listing_content_import_source(raw_text)
+    result = parse_christmas_grouped_content_json(raw_text)
+    validation_record = {
+        "raw_text": raw_text,
+        "source_identity": source["source_identity"],
+        "result": result,
+    }
+    fake_streamlit = FakeStreamlit(raw_text, validation_record)
+    monkeypatch.setattr("ui.listing_content.st", fake_streamlit)
+
+    render_grouped_christmas_content_import(
+        profile=load_cp_profile(),
+        listing_group=initialize_christmas_listing_group(load_cp_profile(), "task-1"),
+        dev_tools_enabled=False,
+        load_grouped_test_json=load_sample_text,
+        mpn="Bad / MPN",
+        sanitize_sku=lambda value: value.replace(" / ", "-"),
+    )
+
+    validated = next(item for item in fake_streamlit.downloads if item["label"] == "Download validated JSON")
+    assert json.loads(validated["data"]) == {
+        "schema_version": 1,
+        "group_type": "christmas_project",
+        "members": result["members"],
+    }
+    assert validated["file_name"] == "BAD-MPN_christmas_grouped_listing_content.json"
+    assert validated["mime"] == "application/json"
+    assert GROUPED_DRAFT_GROUP_KEY not in fake_streamlit.session_state
+
+
+def test_invalid_grouped_json_has_no_validated_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Context:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeStreamlit:
+        def __init__(self) -> None:
+            raw_text = "{invalid"
+            source = resolve_listing_content_import_source(raw_text)
+            self.raw_text = raw_text
+            self.session_state = {
+                "grouped_christmas_validation_attempted": True,
+                "grouped_christmas_validation_result": {
+                    "raw_text": raw_text,
+                    "source_identity": source["source_identity"],
+                    "result": parse_christmas_grouped_content_json(raw_text),
+                },
+            }
+            self.downloads: list[dict] = []
+
+        def expander(self, *_args, **_kwargs):
+            return Context()
+
+        def markdown(self, *_args, **_kwargs) -> None:
+            pass
+
+        def caption(self, *_args, **_kwargs) -> None:
+            pass
+
+        def write(self, *_args, **_kwargs) -> None:
+            pass
+
+        def text_area(self, label, *_args, **_kwargs):
+            return "" if label == "Optional notes" else self.raw_text
+
+        def file_uploader(self, *_args, **_kwargs):
+            return None
+
+        def button(self, *_args, **_kwargs) -> bool:
+            return False
+
+        def download_button(self, label, **kwargs) -> None:
+            self.downloads.append({"label": label, **kwargs})
+
+        def error(self, *_args, **_kwargs) -> None:
+            pass
+
+        def warning(self, *_args, **_kwargs) -> None:
+            pass
+
+    fake_streamlit = FakeStreamlit()
+    monkeypatch.setattr("ui.listing_content.st", fake_streamlit)
+
+    render_grouped_christmas_content_import(
+        profile=load_cp_profile(),
+        listing_group=initialize_christmas_listing_group(load_cp_profile(), "task-1"),
+        dev_tools_enabled=False,
+        load_grouped_test_json=load_sample_text,
+        mpn="CHRTST",
+        sanitize_sku=lambda value: value,
+    )
+
+    assert not any(item["label"] == "Download validated JSON" for item in fake_streamlit.downloads)

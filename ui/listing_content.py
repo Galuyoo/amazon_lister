@@ -8,8 +8,9 @@ from typing import Any, Callable
 import streamlit as st
 
 from services.listing_content_import import parse_listing_content_json
-from services.listing_content_prompt import load_amazon_listing_content_prompt
+from services.listing_content_prompt import render_amazon_listing_content_prompt
 from services.christmas_grouped_content_import import parse_christmas_grouped_content_json
+from services.christmas_grouped_content_prompt import render_christmas_grouped_content_prompt
 from services.christmas_project_grouping import (
     build_christmas_group_selected_variants,
     derive_christmas_group_members,
@@ -25,6 +26,8 @@ AI_VALIDATE_BUTTON_KEY = "listing_content_ai_validate_btn"
 AI_APPLY_BUTTON_KEY = "listing_content_ai_apply_btn"
 AI_JSON_UPLOAD_KEY = "listing_content_ai_json_upload"
 AI_PROMPT_DOWNLOAD_KEY = "listing_content_ai_prompt_download_btn"
+AI_PROMPT_NOTES_KEY = "listing_content_ai_prompt_notes"
+AI_VALIDATED_JSON_DOWNLOAD_KEY = "listing_content_ai_validated_json_download_btn"
 GROUPED_EDITOR_CONTEXT_KEY = "grouped_christmas_editor_context"
 GROUPED_PRICING_CONTEXT_KEY = "grouped_christmas_pricing_context"
 GROUPED_DRAFT_GROUP_KEY = "grouped_christmas_draft_listing_group"
@@ -34,6 +37,10 @@ GROUPED_VALIDATION_RESULT_KEY = "grouped_christmas_validation_result"
 GROUPED_VALIDATE_BUTTON_KEY = "grouped_christmas_validate_btn"
 GROUPED_APPLY_BUTTON_KEY = "grouped_christmas_apply_btn"
 GROUPED_TEST_CONTENT_BUTTON_KEY = "grouped_christmas_load_test_content_btn"
+GROUPED_PROMPT_NOTES_KEY = "grouped_christmas_prompt_notes"
+GROUPED_PROMPT_DOWNLOAD_KEY = "grouped_christmas_prompt_download_btn"
+GROUPED_VALIDATED_JSON_DOWNLOAD_KEY = "grouped_christmas_validated_json_download_btn"
+GROUPED_VALIDATION_ATTEMPTED_KEY = "grouped_christmas_validation_attempted"
 
 
 def get_grouped_christmas_content_widget_keys(member_key: str) -> dict[str, Any]:
@@ -44,6 +51,19 @@ def get_grouped_christmas_content_widget_keys(member_key: str) -> dict[str, Any]
         "description": f"{prefix}_product_description",
         "keywords": f"{prefix}_generic_keywords",
     }
+
+
+def _validated_json_text(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+
+def _json_download_filename(
+    mpn: str,
+    suffix: str,
+    sanitize_sku: Callable[[str], str],
+) -> str:
+    safe_mpn = sanitize_sku(str(mpn or "")).upper()
+    return f"{safe_mpn}_{suffix}" if safe_mpn else suffix
 
 
 def initialize_grouped_christmas_editor_state(
@@ -168,8 +188,43 @@ def render_grouped_christmas_content_import(
     listing_group: dict[str, Any],
     dev_tools_enabled: bool,
     load_grouped_test_json: Callable[[], str],
+    mpn: str,
+    sanitize_sku: Callable[[str], str],
 ) -> None:
     with st.expander("Import grouped listing content", expanded=False):
+        st.markdown("**Generate with ChatGPT**")
+        st.caption(
+            "Use one representative design/mockup image with this prompt to generate all three: "
+            "T-Shirt, Sweatshirt and Hoodie, even if the image shows only one garment."
+        )
+        st.write(f"MPN: {mpn or '[not available]'}")
+        prompt_notes = st.text_area(
+            "Optional notes",
+            key=GROUPED_PROMPT_NOTES_KEY,
+        )
+        safe_mpn = sanitize_sku(mpn).upper() or "CHRISTMAS"
+        grouped_json_filename = _json_download_filename(
+            mpn,
+            "christmas_grouped_listing_content.json",
+            sanitize_sku,
+        )
+        try:
+            prompt_text = render_christmas_grouped_content_prompt(
+                mpn,
+                prompt_notes,
+                output_filename=grouped_json_filename,
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            st.error(f"The grouped ChatGPT prompt is currently unavailable: {exc}")
+        else:
+            st.download_button(
+                "Download grouped ChatGPT prompt",
+                data=prompt_text,
+                file_name=f"{safe_mpn}_christmas_grouped_chatgpt_prompt.txt",
+                mime="text/plain",
+                key=GROUPED_PROMPT_DOWNLOAD_KEY,
+            )
+
         if dev_tools_enabled and st.button(
             "Load test Christmas content",
             key=GROUPED_TEST_CONTENT_BUTTON_KEY,
@@ -185,6 +240,7 @@ def render_grouped_christmas_content_import(
                     "result": parse_christmas_grouped_content_json(test_source["raw_text"]),
                 }
                 st.session_state[GROUPED_VALIDATION_RESULT_KEY] = validation_record
+                st.session_state[GROUPED_VALIDATION_ATTEMPTED_KEY] = True
                 if apply_validated_grouped_christmas_content(
                     validation_record=validation_record,
                     current_raw_text=test_source["raw_text"],
@@ -217,6 +273,7 @@ def render_grouped_christmas_content_import(
             key=GROUPED_VALIDATE_BUTTON_KEY,
             disabled=bool(source_error),
         ):
+            st.session_state[GROUPED_VALIDATION_ATTEMPTED_KEY] = True
             st.session_state[GROUPED_VALIDATION_RESULT_KEY] = {
                 "raw_text": import_source["raw_text"],
                 "source_identity": import_source["source_identity"],
@@ -224,6 +281,8 @@ def render_grouped_christmas_content_import(
             }
 
         if source_error:
+            return
+        if not st.session_state.get(GROUPED_VALIDATION_ATTEMPTED_KEY, False):
             return
         validation_record = st.session_state.get(GROUPED_VALIDATION_RESULT_KEY)
         if not isinstance(validation_record, dict):
@@ -258,6 +317,23 @@ def render_grouped_christmas_content_import(
             st.write(content["title"])
             for index, bullet in enumerate(content["bullet_points"], start=1):
                 st.write(f"{index}. {bullet}")
+
+        normalized_grouped_json = {
+            "schema_version": 1,
+            "group_type": "christmas_project",
+            "members": result["members"],
+        }
+        st.download_button(
+            "Download validated JSON",
+            data=_validated_json_text(normalized_grouped_json),
+            file_name=_json_download_filename(
+                mpn,
+                "christmas_grouped_listing_content.json",
+                sanitize_sku,
+            ),
+            mime="application/json",
+            key=GROUPED_VALIDATED_JSON_DOWNLOAD_KEY,
+        )
 
         if st.button(
             "Apply to all 3 families",
@@ -314,6 +390,8 @@ def render_grouped_christmas_listing_content(
         listing_group=listing_group,
         dev_tools_enabled=dev_tools_enabled,
         load_grouped_test_json=load_grouped_test_json,
+        mpn=str(listing_memory.get("mpn", "") or staged_folder_name or "").strip(),
+        sanitize_sku=sanitize_sku,
     )
 
     st.subheader("Listing content by family")
@@ -616,15 +694,33 @@ def apply_validated_listing_content(
     return True
 
 
-def render_chatgpt_prompt_download() -> None:
+def render_chatgpt_prompt_download(
+    *,
+    mpn: str,
+    sanitize_sku: Callable[[str], str],
+) -> None:
     st.markdown("**Generate with ChatGPT**")
     st.caption(
         "Upload your product/design image to ChatGPT, use our standard prompt, "
         "then upload or paste the returned JSON below."
     )
+    st.write(f"MPN: {mpn or '[not available]'}")
+    prompt_notes = st.text_area(
+        "Optional notes",
+        key=AI_PROMPT_NOTES_KEY,
+    )
+    output_filename = _json_download_filename(
+        mpn,
+        "amazon_listing_content.json",
+        sanitize_sku,
+    )
     try:
-        prompt_text = load_amazon_listing_content_prompt()
-    except (OSError, UnicodeError):
+        prompt_text = render_amazon_listing_content_prompt(
+            mpn,
+            prompt_notes,
+            output_filename=output_filename,
+        )
+    except (OSError, UnicodeError, ValueError):
         st.error("The standard ChatGPT prompt is currently unavailable.")
         return
 
@@ -641,9 +737,11 @@ def render_ai_listing_content_import(
     *,
     content_editor_keys: dict[str, Any],
     sync_content_editor_to_canonical_state: Callable[..., None],
+    mpn: str,
+    sanitize_sku: Callable[[str], str],
 ) -> None:
     with st.expander("Import AI listing content", expanded=False):
-        render_chatgpt_prompt_download()
+        render_chatgpt_prompt_download(mpn=mpn, sanitize_sku=sanitize_sku)
 
         uploaded_file = st.file_uploader(
             "Upload JSON file",
@@ -716,6 +814,18 @@ def render_ai_listing_content_import(
         st.write(content.get("product_description", ""))
         st.markdown("**Search terms**")
         st.write(content.get("generic_keywords", ""))
+
+        st.download_button(
+            "Download validated JSON",
+            data=_validated_json_text(content),
+            file_name=_json_download_filename(
+                mpn,
+                "amazon_listing_content.json",
+                sanitize_sku,
+            ),
+            mime="application/json",
+            key=AI_VALIDATED_JSON_DOWNLOAD_KEY,
+        )
 
         apply_clicked = st.button(
             "Apply to Listing Content",
@@ -848,9 +958,17 @@ def render_listing_content(
                 st.session_state["applied_listing_memory_widget_key_v2"] = current_memory_fingerprint
             st.success("Filled editable content fields from listing_inputs.json.")
 
+    if str(profile.get("template_key", "") or "").strip().upper() == "CP":
+        st.info(
+            "This is the standard single-listing content importer. Select a grouped Christmas "
+            "staged task to generate T-Shirt, Sweatshirt and Hoodie content together."
+        )
+
     render_ai_listing_content_import(
         content_editor_keys=CONTENT_EDITOR_KEYS,
         sync_content_editor_to_canonical_state=sync_content_editor_to_canonical_state,
+        mpn=str(listing_memory.get("mpn", "") or staged_folder_name or "").strip(),
+        sanitize_sku=sanitize_sku,
     )
 
     title = st.text_input(
