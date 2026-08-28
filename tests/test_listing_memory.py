@@ -242,6 +242,31 @@ def test_source_group_is_additive_and_preserved_without_mutation() -> None:
     assert "source_group" not in build_listing_memory_payload(sample_profile(), sample_payload())
 
 
+def test_group_submission_ledger_is_additive_and_preserved_without_mutation() -> None:
+    payload = sample_payload()
+    payload["listing_group"] = {
+        "schema_version": 1,
+        "group_type": "christmas_project",
+        "task_id": "task-1",
+        "members": {"hoodie": {"title": "Hoodie title"}},
+    }
+    payload["group_submission"] = {
+        "schema_version": 1,
+        "task_id": "task-1",
+        "state": "publishing",
+        "children": {"hoodie": {"status": "published_pending"}},
+        "last_error": "",
+    }
+
+    memory = build_listing_memory_payload(sample_profile(), payload)
+
+    assert memory["listing_group"] == payload["listing_group"]
+    assert memory["listing_group"] is not payload["listing_group"]
+    assert memory["group_submission"] == payload["group_submission"]
+    assert memory["group_submission"] is not payload["group_submission"]
+    assert "group_submission" not in build_listing_memory_payload(sample_profile(), sample_payload())
+
+
 def test_importing_listing_memory_does_not_import_streamlit_or_dropbox() -> None:
     for module_name in list(sys.modules):
         if module_name == "services.listing_memory" or module_name.startswith("streamlit"):

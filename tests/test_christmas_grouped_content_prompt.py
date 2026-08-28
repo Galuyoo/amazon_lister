@@ -59,6 +59,8 @@ def test_prompt_has_exact_grouped_output_contract() -> None:
     assert "chrtst_christmas_grouped_listing_content.json" in prompt
     assert "cannot create downloadable files" in prompt
     assert "raw grouped object and as the only response" in prompt
+    assert "maximum 150 characters for the base title" in prompt
+    assert "never use the full amazon 200-character allowance" in prompt
 
 
 def test_prompt_always_generates_all_three_from_one_representative_garment() -> None:
@@ -236,6 +238,8 @@ def _render_listing_content_kwargs(listing_memory: dict, profile: dict) -> dict:
         "active_profile": profile,
         "profile": profile,
         "memory_fingerprint": "",
+        "grouped_state_load_error": "",
+        "listing_memory_location": "stage",
         "CONTENT_EDITOR_KEYS": {},
         "MERCHANT_SHIPPING_GROUP_OPTIONS": [],
         "SKU_DECORATION_OPTIONS": [],
@@ -271,6 +275,72 @@ def test_grouped_saved_memory_routes_only_to_grouped_prompt_ui(monkeypatch: pyte
     assert result == grouped_result
     assert grouped_renderer.call_args.kwargs["listing_memory"] is memory
     ordinary_renderer.assert_not_called()
+
+
+def test_group_submission_does_not_disable_grouped_routing(monkeypatch: pytest.MonkeyPatch) -> None:
+    profile = {"template_key": "CP"}
+    memory = {
+        "mpn": "CHRTST",
+        "listing_group": {"group_type": "christmas_project"},
+        "group_submission": {"state": "released"},
+    }
+    grouped_renderer = Mock(return_value={"route": "grouped"})
+    monkeypatch.setattr(listing_content, "render_grouped_christmas_listing_content", grouped_renderer)
+    monkeypatch.setattr(
+        listing_content,
+        "render_ai_listing_content_import",
+        Mock(side_effect=AssertionError("ordinary importer must not render")),
+    )
+
+    result = listing_content.render_listing_content(
+        **_render_listing_content_kwargs(memory, profile)
+    )
+
+    assert result == {"route": "grouped"}
+    assert grouped_renderer.call_args.kwargs["listing_memory"] is memory
+
+
+def test_expected_grouped_state_load_error_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    profile = {"template_key": "CP"}
+    grouped_renderer = Mock(side_effect=AssertionError("malformed grouped state must not render"))
+    ordinary_renderer = Mock(side_effect=AssertionError("ordinary importer must not render"))
+    error = Mock()
+    monkeypatch.setattr(listing_content.st, "error", error)
+    monkeypatch.setattr(listing_content, "render_grouped_christmas_listing_content", grouped_renderer)
+    monkeypatch.setattr(listing_content, "render_ai_listing_content_import", ordinary_renderer)
+    kwargs = _render_listing_content_kwargs({}, profile)
+    kwargs["grouped_state_load_error"] = "Grouped Christmas state could not be loaded."
+
+    result = listing_content.render_listing_content(**kwargs)
+
+    assert result["ready_clicked"] is False
+    assert result["score_clicked"] is False
+    error.assert_called_once_with("Grouped Christmas state could not be loaded.")
+    grouped_renderer.assert_not_called()
+    ordinary_renderer.assert_not_called()
+
+
+def test_archived_grouped_memory_is_not_described_as_active_staged_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = {"template_key": "CP"}
+    memory = {
+        "mpn": "CHRTST",
+        "listing_group": {"group_type": "christmas_project"},
+        "group_submission": {"state": "released"},
+    }
+    active_context = Mock()
+    grouped_renderer = Mock(return_value={"route": "archived"})
+    monkeypatch.setattr(listing_content, "render_grouped_christmas_listing_content", grouped_renderer)
+    kwargs = _render_listing_content_kwargs(memory, profile)
+    kwargs["listing_memory_location"] = "archive"
+    kwargs["render_active_product_context"] = active_context
+
+    result = listing_content.render_listing_content(**kwargs)
+
+    assert result == {"route": "archived"}
+    assert active_context.call_args.kwargs["active_staged_folder_name"] == ""
+    assert grouped_renderer.call_args.kwargs["listing_memory_location"] == "archive"
 
 
 def test_cp_without_grouped_memory_keeps_legacy_importer_with_clear_notice(

@@ -50,8 +50,9 @@ def test_generic_shirts_config_contract() -> None:
     assert profile["design_sku_map"]["Adult T-Shirt"] == "T01"
     assert profile["design_sku_map"]["Kids T-Shirt"] == "T02"
     assert profile["color_sku_map"]["Red"] == "RED"
-    assert profile["size_code_map"]["1-2 Years"] == "1Y"
-    assert profile["size_code_map"]["12-13 Years"] == "12Y"
+    assert profile["size_code_map"]["1Yr"] == "1Y"
+    assert profile["size_code_map"]["11Yr"] == "11Y"
+    assert profile["saved_variant_value_aliases"]["size"]["1-2 Years"] == "1Yr"
 
 
 def test_generic_shirts_kids_child_sku_order() -> None:
@@ -63,7 +64,7 @@ def test_generic_shirts_kids_child_sku_order() -> None:
         {
             "design": "Kids T-Shirt",
             "color": "Red",
-            "size": "1-2 Years",
+            "size": "1Yr",
         },
     )
 
@@ -142,6 +143,59 @@ def test_uc503_standalone_profile_contract() -> None:
     assert profile["brand_name"] == "Generic"
     assert "stock_reference_key" not in profile
     assert len(profile["colors"]) * len(profile["sizes"]) == 126
+
+
+def test_generic_sweatshirts_config_and_child_sku_codes() -> None:
+    profile = load_profile("templates/HOODIE/Generic Sweatshirts/config.json")
+
+    assert profile["design_sku_map"] == {
+        "Adult Sweatshirt": "S01",
+        "Kids Sweatshirt": "S02",
+    }
+    assert profile["design_size_map"]["Adult Sweatshirt"] == [
+        "XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL"
+    ]
+    assert profile["design_size_map"]["Kids Sweatshirt"] == [
+        "2 YRS", "3/4 YRS", "5/6 YRS", "7/8 YRS", "9/10 YRS", "11/13 YRS"
+    ]
+    assert "Brown" not in profile["design_color_map"]["Adult Sweatshirt"]
+    assert "Brown" in profile["design_color_map"]["Kids Sweatshirt"]
+    assert "Charcoal" in profile["design_color_map"]["Adult Sweatshirt"]
+    assert "Charcoal" not in profile["design_color_map"]["Kids Sweatshirt"]
+
+    adult_sku = build_clear_child_sku(
+        profile,
+        "PRINT-IMBSE",
+        {"design": "Adult Sweatshirt", "color": "Red", "size": "M"},
+    )
+    kids_sku = build_clear_child_sku(
+        profile,
+        "PRINT-IMBSE",
+        {"design": "Kids Sweatshirt", "color": "Red", "size": "3/4 YRS"},
+    )
+
+    assert adult_sku == "PRINT-IMBSE-S01-RED-M"
+    assert kids_sku == "PRINT-IMBSE-S02-RED-34Y"
+
+    combinations = build_variant_combinations(
+        profile,
+        {
+            "design": ["Adult Sweatshirt", "Kids Sweatshirt"],
+            "color": profile["colors"],
+            "size": profile["sizes"],
+        },
+    )
+    assert len(combinations) == (16 * 10) + (13 * 6)
+    assert {
+        "design": "Adult Sweatshirt",
+        "color": "Brown",
+        "size": "M",
+    } not in combinations
+    assert {
+        "design": "Kids Sweatshirt",
+        "color": "Charcoal",
+        "size": "3/4 YRS",
+    } not in combinations
 
 
 def test_uc301_red_child_sku_uses_red_token() -> None:

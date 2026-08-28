@@ -75,11 +75,22 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
     if "mpn" in payload:
         memory_payload["mpn"] = payload.get("mpn")
 
+    staged_folder_name = str(payload.get("staged_folder_name", "") or "").strip()
+    if staged_folder_name:
+        memory_payload["staged_folder_name"] = staged_folder_name
+
     if isinstance(payload.get("listing_group"), dict):
         memory_payload["listing_group"] = deepcopy(payload.get("listing_group", {}))
 
     if isinstance(payload.get("source_group"), dict):
         memory_payload["source_group"] = deepcopy(payload.get("source_group", {}))
+
+    if isinstance(payload.get("group_submission"), dict):
+        memory_payload["group_submission"] = deepcopy(payload.get("group_submission", {}))
+
+    parent_sku_override = str(payload.get("parent_sku_override", "") or "").strip()
+    if parent_sku_override:
+        memory_payload["parent_sku_override"] = parent_sku_override
 
     original_finished_folder_name = str(payload.get("original_finished_folder_name", "")).strip()
     if original_finished_folder_name:

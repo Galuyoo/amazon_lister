@@ -3,6 +3,8 @@
   "ready_root": "/Spoofy/Portrait/1. uk office folder/1_Salahs_test_file/1_Amazon/ready",
   "approved_root": "/Spoofy/Portrait/1. uk office folder/1_Salahs_test_file/1_Amazon/approved",
   "finished_root": "/Spoofy/Portrait/1. uk office folder/1_Salahs_test_file/1_Amazon/finished",
+  "grouped_preparation_root": "/Spoofy/Portrait/1. uk office folder/1_Salahs_test_file/1_Amazon/_grouped_preparation",
+  "grouped_archive_root": "/Spoofy/Portrait/1. uk office folder/1_Salahs_test_file/1_Amazon/_grouped_archive",
   "resource_root": "/Spoofy/Portrait/1. uk office folder/1_Salahs_test_file/1_Amazon/1_Resources",
   "general_resource_images": [
     "EMB1.png",

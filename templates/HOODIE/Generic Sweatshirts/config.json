@@ -1,0 +1,299 @@
+{
+  "label": "Generic Sweatshirts",
+  "template_key": "GENERIC_SWEATSHIRTS",
+  "parent_sku": "SWEATSHIRT",
+  "include_template_code_in_parent_sku": false,
+  "feed_product_type": "sweatshirt",
+  "recommended_browse_nodes": "1731011031",
+  "product_category": "apparel",
+  "brand_name": "sloganitto",
+  "manufacturer": "Generic",
+  "department_name": "unisex-adult",
+  "target_gender": "unisex",
+  "age_range_description": "Adult",
+  "material_type": "50% Polyester, 50% Cotton",
+  "style_name": "Custom Printed Sweatshirt",
+  "variation_theme": "SizeColor",
+  "condition_type": "New",
+  "item_type_name": "Sweatshirt",
+  "theme": "Custom Printed Sweatshirt",
+  "neck_style": "Crew Neck",
+  "fit_type": "Regular",
+  "weave_type": "Knit",
+  "sleeve_type": "Long Sleeve",
+  "variant_dimensions": [
+    {
+      "name": "design",
+      "label": "Garment",
+      "options": [
+        "Adult Sweatshirt",
+        "Kids Sweatshirt"
+      ]
+    },
+    {
+      "name": "color",
+      "label": "Colour",
+      "options": [
+        "Black",
+        "Bottle Green",
+        "Brown",
+        "Charcoal",
+        "French Navy",
+        "Heather Grey",
+        "Kelly Green",
+        "Maroon",
+        "Navy",
+        "Pink",
+        "Purple",
+        "Red",
+        "Royal",
+        "Sapphire Blue",
+        "Sky",
+        "White",
+        "Yellow"
+      ]
+    },
+    {
+      "name": "size",
+      "label": "Size",
+      "options": [
+        "XS",
+        "S",
+        "M",
+        "L",
+        "XL",
+        "2XL",
+        "3XL",
+        "4XL",
+        "5XL",
+        "6XL",
+        "2 YRS",
+        "3/4 YRS",
+        "5/6 YRS",
+        "7/8 YRS",
+        "9/10 YRS",
+        "11/13 YRS"
+      ]
+    }
+  ],
+  "colors": [
+    "Black",
+    "Bottle Green",
+    "Brown",
+    "Charcoal",
+    "French Navy",
+    "Heather Grey",
+    "Kelly Green",
+    "Maroon",
+    "Navy",
+    "Pink",
+    "Purple",
+    "Red",
+    "Royal",
+    "Sapphire Blue",
+    "Sky",
+    "White",
+    "Yellow"
+  ],
+  "sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL",
+    "2XL",
+    "3XL",
+    "4XL",
+    "5XL",
+    "6XL",
+    "2 YRS",
+    "3/4 YRS",
+    "5/6 YRS",
+    "7/8 YRS",
+    "9/10 YRS",
+    "11/13 YRS"
+  ],
+  "design_sku_position": "after_parent",
+  "design_sku_map": {
+    "Adult Sweatshirt": "S01",
+    "Kids Sweatshirt": "S02"
+  },
+  "design_size_map": {
+    "Adult Sweatshirt": [
+      "XS",
+      "S",
+      "M",
+      "L",
+      "XL",
+      "2XL",
+      "3XL",
+      "4XL",
+      "5XL",
+      "6XL"
+    ],
+    "Kids Sweatshirt": [
+      "2 YRS",
+      "3/4 YRS",
+      "5/6 YRS",
+      "7/8 YRS",
+      "9/10 YRS",
+      "11/13 YRS"
+    ]
+  },
+  "design_color_map": {
+    "Adult Sweatshirt": [
+      "Black",
+      "Bottle Green",
+      "Charcoal",
+      "French Navy",
+      "Heather Grey",
+      "Kelly Green",
+      "Maroon",
+      "Navy",
+      "Pink",
+      "Purple",
+      "Red",
+      "Royal",
+      "Sapphire Blue",
+      "Sky",
+      "White",
+      "Yellow"
+    ],
+    "Kids Sweatshirt": [
+      "Black",
+      "Bottle Green",
+      "Brown",
+      "Heather Grey",
+      "Kelly Green",
+      "Maroon",
+      "Navy",
+      "Purple",
+      "Red",
+      "Royal",
+      "Sky",
+      "White",
+      "Yellow"
+    ]
+  },
+  "size_display_prefix_by_design": {
+    "Adult Sweatshirt": "Adult Sweatshirt",
+    "Kids Sweatshirt": "Kids Sweatshirt"
+  },
+  "size_code_map": {
+    "XS": "XS",
+    "S": "S",
+    "M": "M",
+    "L": "L",
+    "XL": "XL",
+    "2XL": "2XL",
+    "3XL": "3XL",
+    "4XL": "4XL",
+    "5XL": "5XL",
+    "6XL": "6XL",
+    "2 YRS": "2Y",
+    "3/4 YRS": "34Y",
+    "5/6 YRS": "56Y",
+    "7/8 YRS": "78Y",
+    "9/10 YRS": "910Y",
+    "11/13 YRS": "1113Y"
+  },
+  "color_sku_map": {
+    "Black": "BLAC",
+    "Bottle Green": "BOTT",
+    "Brown": "BRWN",
+    "Charcoal": "CHAR",
+    "French Navy": "FNAV",
+    "Heather Grey": "HGRE",
+    "Kelly Green": "KGRN",
+    "Maroon": "MARN",
+    "Navy": "NAVY",
+    "Pink": "PINK",
+    "Purple": "PURP",
+    "Red": "RED",
+    "Royal": "ROYL",
+    "Sapphire Blue": "SAPP",
+    "Sky": "SKYY",
+    "White": "WHIT",
+    "Yellow": "YELL"
+  },
+  "design_field_overrides": {
+    "Adult Sweatshirt": {
+      "style_name": "Custom Printed Adult Sweatshirt",
+      "theme": "Custom Printed Adult Sweatshirt",
+      "apparel_size_system": "UK",
+      "apparel_size_class": "Alpha",
+      "apparel_body_type": "Regular",
+      "apparel_height_type": "Regular",
+      "age_range_description": "Adult",
+      "department_name": "unisex-adult",
+      "target_gender": "unisex"
+    },
+    "Kids Sweatshirt": {
+      "style_name": "Custom Printed Kids Sweatshirt",
+      "theme": "Custom Printed Kids Sweatshirt",
+      "apparel_size_system": "UK",
+      "apparel_size_class": "Age",
+      "apparel_body_type": "Regular",
+      "apparel_height_type": "",
+      "age_range_description": "Child",
+      "department_name": "unisex-child",
+      "target_gender": "unisex"
+    }
+  },
+  "extra_parent_fields": {
+    "outer_material_type": "Synthetic",
+    "material_type1": "50% Polyester, 50% Cotton",
+    "fabric_type": "Polycotton",
+    "weave_type": "Knit",
+    "apparel_size_system": "UK",
+    "apparel_size_class": "Alpha",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
+  },
+  "extra_child_fields": {
+    "outer_material_type": "Synthetic",
+    "material_type1": "50% Polyester, 50% Cotton",
+    "fabric_type": "Polycotton",
+    "weave_type": "Knit",
+    "apparel_body_type": "Regular",
+    "apparel_height_type": "Regular",
+    "batteries_required": "FALSE",
+    "are_batteries_included": "FALSE",
+    "supplier_declared_dg_hz_regulation1": "Not Applicable"
+  },
+  "field_aliases": {
+    "apparel_size_system": [
+      "shirt_size_system",
+      "tops_size_system",
+      "outerwear_size_system"
+    ],
+    "apparel_size_class": [
+      "shirt_size_class",
+      "tops_size_class",
+      "outerwear_size_class"
+    ],
+    "apparel_size": [
+      "shirt_size",
+      "tops_size_value",
+      "outerwear_size_value"
+    ],
+    "apparel_body_type": [
+      "shirt_body_type",
+      "tops_body_type",
+      "outerwear_body_type"
+    ],
+    "apparel_height_type": [
+      "shirt_height_type",
+      "tops_height_type",
+      "outerwear_height_type"
+    ],
+    "outer_material_type": [
+      "material_type",
+      "material_type1",
+      "fabric_type"
+    ]
+  }
+}

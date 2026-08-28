@@ -18,6 +18,7 @@ from services.christmas_project_grouping import (
     normalize_christmas_grouped_draft,
     normalize_christmas_listing_group,
 )
+from services.christmas_group_publication import is_group_submission_locked
 
 
 AI_JSON_INPUT_KEY = "listing_content_ai_json_input"
@@ -41,6 +42,25 @@ GROUPED_PROMPT_NOTES_KEY = "grouped_christmas_prompt_notes"
 GROUPED_PROMPT_DOWNLOAD_KEY = "grouped_christmas_prompt_download_btn"
 GROUPED_VALIDATED_JSON_DOWNLOAD_KEY = "grouped_christmas_validated_json_download_btn"
 GROUPED_VALIDATION_ATTEMPTED_KEY = "grouped_christmas_validation_attempted"
+
+
+def clear_grouped_christmas_session_state(
+    session_state: MutableMapping[str, Any],
+) -> None:
+    for key in list(session_state):
+        key_text = str(key)
+        if key_text.startswith(
+            ("grouped_christmas_", "cluster_price_", "price_", "size_cluster_price_")
+        ):
+            session_state.pop(key, None)
+
+    for key in [
+        "current_size_price_map",
+        "design_size_pricing_mode",
+        "use_same_price_for_all_sizes",
+        "shared_price_all_sizes",
+    ]:
+        session_state.pop(key, None)
 
 
 def get_grouped_christmas_content_widget_keys(member_key: str) -> dict[str, Any]:
@@ -352,6 +372,7 @@ def render_grouped_christmas_content_import(
 def render_grouped_christmas_listing_content(
     *,
     staged_folder_name: str | None,
+    listing_memory_location: str,
     listing_memory: dict[str, Any],
     profile: dict[str, Any],
     merchant_shipping_group_options: list[str],
@@ -366,14 +387,10 @@ def render_grouped_christmas_listing_content(
     build_size_price_inputs: Callable[..., dict[str, float]],
     load_grouped_image_manifest: Callable[..., dict[str, Any]],
     save_grouped_draft: Callable[..., str],
+    submit_grouped_listing: Callable[..., dict[str, Any]],
     dev_tools_enabled: bool,
     load_grouped_test_json: Callable[[], str],
 ) -> dict[str, Any]:
-    listing_group = initialize_grouped_christmas_editor_state(
-        profile=profile,
-        listing_memory=listing_memory,
-        session_state=st.session_state,
-    )
     members = derive_christmas_group_members(profile)
     selected_variants = build_christmas_group_selected_variants(profile)
 
@@ -384,6 +401,63 @@ def render_grouped_christmas_listing_content(
         with column:
             st.markdown(f"**{member['label']}**")
             st.write(" / ".join(member["designs"]))
+
+    if listing_memory_location == "archive":
+        ledger = listing_memory.get("group_submission", {})
+        publication_state = str(ledger.get("state", "") or "unknown").title()
+        st.info(f"Archived grouped source: {staged_folder_name or listing_memory.get('mpn', '-')}")
+        st.write(f"Publication status: {publication_state}")
+        st.caption("This archived grouped source is read-only. Its released listings are available in Review Queue.")
+        return _grouped_listing_content_result_from_memory(
+            listing_memory,
+            selected_variants,
+        )
+
+    if is_group_submission_locked(listing_memory):
+        ledger = listing_memory["group_submission"]
+        st.warning(
+            "Grouped publication has started. This source is locked against draft changes "
+            "and is available only for recovery."
+        )
+        recovery_columns = st.columns(3)
+        for column, (member_key, member) in zip(recovery_columns, members.items()):
+            ledger_child = ledger.get("children", {}).get(member_key, {})
+            with column:
+                st.markdown(f"**{member['label']}**")
+                st.write(ledger_child.get("destination_folder", "-"))
+                st.write(ledger_child.get("status", "pending"))
+        all_released = all(
+            ledger.get("children", {}).get(member_key, {}).get("status") == "released"
+            for member_key in members
+        )
+        if st.button(
+            "Finish grouped archive" if all_released else "Resume grouped submission",
+            key="grouped_christmas_submit_for_review_btn",
+            width="stretch",
+            disabled=not bool(staged_folder_name),
+        ):
+            try:
+                result = submit_grouped_listing(
+                    profile,
+                    listing_memory,
+                    staged_folder_name or "",
+                )
+                if result.get("success"):
+                    st.rerun()
+                for error in result.get("errors", []):
+                    st.error(error.get("message", str(error)))
+            except Exception as exc:
+                st.error(f"Could not resume grouped Christmas submission: {exc}")
+        return _grouped_listing_content_result_from_memory(
+            listing_memory,
+            selected_variants,
+        )
+
+    listing_group = initialize_grouped_christmas_editor_state(
+        profile=profile,
+        listing_memory=listing_memory,
+        session_state=st.session_state,
+    )
 
     render_grouped_christmas_content_import(
         profile=profile,
@@ -566,6 +640,14 @@ def render_grouped_christmas_listing_content(
     )
     st.session_state[GROUPED_DRAFT_GROUP_KEY] = draft_payload["listing_group"]
 
+    st.subheader("Submit 3 listings for review")
+    submission_columns = st.columns(3)
+    for column, member in zip(submission_columns, members.values()):
+        with column:
+            st.markdown(f"**{member['label']}**")
+            st.write(f"{staged_folder_name or '-'}-{member['folder_suffix']}")
+            st.write(f"{len(member['allowed_colours'])} images")
+
     action_columns = st.columns(2)
     save_clicked = action_columns[0].button(
         "Save Draft",
@@ -573,13 +655,16 @@ def render_grouped_christmas_listing_content(
         width="stretch",
         disabled=not bool(staged_folder_name),
     )
-    action_columns[1].button(
-        "Submit for Review",
+    ledger = listing_memory.get("group_submission")
+    resume_submission = isinstance(ledger, dict) and ledger.get("state") in {
+        "preparing", "publishing", "failed", "released",
+    }
+    submit_clicked = action_columns[1].button(
+        "Resume grouped submission" if resume_submission else "Submit 3 listings for review",
         key="grouped_christmas_submit_for_review_btn",
         width="stretch",
-        disabled=True,
+        disabled=not bool(staged_folder_name),
     )
-    st.info("Grouped Christmas submission will be enabled after grouped review fan-out is available.")
     if save_clicked:
         try:
             saved_path = save_grouped_draft(
@@ -590,6 +675,20 @@ def render_grouped_christmas_listing_content(
             st.success(f"Saved grouped draft to {saved_path}.")
         except Exception as exc:
             st.error(f"Could not save grouped draft: {exc}")
+
+    if submit_clicked:
+        try:
+            result = submit_grouped_listing(
+                profile,
+                draft_payload,
+                staged_folder_name or "",
+            )
+            if result.get("success"):
+                st.rerun()
+            for error in result.get("errors", []):
+                st.error(error.get("message", str(error)))
+        except Exception as exc:
+            st.error(f"Could not submit grouped Christmas listings: {exc}")
 
     return {
         "title": str(listing_memory.get("title", "") or ""),
@@ -605,6 +704,32 @@ def render_grouped_christmas_listing_content(
         "parent_sku_for_listing": parent_sku_for_listing,
         "size_price_map": size_price_map,
         "quantity": quantity,
+        "score_clicked": False,
+        "ready_clicked": False,
+        "content_debug_container": st.container(),
+        "content_preflight_container": st.container(),
+        "content_action_result_container": st.container(),
+    }
+
+
+def _grouped_listing_content_result_from_memory(
+    listing_memory: dict[str, Any],
+    selected_variants: dict[str, list[str]],
+) -> dict[str, Any]:
+    return {
+        "title": str(listing_memory.get("title", "") or ""),
+        "bullets": list(listing_memory.get("bullet_points", []) or []),
+        "product_description": str(listing_memory.get("product_description", "") or ""),
+        "generic_keywords": str(listing_memory.get("generic_keywords", "") or ""),
+        "handling_time_days": listing_memory.get("handling_time_days", 2),
+        "selected_variants": selected_variants,
+        "sku_decoration_code": str(listing_memory.get("sku_decoration_code", "") or ""),
+        "manual_sku_listing_code": str(listing_memory.get("manual_sku_listing_code", "") or ""),
+        "generated_sku_listing_code": str(listing_memory.get("generated_sku_listing_code", "") or ""),
+        "sku_listing_code": str(listing_memory.get("sku_listing_code", "") or ""),
+        "parent_sku_for_listing": str(listing_memory.get("parent_sku", "") or ""),
+        "size_price_map": dict(listing_memory.get("size_price_map", {}) or {}),
+        "quantity": listing_memory.get("quantity", 100),
         "score_clicked": False,
         "ready_clicked": False,
         "content_debug_container": st.container(),
@@ -867,6 +992,8 @@ def render_listing_content(
     active_profile: dict[str, Any],
     profile: dict[str, Any],
     memory_fingerprint: str,
+    grouped_state_load_error: str,
+    listing_memory_location: str,
     CONTENT_EDITOR_KEYS: dict[str, Any],
     MERCHANT_SHIPPING_GROUP_OPTIONS: list[str],
     SKU_DECORATION_OPTIONS: list[str],
@@ -899,11 +1026,14 @@ def render_listing_content(
     build_size_price_inputs: Callable[..., dict[str, float]],
     load_grouped_image_manifest: Callable[..., dict[str, Any]],
     save_grouped_draft: Callable[..., str],
+    submit_grouped_listing: Callable[..., dict[str, Any]],
     dev_tools_enabled: bool,
     load_grouped_test_json: Callable[[], str],
 ) -> dict[str, Any]:
     render_active_product_context(
-        active_staged_folder_name=active_staged_folder_name,
+        active_staged_folder_name=(
+            "" if listing_memory_location == "archive" else active_staged_folder_name
+        ),
         active_template_label=active_template_label,
         selected_parent_main_label=selected_parent_main_label,
         preview_parent_main_image_url=preview_parent_main_image_url,
@@ -914,9 +1044,17 @@ def render_listing_content(
         image_mapping_detail=image_mapping_detail,
     )
 
+    if grouped_state_load_error:
+        st.error(grouped_state_load_error)
+        return _grouped_listing_content_result_from_memory(
+            listing_memory,
+            selected_variants,
+        )
+
     if is_grouped_christmas_memory(listing_memory):
         return render_grouped_christmas_listing_content(
             staged_folder_name=staged_folder_name,
+            listing_memory_location=listing_memory_location,
             listing_memory=listing_memory,
             profile=profile,
             merchant_shipping_group_options=MERCHANT_SHIPPING_GROUP_OPTIONS,
@@ -931,6 +1069,7 @@ def render_listing_content(
             build_size_price_inputs=build_size_price_inputs,
             load_grouped_image_manifest=load_grouped_image_manifest,
             save_grouped_draft=save_grouped_draft,
+            submit_grouped_listing=submit_grouped_listing,
             dev_tools_enabled=dev_tools_enabled,
             load_grouped_test_json=load_grouped_test_json,
         )

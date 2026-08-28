@@ -144,21 +144,43 @@ def get_variant_size_display_label(profile: dict[str, Any], variant_values: dict
     return f"{prefix} - {size_value}" if prefix else size_value
 
 
+def is_child_size_label(size: str) -> bool:
+    normalized = str(size or "").strip().lower()
+    return "year" in normalized or "yrs" in normalized or normalized.startswith("child ")
+
+
 def build_child_title_for_validation(
     profile: dict[str, Any],
     base_title: str,
     variant_values: dict[str, str],
 ) -> str:
+    size_value = str(variant_values.get("size", "") or "").strip()
+    title_size = f"Age {size_value}" if is_child_size_label(size_value) else size_value
     title_parts = [
         str(variant_values.get("design", "") or "").strip(),
         str(variant_values.get("color", "") or "").strip(),
-        get_variant_size_display_label(profile, variant_values),
+        title_size,
     ]
     title_parts = [part for part in title_parts if part]
     base_title = str(base_title or "").strip()
     if base_title:
         title_parts.append(base_title)
     return ", ".join(title_parts)
+
+
+def find_oversized_child_titles(
+    profile: dict[str, Any],
+    base_title: str,
+    selected_variants: dict[str, list[str]],
+    max_chars: int = 200,
+) -> list[tuple[str, int]]:
+    oversized_titles: list[tuple[str, int]] = []
+    for combo in build_variant_combinations(profile, selected_variants):
+        child_title = build_child_title_for_validation(profile, base_title, combo)
+        child_title_len = character_length(child_title)
+        if child_title_len > max_chars:
+            oversized_titles.append((child_title, child_title_len))
+    return oversized_titles
 
 
 def build_variant_price_key(variant_values: dict[str, str]) -> str:
@@ -409,12 +431,11 @@ def validate_listing_quality(
         )
         breakdown["variant_integrity"] -= 10
 
-    oversized_child_titles: list[tuple[str, int]] = []
-    for combo in variant_combos:
-        child_title = build_child_title_for_validation(profile, title, combo)
-        child_title_len = character_length(child_title)
-        if child_title_len > 200:
-            oversized_child_titles.append((child_title, child_title_len))
+    oversized_child_titles = find_oversized_child_titles(
+        profile,
+        title,
+        selected_variants,
+    )
     if oversized_child_titles:
         sample = "; ".join(
             f"{child_title[:120]}{'...' if len(child_title) > 120 else ''} ({length} chars)"

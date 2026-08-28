@@ -12,7 +12,9 @@ from services.staged_listing_tasks import (
     build_staged_listing_task_payload,
     create_staged_listing_task,
     get_task_size_options,
+    is_christmas_project_profile,
     validate_mpn,
+    validate_staged_folder_name,
 )
 
 
@@ -30,7 +32,8 @@ def profile() -> dict:
 def valid_task_result(**overrides):
     values = {
         "profile": profile(),
-        "mpn": "ADMIN-MPN-001",
+        "staged_folder_name": "TSTGP",
+        "mpn": "DESIGN1",
         "price": 12.99,
         "quantity": 25,
         "merchant_shipping_group_name": "Nationwide Prime",
@@ -53,7 +56,8 @@ def test_valid_task_uses_existing_listing_memory_shape() -> None:
     assert result["valid"] is True
     assert result["errors"] == []
     assert result["payload"] == {
-        "mpn": "ADMIN-MPN-001",
+        "staged_folder_name": "TSTGP",
+        "mpn": "DESIGN1",
         "title": "",
         "bullet_points": [],
         "product_description": "",
@@ -79,16 +83,82 @@ def test_valid_task_uses_existing_listing_memory_shape() -> None:
     assert memory["template_label"] == "UC301 Classic T-Shirt"
     assert memory["template_slug"] == "uc301"
     assert memory["template_key"] == "UC301"
-    assert memory["mpn"] == "ADMIN-MPN-001"
+    assert memory["staged_folder_name"] == "TSTGP"
+    assert memory["mpn"] == "DESIGN1"
+
+
+def test_normal_task_folder_and_product_identities_are_independent() -> None:
+    task = valid_task_result(
+        staged_folder_name="TSTGP",
+        mpn="D304VG",
+        manual_sku_listing_code="D304VG",
+        generated_sku_listing_code="D12345",
+        sku_listing_code="D304VG",
+        parent_sku="PRINT-D304VG-UC301",
+    )
+    saved_memory = build_listing_memory_payload(profile(), task["payload"])
+    save_memory = Mock(return_value="/Amazon/_stage/TSTGP/listing_inputs.json")
+
+    result = create_staged_listing_task(
+        profile=profile(),
+        payload=task["payload"],
+        staged_folder_name="TSTGP",
+        stage_root="/Amazon/_stage",
+        destination_exists=Mock(return_value=False),
+        create_folder=Mock(),
+        save_listing_memory=save_memory,
+    )
+
+    assert task["valid"] is True
+    assert saved_memory["staged_folder_name"] == "TSTGP"
+    assert saved_memory["mpn"] == "D304VG"
+    assert saved_memory["sku_listing_code"] == "D304VG"
+    assert result["folder_path"] == "/Amazon/_stage/TSTGP"
+    assert result["folder_name"] == "TSTGP"
+    assert result["mpn"] == "D304VG"
+
+
+def test_historical_memory_without_staged_folder_field_is_not_migrated() -> None:
+    historical_payload = {
+        **valid_task_result()["payload"],
+        "mpn": "OLD-FOLDER-NAME",
+        "sku_listing_code": "DLEGACY",
+    }
+    historical_payload.pop("staged_folder_name", None)
+
+    memory = build_listing_memory_payload(profile(), historical_payload)
+
+    assert memory["mpn"] == "OLD-FOLDER-NAME"
+    assert memory["sku_listing_code"] == "DLEGACY"
+    assert "staged_folder_name" not in memory
 
 
 @pytest.mark.parametrize("mpn", ["", "   ", "BAD/MPN", "BAD\\MPN", ".", "..", " BAD"])
 def test_invalid_mpn_is_rejected_without_rewriting(mpn: str) -> None:
-    result = valid_task_result(mpn=mpn)
+    result = valid_task_result(mpn=mpn, sku_listing_code=mpn)
 
     assert result["valid"] is False
     assert validate_mpn(mpn)
     assert result["payload"]["mpn"] == mpn
+
+
+@pytest.mark.parametrize(
+    "folder_name",
+    ["", "   ", "BAD/FOLDER", "BAD\\FOLDER", ".", "..", " BAD"],
+)
+def test_invalid_staging_folder_name_is_rejected_without_rewriting(folder_name: str) -> None:
+    result = valid_task_result(staged_folder_name=folder_name)
+
+    assert result["valid"] is False
+    assert validate_staged_folder_name(folder_name)
+    assert result["payload"]["staged_folder_name"] == folder_name
+
+
+def test_new_task_requires_mpn_to_equal_resolved_listing_code() -> None:
+    result = valid_task_result(mpn="WRONG-MPN")
+
+    assert result["valid"] is False
+    assert "MPN must equal the resolved listing/design code." in result["errors"]
 
 
 @pytest.mark.parametrize(
@@ -120,6 +190,79 @@ def test_size_options_use_selected_profile_variant_dimension() -> None:
     assert get_task_size_options(profile()) == ["S", "M", "L"]
 
 
+def test_christmas_profile_detection_and_ordinary_payload_rejection_do_not_require_price() -> None:
+    christmas_profile = {
+        "label": "Christmas Project",
+        "template_key": "CP",
+        "parent_sku": "CP",
+    }
+
+    result = valid_task_result(
+        profile=christmas_profile,
+        price=None,
+        selected_sizes=[],
+    )
+
+    assert is_christmas_project_profile(christmas_profile) is True
+    assert result == {
+        "valid": False,
+        "errors": ["Christmas Project must be created as a grouped Christmas listing task."],
+        "payload": {},
+    }
+
+
+def test_christmas_ordinary_creation_is_rejected_before_any_folder_operation() -> None:
+    destination_exists = Mock()
+    create_folder = Mock()
+    save_memory = Mock()
+
+    result = create_staged_listing_task(
+        profile={"template_key": "CP", "label": "Christmas Project"},
+        payload={"mpn": "CHRTST"},
+        staged_folder_name="TSTGP",
+        stage_root="/Amazon/_stage",
+        destination_exists=destination_exists,
+        create_folder=create_folder,
+        save_listing_memory=save_memory,
+    )
+
+    assert result["status"] == "Failed"
+    assert "grouped Christmas listing task" in result["error"]
+    destination_exists.assert_not_called()
+    create_folder.assert_not_called()
+    save_memory.assert_not_called()
+
+
+def test_valid_grouped_christmas_payload_still_uses_shared_creation_service() -> None:
+    christmas_profile = {"template_key": "CP", "label": "Christmas Project"}
+    payload = {
+        "staged_folder_name": "TSTGP",
+        "mpn": "D304VG",
+        "sku_listing_code": "D304VG",
+        "listing_group": {"group_type": "christmas_project"},
+    }
+    create_folder = Mock()
+    save_memory = Mock(return_value="/Amazon/_stage/CHRTST/listing_inputs.json")
+
+    result = create_staged_listing_task(
+        profile=christmas_profile,
+        payload=payload,
+        staged_folder_name="TSTGP",
+        stage_root="/Amazon/_stage",
+        destination_exists=Mock(return_value=False),
+        create_folder=create_folder,
+        save_listing_memory=save_memory,
+    )
+
+    assert result["status"] == "Success"
+    create_folder.assert_called_once_with("/Amazon/_stage/TSTGP")
+    save_memory.assert_called_once_with(
+        christmas_profile,
+        payload,
+        "/Amazon/_stage/TSTGP",
+    )
+
+
 def test_successful_creation_creates_one_folder_and_writes_listing_inputs() -> None:
     payload = valid_task_result()["payload"]
     destination_exists = Mock(return_value=False)
@@ -129,6 +272,7 @@ def test_successful_creation_creates_one_folder_and_writes_listing_inputs() -> N
     result = create_staged_listing_task(
         profile=profile(),
         payload=payload,
+        staged_folder_name="TSTGP",
         stage_root="/Amazon/_stage",
         destination_exists=destination_exists,
         create_folder=create_folder,
@@ -136,10 +280,11 @@ def test_successful_creation_creates_one_folder_and_writes_listing_inputs() -> N
     )
 
     assert result["status"] == "Success"
-    assert result["folder_name"] == "ADMIN-MPN-001"
-    destination_exists.assert_called_once_with("/Amazon/_stage/ADMIN-MPN-001")
-    create_folder.assert_called_once_with("/Amazon/_stage/ADMIN-MPN-001")
-    save_memory.assert_called_once_with(profile(), payload, "/Amazon/_stage/ADMIN-MPN-001")
+    assert result["mpn"] == "DESIGN1"
+    assert result["folder_name"] == "TSTGP"
+    destination_exists.assert_called_once_with("/Amazon/_stage/TSTGP")
+    create_folder.assert_called_once_with("/Amazon/_stage/TSTGP")
+    save_memory.assert_called_once_with(profile(), payload, "/Amazon/_stage/TSTGP")
 
 
 def test_existing_destination_is_never_created_or_overwritten() -> None:
@@ -149,6 +294,7 @@ def test_existing_destination_is_never_created_or_overwritten() -> None:
     result = create_staged_listing_task(
         profile=profile(),
         payload=valid_task_result()["payload"],
+        staged_folder_name="TSTGP",
         stage_root="/Amazon/_stage",
         destination_exists=Mock(return_value=True),
         create_folder=create_folder,
@@ -165,6 +311,7 @@ def test_exclusive_create_conflict_is_treated_as_existing_task() -> None:
     result = create_staged_listing_task(
         profile=profile(),
         payload=valid_task_result()["payload"],
+        staged_folder_name="TSTGP",
         stage_root="/Amazon/_stage",
         destination_exists=Mock(return_value=False),
         create_folder=Mock(side_effect=FileExistsError("conflict")),
@@ -180,6 +327,7 @@ def test_folder_failure_does_not_write_listing_memory() -> None:
     result = create_staged_listing_task(
         profile=profile(),
         payload=valid_task_result()["payload"],
+        staged_folder_name="TSTGP",
         stage_root="/Amazon/_stage",
         destination_exists=Mock(return_value=False),
         create_folder=Mock(side_effect=RuntimeError("offline")),
@@ -195,6 +343,7 @@ def test_memory_write_failure_is_reported_as_recoverable_partial_failure() -> No
     result = create_staged_listing_task(
         profile=profile(),
         payload=valid_task_result()["payload"],
+        staged_folder_name="TSTGP",
         stage_root="/Amazon/_stage",
         destination_exists=Mock(return_value=False),
         create_folder=Mock(),

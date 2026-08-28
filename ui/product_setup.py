@@ -4,11 +4,11 @@ from typing import Any, Callable
 
 import streamlit as st
 
-from services.christmas_project_grouping import validate_christmas_group_config
 from services.staged_listing_tasks import (
     build_grouped_christmas_staged_task_payload,
     build_staged_listing_task_payload,
     get_task_size_options,
+    is_christmas_project_profile,
 )
 
 
@@ -19,7 +19,7 @@ FOLDER_SOURCE_OPTIONS = [
 ]
 
 CREATE_TASK_WIDGET_KEYS = [
-    "create_task_mpn",
+    "create_task_staged_folder_name",
     "create_task_price",
     "create_task_quantity",
     "create_task_shipping_group",
@@ -29,7 +29,6 @@ CREATE_TASK_WIDGET_KEYS = [
     "create_task_manual_sku_listing_code",
     "create_task_generated_sku_listing_code",
     "create_task_profile_key",
-    "create_task_grouped_christmas",
 ]
 
 
@@ -117,7 +116,6 @@ def render_create_staged_listing_task_form(
             "create_task_sizes",
             "create_task_sku_decoration_choice",
             "create_task_custom_sku_decoration_code",
-            "create_task_grouped_christmas",
         ]:
             st.session_state.pop(key, None)
         st.session_state["create_task_profile_key"] = profile_key
@@ -137,21 +135,14 @@ def render_create_staged_listing_task_form(
     )
     st.session_state.setdefault("create_task_quantity", default_variant_quantity)
 
-    size_options = get_task_size_options(profile)
-    grouped_christmas_available = bool(
-        profile_key.upper() == "CP"
-        and not validate_christmas_group_config(profile)
-    )
-    grouped_christmas = False
-    if grouped_christmas_available:
-        grouped_christmas = st.checkbox(
-            "Create grouped Christmas task",
-            key="create_task_grouped_christmas",
-            help="Creates one staged draft for T-Shirt, Sweatshirt, and Hoodie listing content.",
-        )
+    grouped_christmas = is_christmas_project_profile(profile)
+    size_options = [] if grouped_christmas else get_task_size_options(profile)
 
     with st.form("create_staged_listing_task_form"):
-        mpn = st.text_input("MPN", key="create_task_mpn")
+        staged_folder_name = st.text_input(
+            "Staging folder name",
+            key="create_task_staged_folder_name",
+        )
         if grouped_christmas:
             quantity = st.number_input(
                 "Quantity",
@@ -159,9 +150,9 @@ def render_create_staged_listing_task_form(
                 step=1,
                 key="create_task_quantity",
             )
-            st.caption(
-                "Creates T-Shirt, Sweatshirt, and Hoodie members using all configured CP designs, colours, and sizes. "
-                "Pricing is configured in Listing content."
+            st.info(
+                "Creates T-Shirt, Sweatshirt, and Hoodie listings. Pricing is configured "
+                "per garment and size in Listing Content."
             )
         else:
             price_col, quantity_col = st.columns(2)
@@ -223,13 +214,23 @@ def render_create_staged_listing_task_form(
             build_parent_sku_from_context=build_parent_sku_from_context,
         )
         if manual_listing_code:
+            st.caption(f"MPN: `{sku_context['sku_listing_code']}`")
             st.caption(f"Parent SKU: `{sku_context['parent_sku']}`")
         else:
             st.caption(f"Generated listing code: `{sku_context['generated_sku_listing_code']}`")
+            st.caption(f"MPN: `{sku_context['sku_listing_code']}`")
             st.caption(f"Parent SKU: `{sku_context['parent_sku']}`")
+        if grouped_christmas and sku_context["sku_decoration_code"] and sku_context["sku_listing_code"]:
+            grouped_parent_base = (
+                f"{sku_context['sku_decoration_code']}-{sku_context['sku_listing_code']}"
+            )
+            st.caption(
+                "Will create parents: "
+                f"`{grouped_parent_base}-T`, `{grouped_parent_base}-S`, `{grouped_parent_base}-H`"
+            )
 
         create_clicked = st.form_submit_button(
-            "Create Listing Task",
+            "Create Christmas Listing Task" if grouped_christmas else "Create Listing Task",
             key="create_staged_listing_task_btn",
             width="stretch",
         )
@@ -240,7 +241,8 @@ def render_create_staged_listing_task_form(
     if grouped_christmas:
         task_result = build_grouped_christmas_staged_task_payload(
             profile=profile,
-            mpn=mpn,
+            staged_folder_name=staged_folder_name,
+            mpn=sku_context["sku_listing_code"],
             quantity=quantity,
             merchant_shipping_group_name=merchant_shipping_group_name,
             assets_prepared_by=st.session_state.get("assets_prepared_by", ""),
@@ -249,7 +251,8 @@ def render_create_staged_listing_task_form(
     else:
         task_result = build_staged_listing_task_payload(
             profile=profile,
-            mpn=mpn,
+            staged_folder_name=staged_folder_name,
+            mpn=sku_context["sku_listing_code"],
             price=price,
             quantity=quantity,
             merchant_shipping_group_name=merchant_shipping_group_name,
@@ -265,6 +268,7 @@ def render_create_staged_listing_task_form(
     result = create_listing_task(
         profile=profile,
         payload=task_result["payload"],
+        staged_folder_name=staged_folder_name,
         dropbox_cfg=dropbox_cfg,
     )
     if result.get("status") != "Success":

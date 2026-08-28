@@ -40,7 +40,8 @@ def load_cp_profile() -> dict:
 def build_grouped_payload(task_id: str = "task-123") -> dict:
     result = build_grouped_christmas_staged_task_payload(
         profile=load_cp_profile(),
-        mpn="CHRISTMAS-001",
+        staged_folder_name="CHRISTMAS-001",
+        mpn="D12345",
         quantity=100,
         merchant_shipping_group_name="",
         sku_decoration_code="DTG",
@@ -231,11 +232,12 @@ def test_grouped_draft_save_implementation_has_no_folder_move() -> None:
     assert "move_staged_dropbox_folder_to_ready" not in function_source
 
 
-def test_grouped_submit_guard_precedes_existing_ready_move_and_normal_memory_is_allowed() -> None:
+def test_grouped_submit_uses_separate_callback_and_normal_ready_move_remains_available() -> None:
     source = (ROOT / "app.py").read_text(encoding="utf-8")
-    guard = "if ready_clicked and is_grouped_christmas_memory(listing_memory):"
+    grouped_submit = "submit_grouped_christmas_to_review("
     ready_move = "ready_folder_path = move_staged_dropbox_folder_to_ready("
 
-    assert guard in source
-    assert source.index(guard) < source.index(ready_move)
+    assert grouped_submit in source
+    assert ready_move in source
+    assert "Grouped Christmas submission will be enabled" not in source
     assert is_grouped_christmas_memory({"template_key": "CP"}) is False

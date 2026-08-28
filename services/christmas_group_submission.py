@@ -14,12 +14,26 @@ from services.christmas_project_grouping import (
 )
 from services.listing_content_import import validate_listing_content_payload
 from services.listing_memory import MERCHANT_SHIPPING_GROUP_OPTIONS
+from services.quality_checks import build_variant_combinations, find_oversized_child_titles
 from services.staged_listing_tasks import validate_mpn
 
 
 GROUP_SCHEMA_VERSION = 1
 GROUP_TYPE = "christmas_project"
 MEMBER_KEYS = ("tshirt", "sweatshirt", "hoodie")
+GENERIC_TARGET_TEMPLATE_KEYS = {
+    "tshirt": "GENERIC_SHIRTS",
+    "sweatshirt": "GENERIC_SWEATSHIRTS",
+    "hoodie": "GENERIC_HOODIES",
+}
+TSHIRT_KIDS_SIZE_MAP = {
+    "2 YRS": "1Yr",
+    "3/4 YRS": "3Yr",
+    "5/6 YRS": "5Yr",
+    "7/8 YRS": "7Yr",
+    "9/10 YRS": "9Yr",
+    "11/13 YRS": "11Yr",
+}
 
 
 def validate_christmas_group_submission(
@@ -91,6 +105,24 @@ def validate_christmas_group_submission(
             _add_error(errors, "member.content", message, member_key)
         for message in content_result.get("warnings", []):
             _add_warning(warnings, "member.content", message, member_key)
+        if content_result.get("valid"):
+            oversized_titles = find_oversized_child_titles(
+                profile,
+                content_result["content"]["title"],
+                _member_selected_variants(profile, definition),
+            )
+            if oversized_titles:
+                longest_title, longest_length = max(
+                    oversized_titles,
+                    key=lambda item: item[1],
+                )
+                _add_error(
+                    errors,
+                    "member.child_title_length",
+                    "Generated child titles must be 200 characters or fewer after garment, "
+                    f"colour, and size prefixes. Longest is {longest_length}: {longest_title}",
+                    member_key,
+                )
 
     selected_variants = source_memory.get("selected_variants")
     if not isinstance(selected_variants, dict):
@@ -118,6 +150,7 @@ def build_christmas_group_child_payload(
     source_memory: dict[str, Any],
     image_manifest: dict[str, Any],
     member_key: str,
+    target_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     members = derive_christmas_group_members(profile)
     if member_key not in members:
@@ -130,12 +163,34 @@ def build_christmas_group_child_payload(
         "schema_version": 1,
         **dict(grouped_member["content"]),
     })["content"]
-    selected_variants = _member_selected_variants(profile, member)
+    materialization_profile = target_profile or profile
+    selected_variants = _map_member_selected_variants(
+        profile,
+        member,
+        member_key,
+        materialization_profile,
+    )
     price_map = partition_christmas_group_price_map(
         profile,
         source_memory.get("size_price_map", {}),
     )[member_key]
-    child_identity = _build_child_identity(profile, source_memory, member)
+    price_map = _map_member_price_map(
+        price_map,
+        member_key,
+        translate_tshirt_sizes=target_profile is not None,
+    )
+    child_identity = _build_child_identity(materialization_profile, source_memory, member)
+    oversized_titles = find_oversized_child_titles(
+        materialization_profile,
+        content["title"],
+        selected_variants,
+    )
+    if oversized_titles:
+        longest_title, longest_length = max(oversized_titles, key=lambda item: item[1])
+        raise ValueError(
+            f"Christmas {member_key} target child title exceeds 200 characters "
+            f"({longest_length}): {longest_title}"
+        )
     member_manifest = image_manifest["members"][member_key]
     images_by_colour = {
         colour: member_manifest["images_by_colour"][colour]
@@ -144,10 +199,13 @@ def build_christmas_group_child_payload(
 
     child_payload = deepcopy(source_memory)
     child_payload.pop("listing_group", None)
+    child_payload.pop("group_submission", None)
     child_payload.update({
-        "template_label": profile.get("label", profile.get("_slug", "")),
-        "template_slug": profile.get("_slug", ""),
-        "template_key": "CP",
+        "template_label": materialization_profile.get(
+            "label", materialization_profile.get("_slug", "")
+        ),
+        "template_slug": materialization_profile.get("_slug", ""),
+        "template_key": materialization_profile.get("template_key", ""),
         "title": content["title"],
         "bullet_points": list(content["bullet_points"]),
         "product_description": content["product_description"],
@@ -165,8 +223,11 @@ def build_christmas_group_child_payload(
         "task_id": _text(listing_group.get("task_id")),
         "member_key": member_key,
         "source_mpn": _text(source_memory.get("mpn")),
+        "source_listing_code": _text(source_memory.get("sku_listing_code")),
         "materialization_hash": "",
     }
+    if target_profile is not None:
+        child_payload["parent_sku_override"] = child_identity["parent_sku"]
     child_payload["source_group"] = source_group
     materialization_hash = compute_christmas_child_materialization_hash(
         child_payload,
@@ -197,15 +258,25 @@ def build_christmas_group_child_payloads(
             "children": {},
         }
 
-    children = {
-        member_key: build_christmas_group_child_payload(
-            profile,
-            source_memory,
-            image_manifest,
-            member_key,
-        )
-        for member_key in MEMBER_KEYS
-    }
+    target_profiles = _materialization_target_profiles(profile, source_memory)
+    try:
+        children = {
+            member_key: build_christmas_group_child_payload(
+                profile,
+                source_memory,
+                image_manifest,
+                member_key,
+                target_profiles.get(member_key) if target_profiles else None,
+            )
+            for member_key in MEMBER_KEYS
+        }
+    except ValueError as exc:
+        return {
+            "valid": False,
+            "errors": [{"code": "target_profile.invalid", "message": str(exc)}],
+            "warnings": list(preflight.get("warnings", [])),
+            "children": {},
+        }
     hashes = [child["materialization_hash"] for child in children.values()]
     if len(set(hashes)) != len(hashes):
         return {
@@ -227,28 +298,10 @@ def compute_christmas_child_materialization_hash(
     child_payload: dict[str, Any],
     images_by_colour: dict[str, str],
 ) -> str:
-    source_group = dict(child_payload.get("source_group", {}) or {})
-    stable_material = {
-        "task_id": _text(source_group.get("task_id")),
-        "member_key": _text(source_group.get("member_key")),
-        "identity": {
-            "mpn": _text(child_payload.get("mpn")),
-            "sku_listing_code": _text(child_payload.get("sku_listing_code")),
-            "parent_sku": _text(child_payload.get("parent_sku")),
-        },
-        "selected_variants": deepcopy(child_payload.get("selected_variants", {})),
-        "size_price_map": deepcopy(child_payload.get("size_price_map", {})),
-        "content": {
-            "title": _text(child_payload.get("title")),
-            "bullet_points": list(child_payload.get("bullet_points", []) or []),
-            "product_description": _text(child_payload.get("product_description")),
-            "generic_keywords": _text(child_payload.get("generic_keywords")),
-        },
-        "image_filenames_by_colour": {
-            colour: _filename(path)
-            for colour, path in sorted(dict(images_by_colour or {}).items())
-        },
-    }
+    stable_material = build_christmas_child_materialization_projection(
+        child_payload,
+        images_by_colour,
+    )
     serialized = json.dumps(
         stable_material,
         ensure_ascii=False,
@@ -256,6 +309,75 @@ def compute_christmas_child_materialization_hash(
         separators=(",", ":"),
     )
     return sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def build_christmas_child_materialization_projection(
+    child_payload: dict[str, Any],
+    images_by_colour: dict[str, str],
+) -> dict[str, Any]:
+    source_group = dict(child_payload.get("source_group", {}) or {})
+    return {
+        "template": {
+            "template_label": _text(child_payload.get("template_label")),
+            "template_key": _text(child_payload.get("template_key")),
+            "template_slug": _text(child_payload.get("template_slug")),
+        },
+        "task_id": _text(source_group.get("task_id")),
+        "member_key": _text(source_group.get("member_key")),
+        "identity": {
+            "mpn": _text(child_payload.get("mpn")),
+            "sku_decoration_code": _text(child_payload.get("sku_decoration_code")),
+            "manual_sku_listing_code": _text(child_payload.get("manual_sku_listing_code")),
+            "generated_sku_listing_code": _text(child_payload.get("generated_sku_listing_code")),
+            "sku_listing_code": _text(child_payload.get("sku_listing_code")),
+            "base_parent_sku": _text(child_payload.get("base_parent_sku")),
+            "parent_sku": _text(child_payload.get("parent_sku")),
+            "original_finished_folder_name": _text(
+                child_payload.get("original_finished_folder_name")
+            ),
+        },
+        "selected_variants": deepcopy(child_payload.get("selected_variants", {})),
+        "pricing": {
+            "size_price_map": deepcopy(child_payload.get("size_price_map", {})),
+            "price_input_mode": _text(child_payload.get("price_input_mode")),
+            "use_same_price_for_all_sizes": bool(
+                child_payload.get("use_same_price_for_all_sizes", False)
+            ),
+            "write_parent_starting_price": bool(
+                child_payload.get("write_parent_starting_price", False)
+            ),
+        },
+        "fulfillment": {
+            "quantity": child_payload.get("quantity"),
+            "handling_time_days": child_payload.get("handling_time_days"),
+            "merchant_shipping_group_name": _text(
+                child_payload.get("merchant_shipping_group_name")
+            ),
+        },
+        "content": {
+            "title": _text(child_payload.get("title")),
+            "bullet_points": list(child_payload.get("bullet_points", []) or []),
+            "product_description": _text(child_payload.get("product_description")),
+            "generic_keywords": _text(child_payload.get("generic_keywords")),
+        },
+        "image_selection": {
+            "parent_main_image_choice": _text(
+                child_payload.get("parent_main_image_choice")
+            ),
+            "parent_main_image_url": _text(child_payload.get("parent_main_image_url")),
+            "selected_parent_main_image_url": _text(
+                child_payload.get("selected_parent_main_image_url")
+            ),
+        },
+        "prepared_by": {
+            "assets_prepared_by": _text(child_payload.get("assets_prepared_by")),
+            "content_prepared_by": _text(child_payload.get("content_prepared_by")),
+        },
+        "image_filenames_by_colour": {
+            colour: _filename(path)
+            for colour, path in sorted(dict(images_by_colour or {}).items())
+        },
+    }
 
 
 def _member_selected_variants(
@@ -275,32 +397,143 @@ def _member_selected_variants(
     }
 
 
+def _materialization_target_profiles(
+    profile: dict[str, Any],
+    source_memory: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    configured = profile.get("_group_target_profiles")
+    if not isinstance(configured, dict):
+        return {}
+    ledger = source_memory.get("group_submission")
+    if isinstance(ledger, dict) and ledger and ledger.get("materialization_mode") != "generic_profiles":
+        return {}
+    targets: dict[str, dict[str, Any]] = {}
+    for member_key, expected_key in GENERIC_TARGET_TEMPLATE_KEYS.items():
+        target = configured.get(member_key)
+        if not isinstance(target, dict) or target.get("template_key") != expected_key:
+            raise ValueError(
+                f"Christmas {member_key} target profile must be {expected_key}."
+            )
+        targets[member_key] = target
+    return targets
+
+
+def _map_member_selected_variants(
+    source_profile: dict[str, Any],
+    member: dict[str, Any],
+    member_key: str,
+    target_profile: dict[str, Any],
+) -> dict[str, list[str]]:
+    selected = _member_selected_variants(source_profile, member)
+    if member_key == "tshirt" and target_profile is not source_profile:
+        selected["size"] = [TSHIRT_KIDS_SIZE_MAP.get(size, size) for size in selected["size"]]
+    target_dimensions = {
+        str(dimension.get("name", ""))
+        for dimension in target_profile.get("variant_dimensions", [])
+        if isinstance(dimension, dict)
+    }
+    if target_profile is not source_profile and target_dimensions != {"design", "color", "size"}:
+        raise ValueError(f"Christmas {member_key} target variant dimensions are incompatible.")
+    if target_profile is not source_profile:
+        source_combinations = build_variant_combinations(
+            source_profile,
+            _member_selected_variants(source_profile, member),
+        )
+        expected = {
+            (
+                combination.get("design", ""),
+                combination.get("color", ""),
+                TSHIRT_KIDS_SIZE_MAP.get(combination.get("size", ""), combination.get("size", ""))
+                if member_key == "tshirt"
+                else combination.get("size", ""),
+            )
+            for combination in source_combinations
+        }
+        actual = {
+            (
+                combination.get("design", ""),
+                combination.get("color", ""),
+                combination.get("size", ""),
+            )
+            for combination in build_variant_combinations(target_profile, selected)
+        }
+        if actual != expected:
+            missing = sorted(expected - actual)
+            extra = sorted(actual - expected)
+            details = []
+            if missing:
+                details.append(f"missing {len(missing)} combination(s)")
+            if extra:
+                details.append(f"unexpected {len(extra)} combination(s)")
+            raise ValueError(
+                f"Christmas {member_key} target profile does not exactly support the source variants: "
+                + ", ".join(details)
+                + "."
+            )
+    return selected
+
+
+def _map_member_price_map(
+    price_map: dict[str, Any],
+    member_key: str,
+    translate_tshirt_sizes: bool = True,
+) -> dict[str, Any]:
+    if member_key != "tshirt" or not translate_tshirt_sizes:
+        return dict(price_map)
+    translated: dict[str, Any] = {}
+    for key, value in price_map.items():
+        design, separator, size = str(key).partition("||")
+        translated_size = TSHIRT_KIDS_SIZE_MAP.get(size, size)
+        translated[f"{design}{separator}{translated_size}" if separator else design] = value
+    return translated
+
+
 def _build_child_identity(
     profile: dict[str, Any],
     source_memory: dict[str, Any],
     member: dict[str, Any],
 ) -> dict[str, str]:
-    suffix = _sanitize_identity_part(member["folder_suffix"]).upper()
-    source_listing_code = _text(source_memory.get("sku_listing_code"))
-    child_listing_code = _append_identity_suffix(source_listing_code, suffix)
-    decoration_code = _sanitize_identity_part(source_memory.get("sku_decoration_code")).upper()
-    parent_parts = [decoration_code, child_listing_code]
+    member_key = _text(member.get("key")).casefold()
+    parent_suffix = {
+        "tshirt": "T",
+        "sweatshirt": "S",
+        "hoodie": "H",
+    }.get(member_key, "")
+    if not parent_suffix:
+        raise ValueError(f"Unsupported Christmas grouped member identity: {member_key}")
+
+    source_listing_code = _sanitize_identity_part(
+        source_memory.get("sku_listing_code")
+    ).upper()
+    decoration_code = _sanitize_identity_part(
+        source_memory.get("sku_decoration_code")
+    ).upper()
+
+    parent_parts = [
+        decoration_code,
+        source_listing_code,
+        parent_suffix,
+    ]
     if bool(profile.get("include_template_code_in_parent_sku", True)):
         template_code = _sanitize_identity_part(
-            profile.get("parent_sku") or profile.get("template_key") or profile.get("_slug") or "CP"
+            profile.get("parent_sku")
+            or profile.get("template_key")
+            or profile.get("_slug")
+            or "CP"
         ).upper()
         parent_parts.append(template_code)
 
-    manual_code = _text(source_memory.get("manual_sku_listing_code"))
-    generated_code = _text(source_memory.get("generated_sku_listing_code"))
+    manual_code = _sanitize_identity_part(
+        source_memory.get("manual_sku_listing_code")
+    ).upper()
+    generated_code = _sanitize_identity_part(
+        source_memory.get("generated_sku_listing_code")
+    ).upper()
+
     return {
-        "manual_sku_listing_code": (
-            _append_identity_suffix(manual_code, suffix) if manual_code else ""
-        ),
-        "generated_sku_listing_code": (
-            _append_identity_suffix(generated_code, suffix) if generated_code else ""
-        ),
-        "sku_listing_code": child_listing_code,
+        "manual_sku_listing_code": manual_code,
+        "generated_sku_listing_code": generated_code,
+        "sku_listing_code": source_listing_code,
         "base_parent_sku": _text(profile.get("parent_sku")),
         "parent_sku": "-".join(part for part in parent_parts if part),
     }
@@ -395,10 +628,13 @@ def _validate_common_fields(
     parent_skus = [identity["parent_sku"] for identity in identities]
     if (
         any(not identity for identity in [*listing_codes, *parent_skus])
-        or len(set(listing_codes)) != len(listing_codes)
         or len(set(parent_skus)) != len(parent_skus)
     ):
-        _add_error(errors, "identity.not_unique", "Three unique child listing identities are required.")
+        _add_error(
+            errors,
+            "identity.not_unique",
+            "Three non-empty listing codes and three unique child parent SKUs are required.",
+        )
 
 
 def _validation_result(

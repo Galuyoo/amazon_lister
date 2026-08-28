@@ -11,7 +11,7 @@ import string
 import traceback
 import zipfile
 
-from copy import copy
+from copy import copy, deepcopy
 from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
@@ -31,9 +31,21 @@ from services.listing_memory import (
 )
 from services.christmas_project_grouping import (
     build_christmas_group_image_manifest,
+    derive_christmas_group_members,
     is_grouped_christmas_memory,
 )
-from services.quality_checks import validate_listing_quality, words_repeated_at_least
+from services.christmas_group_publication import (
+    ChristmasGroupPublicationStorage,
+    is_group_submission_locked,
+    is_ready_listing_visible,
+    publish_christmas_group,
+)
+from services.quality_checks import (
+    build_child_title_for_validation,
+    find_oversized_child_titles,
+    validate_listing_quality,
+    words_repeated_at_least,
+)
 from services.runtime_flags import dev_tools_enabled
 from services.staged_listing_tasks import create_staged_listing_task
 from services.stock_references import (
@@ -46,7 +58,7 @@ from services.stock_references import (
     validate_stock_ready_skus,
 )
 from ui.approved_output import render_approved_output
-from ui.listing_content import render_listing_content
+from ui.listing_content import clear_grouped_christmas_session_state, render_listing_content
 from ui.product_setup import render_product_setup, render_product_setup_controls
 from ui.review_queue import render_review_queue
 
@@ -58,6 +70,7 @@ from utils.dropbox_client import (
     list_folder_names,
     create_folder_if_missing,
     create_folder_exclusive,
+    copy_dropbox_file,
     move_dropbox_folder,
     path_exists,
     path_exists_strict,
@@ -1152,21 +1165,7 @@ def build_child_item_name(
     variant_values: dict[str, str],
     profile: dict[str, Any] | None = None,
 ) -> str:
-    profile = profile or {}
-    size_value = str(variant_values.get("size", "") or "").strip()
-    title_size = f"Age {size_value}" if is_child_size_label(size_value) else size_value
-    title_parts = [
-        str(variant_values.get("design", "") or "").strip(),
-        str(variant_values.get("color", "") or "").strip(),
-        title_size,
-    ]
-    title_parts = [part for part in title_parts if part]
-    base_title = str(base_title or "").strip()
-
-    if base_title:
-        title_parts.append(base_title)
-
-    return ", ".join(title_parts)
+    return build_child_title_for_validation(profile or {}, base_title, variant_values)
 
 
 def get_variant_design_overrides(profile: dict[str, Any], variant_values: dict[str, str]) -> dict[str, Any]:
@@ -1747,11 +1746,13 @@ def create_staged_listing_task_in_dropbox(
     *,
     profile: dict[str, Any],
     payload: dict[str, Any],
+    staged_folder_name: str,
     dropbox_cfg: dict[str, Any],
 ) -> dict[str, Any]:
     return create_staged_listing_task(
         profile=profile,
         payload=payload,
+        staged_folder_name=staged_folder_name,
         stage_root=dropbox_cfg.get("stage_root", ""),
         destination_exists=path_exists_strict,
         create_folder=create_folder_exclusive,
@@ -1782,7 +1783,251 @@ def save_grouped_christmas_draft_to_dropbox(
     if not is_grouped_christmas_memory(payload):
         raise ValueError("Grouped Christmas draft memory is required.")
     folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+    saved_source = load_listing_memory_from_dropbox_fresh(folder_path)
+    if is_group_submission_locked(saved_source):
+        raise ValueError(
+            "Grouped publication has already begun. Use Resume grouped submission; "
+            "the staged source is locked against draft changes."
+        )
     return save_listing_inputs_json_to_dropbox(profile, payload, folder_path)
+
+
+def load_listing_memory_from_dropbox_fresh(folder_path: str) -> dict[str, Any]:
+    content = download_text_file(build_listing_memory_path(folder_path))
+    data = json.loads(content)
+    if not isinstance(data, dict):
+        raise ValueError("listing_inputs.json must contain a JSON object.")
+    return data
+
+
+def resolve_active_staged_listing_memory(
+    *,
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+    load_stage_memory: Callable[[str], dict[str, Any]],
+    destination_exists: Callable[[str], bool],
+    load_fresh_memory: Callable[[str], dict[str, Any]],
+) -> dict[str, Any]:
+    stage_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+    stage_memory: dict[str, Any] = {}
+    stage_load_error: Exception | None = None
+    try:
+        stage_memory = load_stage_memory(stage_folder_path)
+    except Exception as exc:
+        stage_load_error = exc
+    if stage_memory:
+        return {"memory": stage_memory, "location": "stage", "error": ""}
+
+    try:
+        stage_exists = destination_exists(stage_folder_path)
+    except Exception as exc:
+        return {
+            "memory": {},
+            "location": "stage",
+            "error": f"The selected staged folder could not be verified: {exc}",
+        }
+    if stage_exists:
+        if stage_load_error is not None:
+            return {
+                "memory": {},
+                "location": "stage",
+                "error": f"Saved staged listing state could not be loaded: {stage_load_error}",
+            }
+        return {"memory": stage_memory, "location": "stage", "error": ""}
+
+    archive_root = str(dropbox_cfg.get("grouped_archive_root", "") or "").rstrip("/")
+    archive_path = f"{archive_root}/{staged_folder_name}" if archive_root else ""
+    if archive_path:
+        try:
+            archive_exists = destination_exists(archive_path)
+        except Exception as exc:
+            return {
+                "memory": {},
+                "location": "missing",
+                "error": f"The selected staged folder archive state could not be verified: {exc}",
+            }
+        if archive_exists:
+            try:
+                archive_memory = load_fresh_memory(archive_path)
+            except Exception as exc:
+                return {
+                    "memory": {},
+                    "location": "archive",
+                    "error": f"Grouped Christmas archived state could not be loaded: {exc}",
+                }
+            if is_grouped_christmas_memory(archive_memory):
+                return {"memory": archive_memory, "location": "archive", "error": ""}
+            return {
+                "memory": archive_memory,
+                "location": "archive",
+                "error": (
+                    "Grouped Christmas state could not be loaded. This staged task cannot "
+                    "be edited or submitted until its saved grouped state is recovered."
+                ),
+            }
+
+    return {
+        "memory": {},
+        "location": "missing",
+        "error": (
+            "The selected staged folder no longer exists. Refresh Product setup before "
+            "editing or submitting this listing."
+        ),
+    }
+
+
+def submit_grouped_christmas_to_review(
+    *,
+    dropbox_cfg: dict[str, Any],
+    staged_folder_name: str,
+    profile: dict[str, Any],
+    draft_payload: dict[str, Any],
+    profiles: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    target_profiles = (
+        build_christmas_group_target_profiles(profiles)
+        if profiles is not None
+        else {}
+    )
+    publication_profile = dict(profile)
+    if target_profiles:
+        publication_profile["_group_target_profiles"] = target_profiles
+
+    def profile_for_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        template_key = str(payload.get("template_key", "") or "").strip()
+        for target_profile in target_profiles.values():
+            if str(target_profile.get("template_key", "") or "").strip() == template_key:
+                return target_profile
+        return profile
+
+    source_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
+    if path_exists_strict(source_folder_path):
+        saved_source = load_listing_memory_from_dropbox_fresh(source_folder_path)
+        if not is_group_submission_locked(saved_source):
+            save_grouped_christmas_draft_to_dropbox(
+                dropbox_cfg=dropbox_cfg,
+                staged_folder_name=staged_folder_name,
+                profile=profile,
+                payload=draft_payload,
+            )
+
+    timestamp = format_workflow_timestamp()
+    actor = str(
+        draft_payload.get("content_prepared_by", "")
+        or draft_payload.get("assets_prepared_by", "")
+        or ""
+    )
+
+    def save_memory(payload: dict[str, Any], folder_path: str) -> str:
+        return save_listing_inputs_json_to_dropbox(
+            profile_for_payload(payload),
+            payload,
+            folder_path,
+        )
+
+    def prepare_child_payload(
+        payload: dict[str, Any],
+        grouped_source_path: str,
+        ready_path: str,
+    ) -> dict[str, Any]:
+        prepared = dict(payload)
+        child_profile = profile_for_payload(prepared)
+        prepared["prepared_at"] = timestamp
+        prepared["review_snapshot"] = build_review_snapshot(
+            profile=child_profile,
+            payload=prepared,
+            dropbox_cfg=dropbox_cfg,
+            folder_path=ready_path,
+        )
+        append_workflow_event(
+            prepared,
+            action="submit_for_review",
+            actor=actor,
+            from_state="_stage",
+            to_state="ready",
+            folder_path=grouped_source_path,
+            details={
+                "assets_prepared_by": prepared.get("assets_prepared_by", ""),
+                "content_prepared_by": prepared.get("content_prepared_by", ""),
+                "grouped_member": prepared.get("source_group", {}).get("member_key", ""),
+            },
+        )
+        return prepared
+
+    storage = ChristmasGroupPublicationStorage(
+        path_exists=path_exists_strict,
+        ensure_folder=create_folder_if_missing,
+        create_folder=create_folder_exclusive,
+        load_memory=load_listing_memory_from_dropbox_fresh,
+        save_memory=save_memory,
+        list_files=list_folder_files,
+        copy_file=copy_dropbox_file,
+        move_folder=move_dropbox_folder,
+    )
+    result = publish_christmas_group(
+        publication_profile,
+        source_folder_name=staged_folder_name,
+        source_folder_path=source_folder_path,
+        preparation_root=dropbox_cfg.get("grouped_preparation_root", ""),
+        ready_root=dropbox_cfg.get("ready_root", ""),
+        archive_root=dropbox_cfg.get("grouped_archive_root", ""),
+        storage=storage,
+        prepare_child_payload=prepare_child_payload,
+    )
+    if (
+        result.get("success")
+        and result.get("state") == "released"
+        and result.get("archive_path")
+    ):
+        clear_grouped_publication_active_context(
+            staged_folder_name=staged_folder_name,
+            source_folder_path=source_folder_path,
+            archive_path=str(result.get("archive_path", "") or ""),
+        )
+        set_workflow_flash(
+            "success",
+            "Submitted 3 Christmas listings for review",
+            "Prepared, verified, released, and archived the grouped source safely.",
+        )
+    return result
+
+
+def clear_grouped_publication_active_context(
+    *,
+    staged_folder_name: str,
+    source_folder_path: str,
+    archive_path: str,
+) -> None:
+    refresh_cached_folder_names("stage")
+    clear_cached_listing_memory(source_folder_path, archive_path)
+    clear_runtime_caches()
+    clear_grouped_christmas_session_state(st.session_state)
+
+    st.session_state["staged_folder_select"] = None
+    st.session_state["active_staged_folder_select"] = ""
+    st.session_state["last_loaded_listing_memory_folder"] = ""
+    for key in [
+        "pending_staged_folder_selection_on_rerun",
+        "clear_staged_folder_selection_on_rerun",
+        "last_detected_template_folder",
+        "applied_listing_memory_key_v2",
+        "applied_listing_memory_widget_key_v2",
+        "initialized_listing_context_key",
+        "last_loaded_listing_memory_signature",
+        "image_mappings_loaded_folder",
+        "image_mappings_loaded_context",
+    ]:
+        st.session_state.pop(key, None)
+
+    known_grouped_sources = {
+        str(folder_name)
+        for folder_name in st.session_state.get("known_grouped_source_folders", [])
+        if str(folder_name).casefold() != str(staged_folder_name).casefold()
+    }
+    if known_grouped_sources:
+        st.session_state["known_grouped_source_folders"] = sorted(known_grouped_sources)
+    else:
+        st.session_state.pop("known_grouped_source_folders", None)
 
 
 def load_grouped_christmas_test_content() -> str:
@@ -1962,7 +2207,10 @@ def apply_listing_memory_to_session(listing_memory: dict[str, Any], profile: dic
         listing_memory.get("merchant_shipping_group_name", "")
     )
 
-    saved_prices = listing_memory.get("size_price_map", {})
+    saved_prices = normalize_saved_price_map_for_profile(
+        profile,
+        listing_memory.get("size_price_map", {}),
+    )
     for size, price in saved_prices.items():
         st.session_state[f"price_{size}"] = float(price)
 
@@ -2948,6 +3196,10 @@ def normalize_selected_variants_session_state(
 ) -> dict[str, list[str]]:
     saved_variants_normalized = normalize_saved_selected_variants(
         listing_memory.get("selected_variants", {})
+    )
+    saved_variants_normalized = normalize_saved_variant_values_for_profile(
+        profile,
+        saved_variants_normalized,
     )
     variant_dimensions = profile.get("variant_dimensions", [])
 
@@ -5645,8 +5897,6 @@ def generate_approved_listings_combined(
         raise ValueError("Select at least two approved listings for one combined workbook.")
 
     profile = valid_items[0]["profile"]
-    if str(profile.get("template_key", "") or "").strip().upper() == "CP":
-        raise ValueError("CP combined generation is disabled for now.")
 
     identity = get_combined_workbook_group_identity(profile)
     mismatched = [
@@ -5694,11 +5944,16 @@ def generate_approved_listings_combined(
                 merchant_shipping_group_name=normalize_merchant_shipping_group(listing_memory.get("merchant_shipping_group_name", "")),
                 parent_main_image_choice=str(listing_memory.get("parent_main_image_choice", "") or ""),
                 parent_main_image_url=str(listing_memory.get("parent_main_image_url", "") or ""),
+                parent_sku_override=get_listing_generation_parent_sku_override(
+                    listing_memory,
+                    profile_i,
+                ),
             )
             if prep.get("errors"):
                 raise ValueError("; ".join(prep["errors"]))
 
             payload = dict(prep["payload"])
+            selected_variants = dict(payload.get("selected_variants", {}))
             payload["assets_prepared_by"] = listing_memory.get("assets_prepared_by", "")
             payload["content_prepared_by"] = listing_memory.get("content_prepared_by", "")
             payload["reviewed_by"] = listing_memory.get("reviewed_by", "")
@@ -5706,6 +5961,7 @@ def generate_approved_listings_combined(
             payload["reviewed_at"] = listing_memory.get("reviewed_at", "") or format_workflow_timestamp()
             if isinstance(listing_memory.get("workflow_events"), list):
                 payload["workflow_events"] = list(listing_memory.get("workflow_events", []))
+            preserve_grouped_child_generation_context(listing_memory, payload)
 
             approved_folder_path = build_approved_folder_path(dropbox_cfg, folder_name)
             dropbox_overview = get_cached_dropbox_overview(profile_i, dropbox_cfg)
@@ -5896,14 +6152,12 @@ def validate_child_title_lengths(
 ) -> list[str]:
     title = str(payload.get("title", "") or "").strip()
     selected_variants = dict(payload.get("selected_variants", {}) or {})
-    variant_combos = build_variant_combinations(profile, selected_variants)
-
-    oversized_titles: list[tuple[str, int]] = []
-    for variant_values in variant_combos:
-        child_title = build_child_item_name(title, variant_values, profile)
-        child_title_len = len(child_title.strip())
-        if child_title_len > max_chars:
-            oversized_titles.append((child_title, child_title_len))
+    oversized_titles = find_oversized_child_titles(
+        profile,
+        title,
+        selected_variants,
+        max_chars,
+    )
 
     if not oversized_titles:
         return []
@@ -6110,7 +6364,13 @@ def prepare_generation_payload(
     merchant_shipping_group_name: str = "",
     parent_main_image_choice: str = "",
     parent_main_image_url: str = "",
+    parent_sku_override: str = "",
 ) -> dict[str, Any]:
+    selected_variants = normalize_saved_variant_values_for_profile(
+        profile,
+        selected_variants,
+    )
+    size_price_map = normalize_saved_price_map_for_profile(profile, size_price_map)
     base_parent_sku = str(get_default(profile, "parent_sku", "")).strip()
     manual_sku_listing_code = sanitize_sku(str(manual_sku_listing_code or "")).upper()
     generated_sku_listing_code = sanitize_sku(str(generated_sku_listing_code or "")).upper()
@@ -6120,7 +6380,15 @@ def prepare_generation_payload(
         sku_listing_code = generated_sku_listing_code
     elif not manual_sku_listing_code and not generated_sku_listing_code:
         generated_sku_listing_code = sku_listing_code
-    parent_sku = build_parent_sku_from_context(profile, sku_decoration_code, sku_listing_code)
+    derived_parent_sku = build_parent_sku_from_context(
+        profile,
+        sku_decoration_code,
+        sku_listing_code,
+    )
+    parent_sku_override = sanitize_sku(
+        str(parent_sku_override or "")
+    ).upper()
+    parent_sku = parent_sku_override or derived_parent_sku
     size_price_map = normalize_variant_price_map_for_selected_variants(
         profile,
         selected_variants,
@@ -6129,6 +6397,7 @@ def prepare_generation_payload(
 
     payload = {
         "parent_sku": parent_sku,
+        "parent_sku_override": parent_sku_override,
         "base_parent_sku": base_parent_sku,
         "model_name": profile.get("model_name", parent_sku),
         "title": title.strip(),
@@ -6216,6 +6485,7 @@ def prepare_generation_payload(
     errors.extend(validate_variants(selected_variants, size_price_map, quantity, profile=sku_profile))
     errors.extend(validate_parent_child_structure(payload))
     errors.extend(validate_template_file(profile))
+    errors.extend(validate_child_title_lengths(sku_profile, payload))
 
     quality_report = validate_listing_quality(sku_profile, payload)
     stock_ready_report = validate_stock_ready_payload(profile, payload)
@@ -6401,6 +6671,16 @@ def find_template_matches_for_staged_folder(
                 seen_slugs.add(profile.get("_slug", ""))
                 break
 
+    if bounded_match("S01") or bounded_match("S02"):
+        for profile in profiles:
+            if (
+                str(profile.get("_family_slug", "")).strip().upper() == "HOODIE"
+                and str(profile.get("template_key", "")).strip().upper() == "GENERIC_SWEATSHIRTS"
+            ):
+                matches.append((5, profile))
+                seen_slugs.add(profile.get("_slug", ""))
+                break
+
     for profile in profiles:
         template_key = str(profile.get("template_key", "")).strip()
         parent_sku = str(profile.get("parent_sku", "")).strip()
@@ -6535,6 +6815,30 @@ def find_profile_for_listing_memory(
                 return profile
 
     return None
+
+
+def build_christmas_group_target_profiles(
+    profiles: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    target_keys = {
+        "tshirt": "GENERIC_SHIRTS",
+        "sweatshirt": "GENERIC_SWEATSHIRTS",
+        "hoodie": "GENERIC_HOODIES",
+    }
+    targets: dict[str, dict[str, Any]] = {}
+    for member_key, template_key in target_keys.items():
+        matches = [
+            candidate
+            for candidate in profiles
+            if str(candidate.get("template_key", "") or "").strip() == template_key
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"Christmas {member_key} requires exactly one {template_key} profile; "
+                f"found {len(matches)}."
+            )
+        targets[member_key] = matches[0]
+    return targets
 
 
 def build_variants_summary(selected_variants: dict[str, list[str]]) -> str:
@@ -6684,7 +6988,10 @@ def has_complete_review_sku_price_state(
 ) -> bool:
     keys = get_review_edit_state_keys(review_key_prefix)
     selected_variants = dict(listing_memory.get("selected_variants", {}))
-    saved_prices = dict(listing_memory.get("size_price_map", {}))
+    saved_prices = normalize_saved_price_map_for_profile(
+        profile,
+        listing_memory.get("size_price_map", {}),
+    )
 
     required_keys = [
         keys["context"],
@@ -6856,19 +7163,272 @@ def render_review_content_editor(
     return get_review_content_edits(review_key_prefix)
 
 
+CHRISTMAS_GROUP_FOLDER_SUFFIX_BY_MEMBER = {
+    "tshirt": "TSHIRT",
+    "sweatshirt": "SWEATSHIRT",
+    "hoodie": "HOODIE",
+}
+
+CHRISTMAS_GROUP_PARENT_SUFFIX_BY_MEMBER = {
+    "tshirt": "T",
+    "sweatshirt": "S",
+    "hoodie": "H",
+}
+
+
+def resolve_grouped_child_listing_code_for_review(
+    listing_memory: dict[str, Any],
+    value: Any,
+    *,
+    prefer_source_listing_code: bool = False,
+    profile: dict[str, Any] | None = None,
+) -> str:
+    normalized = sanitize_sku(str(value or "")).upper()
+    source_group = listing_memory.get("source_group")
+    source_group = source_group if isinstance(source_group, dict) else {}
+    member_key = resolve_christmas_grouped_child_member_key(
+        listing_memory,
+        profile or {},
+    )
+    if not member_key:
+        return normalized
+
+    if prefer_source_listing_code:
+        explicit_source_code = sanitize_sku(
+            str(source_group.get("source_listing_code", "") or "")
+        ).upper()
+        if explicit_source_code:
+            return explicit_source_code
+
+    folder_suffix = CHRISTMAS_GROUP_FOLDER_SUFFIX_BY_MEMBER.get(member_key, "")
+    has_saved_group_identity = (
+        str(source_group.get("group_type", "") or "").strip() == "christmas_project"
+    )
+    if profile and not has_saved_group_identity:
+        try:
+            folder_suffix = str(
+                derive_christmas_group_members(profile)[member_key]["folder_suffix"]
+            ).strip().upper()
+        except (KeyError, TypeError, ValueError):
+            return normalized
+    if not normalized or not folder_suffix:
+        return normalized
+
+    suffix_marker = f"-{folder_suffix}"
+    if normalized.endswith(suffix_marker):
+        return normalized[:-len(suffix_marker)].rstrip("-")
+
+    return normalized
+
+
+def normalize_saved_variant_values_for_profile(
+    profile: dict[str, Any],
+    selected_variants: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    aliases_by_dimension = profile.get("saved_variant_value_aliases", {})
+    normalized = {
+        str(dimension): list(values or [])
+        for dimension, values in dict(selected_variants or {}).items()
+    }
+    if not isinstance(aliases_by_dimension, dict):
+        return normalized
+
+    for dimension, values in list(normalized.items()):
+        aliases = aliases_by_dimension.get(str(dimension).strip().lower(), {})
+        if not isinstance(aliases, dict):
+            continue
+        lookup = {
+            str(source).strip().casefold(): str(target).strip()
+            for source, target in aliases.items()
+            if str(source).strip() and str(target).strip()
+        }
+        normalized[dimension] = [
+            lookup.get(str(value).strip().casefold(), value)
+            for value in values
+        ]
+    return normalized
+
+
+def normalize_saved_price_map_for_profile(
+    profile: dict[str, Any],
+    size_price_map: dict[str, Any],
+) -> dict[str, Any]:
+    aliases_by_dimension = profile.get("saved_variant_value_aliases", {})
+    size_aliases = (
+        aliases_by_dimension.get("size", {})
+        if isinstance(aliases_by_dimension, dict)
+        else {}
+    )
+    if not isinstance(size_aliases, dict):
+        return dict(size_price_map or {})
+    lookup = {
+        str(source).strip().casefold(): str(target).strip()
+        for source, target in size_aliases.items()
+        if str(source).strip() and str(target).strip()
+    }
+    normalized: dict[str, Any] = {}
+    for raw_key, value in dict(size_price_map or {}).items():
+        key = str(raw_key)
+        design, separator, size = key.partition("||")
+        translated_size = lookup.get(size.strip().casefold(), size)
+        translated_key = f"{design}{separator}{translated_size}" if separator else translated_size
+        normalized[translated_key] = value
+    return normalized
+
+
+def resolve_christmas_grouped_child_member_key(
+    listing_memory: dict[str, Any],
+    profile: dict[str, Any],
+) -> str:
+    source_group = listing_memory.get("source_group")
+    if isinstance(source_group, dict) and (
+        str(source_group.get("group_type", "") or "").strip() == "christmas_project"
+    ):
+        member_key = str(source_group.get("member_key", "") or "").strip().casefold()
+        if member_key in CHRISTMAS_GROUP_PARENT_SUFFIX_BY_MEMBER:
+            return member_key
+
+    if str(profile.get("template_key", "") or "").strip().upper() != "CP":
+        return ""
+    if str(listing_memory.get("template_key", "") or "").strip().upper() != "CP":
+        return ""
+
+    selected_designs = {
+        str(design).strip().casefold()
+        for design in listing_memory.get("selected_variants", {}).get("design", [])
+        if str(design).strip()
+    }
+    if not selected_designs:
+        return ""
+
+    try:
+        members = derive_christmas_group_members(profile)
+    except (TypeError, ValueError):
+        return ""
+    matches = [
+        member_key
+        for member_key, member in members.items()
+        if selected_designs
+        == {
+            str(design).strip().casefold()
+            for design in member.get("designs", [])
+            if str(design).strip()
+        }
+    ]
+    return matches[0] if len(matches) == 1 else ""
+
+
+def build_review_parent_sku(
+    listing_memory: dict[str, Any],
+    profile: dict[str, Any],
+    sku_decoration_code: str,
+    sku_listing_code: str,
+) -> str:
+    explicit_parent_sku = sanitize_sku(
+        str(listing_memory.get("parent_sku_override", "") or "")
+    ).upper()
+    if explicit_parent_sku:
+        return explicit_parent_sku
+
+    parent_sku = build_parent_sku_from_context(
+        profile,
+        sku_decoration_code,
+        sku_listing_code,
+    )
+
+    member_key = resolve_christmas_grouped_child_member_key(listing_memory, profile)
+    parent_suffix = CHRISTMAS_GROUP_PARENT_SUFFIX_BY_MEMBER.get(member_key, "")
+    if not parent_suffix:
+        return parent_sku
+
+    suffix_marker = f"-{parent_suffix}"
+    if parent_sku.upper().endswith(suffix_marker):
+        return parent_sku
+
+    return f"{parent_sku}-{parent_suffix}"
+
+
+
+def get_grouped_child_generation_parent_sku_override(
+    listing_memory: dict[str, Any],
+    profile: dict[str, Any],
+) -> str:
+    member_key = resolve_christmas_grouped_child_member_key(listing_memory, profile)
+    if member_key not in {"tshirt", "sweatshirt", "hoodie"}:
+        return ""
+
+    # Exact compatibility repair for the original released CHRTST canary:
+    # CHRTST-TSHIRT / CHRTST-SWEATSHIRT / CHRTST-HOODIE -> CHRTST.
+    # Normal reviewed codes remain unchanged.
+    listing_code = resolve_grouped_child_listing_code_for_review(
+        listing_memory,
+        listing_memory.get("sku_listing_code", ""),
+        profile=profile,
+    )
+    if not listing_code:
+        return ""
+
+    decoration_code = get_default_sku_decoration_code(profile, listing_memory)
+
+    return build_review_parent_sku(
+        listing_memory,
+        profile,
+        decoration_code,
+        listing_code,
+    )
+
+
+def get_listing_generation_parent_sku_override(
+    listing_memory: dict[str, Any],
+    profile: dict[str, Any],
+) -> str:
+    explicit_parent_sku = sanitize_sku(
+        str(listing_memory.get("parent_sku_override", "") or "")
+    ).upper()
+    if explicit_parent_sku:
+        return explicit_parent_sku
+    return get_grouped_child_generation_parent_sku_override(listing_memory, profile)
+
+
+def preserve_grouped_child_generation_context(
+    listing_memory: dict[str, Any],
+    generation_payload: dict[str, Any],
+) -> dict[str, Any]:
+    if isinstance(listing_memory.get("source_group"), dict):
+        generation_payload["source_group"] = deepcopy(listing_memory["source_group"])
+    return generation_payload
+
 def initialize_review_edit_state(
     review_key_prefix: str,
     listing_memory: dict[str, Any],
     profile: dict[str, Any],
 ) -> None:
     keys = get_review_edit_state_keys(review_key_prefix)
+
+    review_manual_sku_listing_code = resolve_grouped_child_listing_code_for_review(
+        listing_memory,
+        listing_memory.get("manual_sku_listing_code", ""),
+        profile=profile,
+    )
+    review_generated_sku_listing_code = resolve_grouped_child_listing_code_for_review(
+        listing_memory,
+        listing_memory.get("generated_sku_listing_code", ""),
+        profile=profile,
+    )
+    review_sku_listing_code = resolve_grouped_child_listing_code_for_review(
+        listing_memory,
+        listing_memory.get("sku_listing_code", ""),
+        prefer_source_listing_code=True,
+        profile=profile,
+    )
+
     context = json.dumps(
         {
             "template": profile.get("template_key", profile.get("_slug", "")),
             "sku_decoration_code": listing_memory.get("sku_decoration_code", ""),
-            "manual_sku_listing_code": listing_memory.get("manual_sku_listing_code", ""),
-            "generated_sku_listing_code": listing_memory.get("generated_sku_listing_code", ""),
-            "sku_listing_code": listing_memory.get("sku_listing_code", ""),
+            "manual_sku_listing_code": review_manual_sku_listing_code,
+            "generated_sku_listing_code": review_generated_sku_listing_code,
+            "sku_listing_code": review_sku_listing_code,
             "merchant_shipping_group_name": normalize_merchant_shipping_group(
                 listing_memory.get("merchant_shipping_group_name", "")
             ),
@@ -6879,7 +7439,10 @@ def initialize_review_edit_state(
     )
     sku_decoration_code = get_default_sku_decoration_code(profile, listing_memory)
     selected_variants = dict(listing_memory.get("selected_variants", {}))
-    saved_prices = dict(listing_memory.get("size_price_map", {}))
+    saved_prices = normalize_saved_price_map_for_profile(
+        profile,
+        listing_memory.get("size_price_map", {}),
+    )
 
     if (
         st.session_state.get(keys["context"]) == context
@@ -6893,9 +7456,9 @@ def initialize_review_edit_state(
     st.session_state[keys["custom_sku_decoration_code"]] = (
         "" if sku_decoration_code in SKU_DECORATION_OPTIONS else sku_decoration_code
     )
-    st.session_state[keys["manual_sku_listing_code"]] = str(listing_memory.get("manual_sku_listing_code", "") or "")
+    st.session_state[keys["manual_sku_listing_code"]] = review_manual_sku_listing_code
     st.session_state[keys["generated_sku_listing_code"]] = (
-        get_saved_generated_sku_listing_code(listing_memory)
+        review_generated_sku_listing_code
         or f"D{generate_unique_sku(5)}"
     )
     st.session_state[keys["merchant_shipping_group_name"]] = normalize_merchant_shipping_group(
@@ -6947,7 +7510,12 @@ def get_review_sku_and_price_edits(
 
     manual_sku_listing_code = sanitize_sku(str(st.session_state.get(keys["manual_sku_listing_code"], ""))).upper()
     sku_listing_code = manual_sku_listing_code or generated_sku_listing_code
-    parent_sku = build_parent_sku_from_context(profile, sku_decoration_code, sku_listing_code)
+    parent_sku = build_review_parent_sku(
+        listing_memory,
+        profile,
+        sku_decoration_code,
+        sku_listing_code,
+    )
 
     selected_variants = dict(listing_memory.get("selected_variants", {}))
     existing_prices = dict(listing_memory.get("size_price_map", {}))
@@ -7394,10 +7962,15 @@ def build_ready_review_data(
         ),
         parent_main_image_choice=str(listing_memory.get("parent_main_image_choice", "") or ""),
         parent_main_image_url=str(listing_memory.get("parent_main_image_url", "") or ""),
+        parent_sku_override=get_listing_generation_parent_sku_override(
+            listing_memory,
+            profile,
+        ),
     )
 
     review_data["errors"].extend(generation_prep["errors"])
     payload = dict(generation_prep["payload"])
+    selected_variants = dict(payload.get("selected_variants", {}))
 
     if not (include_images or include_quality):
         return review_data
@@ -7829,13 +8402,17 @@ def build_ready_queue_items(
     profiles: list[dict[str, Any]],
     dropbox_cfg: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    return build_queue_items(
-        ready_folder_names,
-        profiles,
-        dropbox_cfg,
-        build_ready_folder_path,
-        "Ready for approval",
-    )
+    return [
+        item
+        for item in build_queue_items(
+            ready_folder_names,
+            profiles,
+            dropbox_cfg,
+            build_ready_folder_path,
+            "Ready for approval",
+        )
+        if is_ready_listing_visible(item.get("listing_memory", {}))
+    ]
 
 
 def build_approved_queue_items(
@@ -8014,8 +8591,13 @@ def generate_approved_listing(
         ),
         parent_main_image_choice=str(listing_memory.get("parent_main_image_choice", "") or ""),
         parent_main_image_url=str(listing_memory.get("parent_main_image_url", "") or ""),
+        parent_sku_override=get_listing_generation_parent_sku_override(
+            listing_memory,
+            profile,
+        ),
     )
     generation_payload = generation_prep["payload"]
+    selected_variants = dict(generation_payload.get("selected_variants", {}))
     if "mpn" in listing_memory:
         generation_payload["mpn"] = listing_memory.get("mpn")
     original_finished_folder_name = str(listing_memory.get("original_finished_folder_name", "")).strip()
@@ -8030,6 +8612,7 @@ def generate_approved_listing(
         generation_payload["review_snapshot"] = dict(listing_memory.get("review_snapshot", {}))
     if isinstance(listing_memory.get("workflow_events"), list):
         generation_payload["workflow_events"] = list(listing_memory.get("workflow_events", []))
+    preserve_grouped_child_generation_context(listing_memory, generation_payload)
     generation_errors = generation_prep["errors"]
     if generation_errors:
         raise ValueError("; ".join(generation_errors))
@@ -8682,6 +9265,91 @@ def render_review_queue_view(
     return
 
 
+def generate_approved_output_batch(
+    *,
+    target_folders: list[str],
+    approved_lookup: dict[str, dict[str, Any]],
+    profiles: list[dict[str, Any]],
+    dropbox_cfg: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    results: list[dict[str, Any]] = []
+    for folder_name in target_folders:
+        item = approved_lookup.get(folder_name)
+        if not item:
+            results.append({
+                "folder_name": folder_name,
+                "status": "Failed",
+                "message": "Approved folder could not be loaded.",
+            })
+            continue
+
+        try:
+            results.append(generate_approved_listing(
+                profile=item["profile"],
+                listing_memory=item["listing_memory"],
+                approved_folder_name=folder_name,
+                dropbox_cfg=dropbox_cfg,
+            ))
+        except Exception as exc:
+            results.append({
+                "folder_name": folder_name,
+                "status": "Failed",
+                "message": str(exc),
+            })
+
+    if len(target_folders) >= 2:
+        selected_items = [
+            approved_lookup.get(folder_name)
+            for folder_name in target_folders
+            if approved_lookup.get(folder_name)
+        ]
+        combined_groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+        skipped_combined_items: list[str] = []
+        for item in selected_items:
+            item_profile = item.get("profile") if item else None
+            folder_name = str(item.get("folder_name", "") if item else "")
+            if not item_profile or not item.get("listing_memory") or item.get("load_error"):
+                skipped_combined_items.append(
+                    f"{folder_name or 'unknown'} (profile or saved listing memory unavailable)"
+                )
+                continue
+            try:
+                group_key = get_combined_workbook_group_identity(item_profile)
+            except Exception as exc:
+                skipped_combined_items.append(f"{folder_name or 'unknown'} ({exc})")
+                continue
+            combined_groups.setdefault(group_key, []).append(item)
+
+        for group_items in combined_groups.values():
+            if len(group_items) < 2:
+                continue
+            group_label = build_combined_workbook_group_label(group_items)
+            try:
+                results.append(generate_approved_listings_combined(group_items, dropbox_cfg))
+            except Exception as exc:
+                results.append({
+                    "folder_name": f"Combined workbook - {group_label}",
+                    "status": "Failed",
+                    "message": f"Separate workbooks were generated. Grouped workbook was skipped: {exc}",
+                })
+
+        if skipped_combined_items:
+            results.append({
+                "folder_name": "Combined workbook",
+                "status": "Skipped",
+                "message": (
+                    "Grouped workbook skipped for incompatible listing(s): "
+                    + ", ".join(skipped_combined_items[:10])
+                ),
+            })
+
+    return move_successful_generation_results_to_finished(
+        results=results,
+        profiles=profiles,
+        dropbox_cfg=dropbox_cfg,
+    )
+
+
 def render_approved_queue_view(
     approved_folder_names: list[str],
     profiles: list[dict[str, Any]],
@@ -8931,76 +9599,9 @@ def render_approved_queue_view(
     approved_generation_started_at = time.perf_counter()
     approved_generation_target_count = len(target_folders)
 
-    results: list[dict[str, Any]] = []
-    for folder_name in target_folders:
-        item = approved_lookup.get(folder_name)
-        if not item:
-            results.append({
-                "folder_name": folder_name,
-                "status": "Failed",
-                "message": "Approved folder could not be loaded.",
-            })
-            continue
-
-        try:
-            result = generate_approved_listing(
-                profile=item["profile"],
-                listing_memory=item["listing_memory"],
-                approved_folder_name=folder_name,
-                dropbox_cfg=dropbox_cfg,
-            )
-            results.append(result)
-        except Exception as exc:
-            results.append({
-                "folder_name": folder_name,
-                "status": "Failed",
-                "message": str(exc),
-            })
-
-    if len(target_folders) >= 2:
-        selected_items = [
-            approved_lookup.get(folder_name)
-            for folder_name in target_folders
-            if approved_lookup.get(folder_name)
-        ]
-        combined_groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-        skipped_combined_items: list[str] = []
-        for item in selected_items:
-            item_profile = item.get("profile") if item else None
-            if not item_profile or not item.get("listing_memory") or item.get("load_error"):
-                continue
-            if str(item_profile.get("template_key", "") or "").strip().upper() == "CP":
-                skipped_combined_items.append(item.get("folder_name", ""))
-                continue
-            try:
-                group_key = get_combined_workbook_group_identity(item_profile)
-            except Exception:
-                skipped_combined_items.append(item.get("folder_name", ""))
-                continue
-            combined_groups.setdefault(group_key, []).append(item)
-
-        for group_items in combined_groups.values():
-            if len(group_items) < 2:
-                continue
-            group_label = build_combined_workbook_group_label(group_items)
-            try:
-                results.append(generate_approved_listings_combined(group_items, dropbox_cfg))
-            except Exception as exc:
-                results.append({
-                    "folder_name": f"Combined workbook - {group_label}",
-                    "status": "Failed",
-                    "message": f"Separate workbooks were generated. Grouped workbook was skipped: {exc}",
-                })
-
-        if skipped_combined_items:
-            results.append({
-                "folder_name": "Combined workbook",
-                "status": "Skipped",
-                "message": "Grouped workbook skipped for incompatible listing(s): " + ", ".join(skipped_combined_items[:10]),
-            })
-
-    results, move_results = move_successful_generation_results_to_finished(
-        results=results,
+    results, move_results = generate_approved_output_batch(
+        target_folders=target_folders,
+        approved_lookup=approved_lookup,
         profiles=profiles,
         dropbox_cfg=dropbox_cfg,
     )
@@ -9336,20 +9937,40 @@ def main() -> None:
     initial_staged_folder_name = st.session_state.get("active_staged_folder_select", "") if folder_source == "Use staged folder" else ""
     listing_memory: dict[str, Any] = {}
     authoritative_profile: dict[str, Any] | None = None
+    grouped_state_load_error = ""
+    listing_memory_location = ""
 
     if initial_staged_folder_name:
-        stage_folder_path = build_stage_folder_path(dropbox_cfg, initial_staged_folder_name)
-        try:
-            listing_memory = load_listing_memory_from_dropbox(stage_folder_path)
-            authoritative_profile = find_profile_for_listing_memory(profiles, listing_memory) if listing_memory else None
-            if authoritative_profile:
-                st.session_state["template_family_select"] = authoritative_profile.get("_family_slug", "")
-                st.session_state["listing_template_select"] = authoritative_profile.get("label", authoritative_profile.get("_slug", ""))
-                st.session_state["active_template_family_select"] = authoritative_profile.get("_family_slug", "")
-                st.session_state["active_listing_template_select"] = authoritative_profile.get("label", authoritative_profile.get("_slug", ""))
-        except Exception:
-            listing_memory = {}
-            authoritative_profile = None
+        memory_context = resolve_active_staged_listing_memory(
+            dropbox_cfg=dropbox_cfg,
+            staged_folder_name=initial_staged_folder_name,
+            load_stage_memory=load_listing_memory_from_dropbox,
+            destination_exists=path_exists_strict,
+            load_fresh_memory=load_listing_memory_from_dropbox_fresh,
+        )
+        listing_memory = dict(memory_context.get("memory", {}) or {})
+        listing_memory_location = str(memory_context.get("location", "") or "")
+        grouped_state_load_error = str(memory_context.get("error", "") or "")
+        known_grouped_sources = set(st.session_state.get("known_grouped_source_folders", []))
+        if is_grouped_christmas_memory(listing_memory):
+            known_grouped_sources.add(initial_staged_folder_name)
+            st.session_state["known_grouped_source_folders"] = sorted(known_grouped_sources)
+        elif (
+            initial_staged_folder_name in known_grouped_sources
+            or "listing_group" in listing_memory
+            or isinstance(listing_memory.get("group_submission"), dict)
+        ):
+            grouped_state_load_error = (
+                "Grouped Christmas state could not be loaded. This staged task cannot "
+                "be edited or submitted until its saved grouped state is recovered."
+            )
+
+        authoritative_profile = find_profile_for_listing_memory(profiles, listing_memory) if listing_memory else None
+        if authoritative_profile:
+            st.session_state["template_family_select"] = authoritative_profile.get("_family_slug", "")
+            st.session_state["listing_template_select"] = authoritative_profile.get("label", authoritative_profile.get("_slug", ""))
+            st.session_state["active_template_family_select"] = authoritative_profile.get("_family_slug", "")
+            st.session_state["active_listing_template_select"] = authoritative_profile.get("label", authoritative_profile.get("_slug", ""))
 
     current_folder_source_mode = st.session_state.get("active_folder_source_mode", "Use staged folder")
     current_detect_folder = st.session_state.get("active_staged_folder_select", "") if current_folder_source_mode == "Use staged folder" else ""
@@ -9811,7 +10432,10 @@ def main() -> None:
             st.rerun()
 
     price_dimension_values = selected_variants.get("size", ["default"])
-    saved_prices = listing_memory.get("size_price_map", {})
+    saved_prices = normalize_saved_price_map_for_profile(
+        profile,
+        listing_memory.get("size_price_map", {}),
+    )
     existing_values = [saved_prices.get(size) for size in price_dimension_values if size in saved_prices]
     unique_existing_values = {v for v in existing_values if v is not None}
     default_same_price = bool(price_dimension_values) and len(unique_existing_values) == 1 and len(existing_values) == len(price_dimension_values)
@@ -10011,6 +10635,8 @@ def main() -> None:
             active_profile=active_profile,
             profile=profile,
             memory_fingerprint=locals().get("memory_fingerprint", ""),
+            grouped_state_load_error=grouped_state_load_error,
+            listing_memory_location=listing_memory_location,
             CONTENT_EDITOR_KEYS=CONTENT_EDITOR_KEYS,
             MERCHANT_SHIPPING_GROUP_OPTIONS=MERCHANT_SHIPPING_GROUP_OPTIONS,
             SKU_DECORATION_OPTIONS=SKU_DECORATION_OPTIONS,
@@ -10054,6 +10680,15 @@ def main() -> None:
                     staged_folder_name=folder_name,
                     profile=selected_profile,
                     payload=payload,
+                )
+            ),
+            submit_grouped_listing=lambda selected_profile, payload, folder_name: (
+                submit_grouped_christmas_to_review(
+                    dropbox_cfg=dropbox_cfg,
+                    staged_folder_name=folder_name,
+                    profile=selected_profile,
+                    draft_payload=payload,
+                    profiles=profiles,
                 )
             ),
             dev_tools_enabled=dev_tools_enabled(os.environ, st.secrets),
@@ -10112,10 +10747,6 @@ def main() -> None:
     render_inline_loading_debug()
     render_rerun_cause_debug()
     save_debug_state_snapshot()
-
-    if ready_clicked and is_grouped_christmas_memory(listing_memory):
-        st.error("Grouped Christmas submission will be enabled after grouped review fan-out is available.")
-        st.stop()
 
     if not score_clicked and not ready_clicked:
         return

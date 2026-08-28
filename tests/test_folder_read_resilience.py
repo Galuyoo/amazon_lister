@@ -19,6 +19,7 @@ def clean_up_client_module_after_tests():
 
 def test_public_dropbox_helper_api_remains_importable() -> None:
     from utils.dropbox_client import (
+        copy_dropbox_file,
         create_folder_exclusive,
         create_folder_if_missing,
         format_dropbox_error,
@@ -36,7 +37,23 @@ def test_public_dropbox_helper_api_remains_importable() -> None:
         path_exists,
         upload_text_file,
         create_folder_exclusive,
+        copy_dropbox_file,
     ))
+
+
+def test_server_side_file_copy_disables_autorename(monkeypatch) -> None:
+    client = Mock()
+    client.files_copy_v2.return_value.metadata.path_display = "/ready/child/image.png"
+    monkeypatch.setattr(dropbox_client, "get_dropbox_client", Mock(return_value=client))
+
+    result = dropbox_client.copy_dropbox_file("/_stage/source/image.png", "/ready/child/image.png")
+
+    assert result == "/ready/child/image.png"
+    client.files_copy_v2.assert_called_once_with(
+        from_path="/_stage/source/image.png",
+        to_path="/ready/child/image.png",
+        autorename=False,
+    )
 
 
 def test_dropbox_client_has_bounded_timeout_and_sdk_retries(monkeypatch) -> None:

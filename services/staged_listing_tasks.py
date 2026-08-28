@@ -30,6 +30,22 @@ def validate_mpn(mpn: Any) -> list[str]:
     return []
 
 
+def validate_staged_folder_name(staged_folder_name: Any) -> list[str]:
+    if not isinstance(staged_folder_name, str) or not staged_folder_name.strip():
+        return ["Staging folder name is required."]
+    if staged_folder_name != staged_folder_name.strip():
+        return ["Staging folder name must not start or end with whitespace."]
+    if staged_folder_name in {".", ".."}:
+        return ["Staging folder name must not be a relative path."]
+    if "/" in staged_folder_name or "\\" in staged_folder_name:
+        return ["Staging folder name must not contain path separators."]
+    if any(ord(character) < 32 for character in staged_folder_name):
+        return ["Staging folder name must not contain control characters."]
+    if len(staged_folder_name.encode("utf-8")) > 255:
+        return ["Staging folder name is too long for one Dropbox folder name."]
+    return []
+
+
 def get_task_size_options(profile: dict[str, Any]) -> list[str]:
     for dimension in profile.get("variant_dimensions", []):
         if str(dimension.get("name", "")).strip().lower() in {"size", "sizes"}:
@@ -37,9 +53,28 @@ def get_task_size_options(profile: dict[str, Any]) -> list[str]:
     return list(profile.get("sizes", []))
 
 
+def is_christmas_project_profile(profile: dict[str, Any]) -> bool:
+    identifiers = [
+        profile.get("template_key", ""),
+        profile.get("label", ""),
+        profile.get("_slug", ""),
+    ]
+    normalized = {str(value or "").strip().casefold() for value in identifiers}
+    return "cp" in normalized or "christmas project" in normalized
+
+
+def is_grouped_christmas_task_payload(payload: dict[str, Any]) -> bool:
+    listing_group = payload.get("listing_group")
+    return (
+        isinstance(listing_group, dict)
+        and str(listing_group.get("group_type", "") or "").strip() == "christmas_project"
+    )
+
+
 def _validate_common_task_fields(
     *,
     profile: dict[str, Any],
+    staged_folder_name: Any,
     mpn: Any,
     quantity: Any,
     merchant_shipping_group_name: Any,
@@ -48,7 +83,10 @@ def _validate_common_task_fields(
     base_parent_sku: str,
     parent_sku: str,
 ) -> tuple[list[str], int, str]:
-    errors = validate_mpn(mpn)
+    errors = validate_staged_folder_name(staged_folder_name)
+    errors.extend(validate_mpn(mpn))
+    if str(mpn or "") != str(sku_listing_code or ""):
+        errors.append("MPN must equal the resolved listing/design code.")
     try:
         normalized_quantity = int(quantity)
     except (TypeError, ValueError):
@@ -73,6 +111,7 @@ def _validate_common_task_fields(
 def _build_common_task_payload(
     *,
     profile: dict[str, Any],
+    staged_folder_name: Any,
     mpn: Any,
     quantity: int,
     merchant_shipping_group_name: str,
@@ -85,6 +124,7 @@ def _build_common_task_payload(
     assets_prepared_by: str,
 ) -> dict[str, Any]:
     return {
+        "staged_folder_name": staged_folder_name,
         "mpn": mpn,
         "title": "",
         "bullet_points": [],
@@ -107,6 +147,7 @@ def _build_common_task_payload(
 def build_staged_listing_task_payload(
     *,
     profile: dict[str, Any],
+    staged_folder_name: Any,
     mpn: Any,
     price: Any,
     quantity: Any,
@@ -120,8 +161,18 @@ def build_staged_listing_task_payload(
     parent_sku: str,
     assets_prepared_by: str = "",
 ) -> dict[str, Any]:
+    if is_christmas_project_profile(profile):
+        return {
+            "valid": False,
+            "errors": [
+                "Christmas Project must be created as a grouped Christmas listing task."
+            ],
+            "payload": {},
+        }
+
     errors, normalized_quantity, shipping_group = _validate_common_task_fields(
         profile=profile,
+        staged_folder_name=staged_folder_name,
         mpn=mpn,
         quantity=quantity,
         merchant_shipping_group_name=merchant_shipping_group_name,
@@ -147,6 +198,7 @@ def build_staged_listing_task_payload(
 
     payload = _build_common_task_payload(
         profile=profile,
+        staged_folder_name=staged_folder_name,
         mpn=mpn,
         quantity=normalized_quantity,
         merchant_shipping_group_name=shipping_group,
@@ -170,6 +222,7 @@ def build_staged_listing_task_payload(
 def build_grouped_christmas_staged_task_payload(
     *,
     profile: dict[str, Any],
+    staged_folder_name: Any,
     mpn: Any,
     quantity: Any,
     merchant_shipping_group_name: Any,
@@ -184,6 +237,7 @@ def build_grouped_christmas_staged_task_payload(
 ) -> dict[str, Any]:
     errors, normalized_quantity, shipping_group = _validate_common_task_fields(
         profile=profile,
+        staged_folder_name=staged_folder_name,
         mpn=mpn,
         quantity=quantity,
         merchant_shipping_group_name=merchant_shipping_group_name,
@@ -205,6 +259,7 @@ def build_grouped_christmas_staged_task_payload(
 
     payload = _build_common_task_payload(
         profile=profile,
+        staged_folder_name=staged_folder_name,
         mpn=mpn,
         quantity=normalized_quantity,
         merchant_shipping_group_name=shipping_group,
@@ -230,11 +285,29 @@ def create_staged_listing_task(
     *,
     profile: dict[str, Any],
     payload: dict[str, Any],
+    staged_folder_name: str,
     stage_root: str,
     destination_exists: Callable[[str], bool],
     create_folder: Callable[[str], None],
     save_listing_memory: Callable[[dict[str, Any], dict[str, Any], str], str],
 ) -> dict[str, Any]:
+    if is_christmas_project_profile(profile) and not is_grouped_christmas_task_payload(payload):
+        return {
+            "status": "Failed",
+            "error": "Christmas Project must be created as a grouped Christmas listing task.",
+            "folder_created": False,
+        }
+
+    folder_name_errors = validate_staged_folder_name(staged_folder_name)
+    if folder_name_errors:
+        return {"status": "Failed", "error": folder_name_errors[0], "folder_created": False}
+    if payload.get("staged_folder_name") != staged_folder_name:
+        return {
+            "status": "Failed",
+            "error": "Staging folder identity does not match the saved task payload.",
+            "folder_created": False,
+        }
+
     mpn = payload.get("mpn")
     mpn_errors = validate_mpn(mpn)
     if mpn_errors:
@@ -244,12 +317,19 @@ def create_staged_listing_task(
     if not stage_root:
         return {"status": "Failed", "error": "Dropbox stage_root is not configured.", "folder_created": False}
 
-    folder_path = f"{stage_root}/{mpn}"
+    if str(mpn or "") != str(payload.get("sku_listing_code", "") or ""):
+        return {
+            "status": "Failed",
+            "error": "MPN must equal the resolved listing/design code.",
+            "folder_created": False,
+        }
+
+    folder_path = f"{stage_root}/{staged_folder_name}"
     try:
         if destination_exists(folder_path):
             return {
                 "status": "Exists",
-                "error": f"A staged task already exists for MPN {mpn}.",
+                "error": f"A staged task already exists for folder {staged_folder_name}.",
                 "folder_created": False,
                 "folder_path": folder_path,
             }
@@ -266,7 +346,7 @@ def create_staged_listing_task(
     except FileExistsError:
         return {
             "status": "Exists",
-            "error": f"A staged task already exists for MPN {mpn}.",
+            "error": f"A staged task already exists for folder {staged_folder_name}.",
             "folder_created": False,
             "folder_path": folder_path,
         }
@@ -294,7 +374,7 @@ def create_staged_listing_task(
     return {
         "status": "Success",
         "mpn": mpn,
-        "folder_name": mpn,
+        "folder_name": staged_folder_name,
         "folder_path": folder_path,
         "listing_memory_path": listing_memory_path,
         "folder_created": True,

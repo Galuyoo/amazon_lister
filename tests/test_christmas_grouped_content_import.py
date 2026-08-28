@@ -92,6 +92,19 @@ def test_malformed_member_uses_existing_validator_and_labels_errors() -> None:
     )
 
 
+def test_grouped_base_title_over_150_characters_is_rejected() -> None:
+    payload = load_sample_payload()
+    payload["members"]["tshirt"]["title"] = "Safe Christmas T-Shirt " + ("x" * 130)
+
+    result = validate_christmas_grouped_content_payload(payload)
+
+    assert result["valid"] is False
+    assert any(
+        error.startswith("tshirt: title must not exceed 150 characters")
+        for error in result["errors"]
+    )
+
+
 def test_grouped_parser_does_not_mutate_decoded_payload() -> None:
     payload = load_sample_payload()
     original = copy.deepcopy(payload)
