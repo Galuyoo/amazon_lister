@@ -312,7 +312,7 @@ def test_generic_targets_support_every_cp_member_combination_and_expected_workbo
     cp_profile = load_cp_profile()
     targets = load_target_profiles()
     members = derive_christmas_group_members(cp_profile)
-    expected_counts = {"tshirt": 98, "sweatshirt": 112, "hoodie": 30}
+    expected_counts = {"tshirt": 91, "sweatshirt": 91, "hoodie": 26}
     expected_workbooks = {
         "tshirt": "SHIRT.xlsm",
         "sweatshirt": "SWEATSHIRT.xlsm",

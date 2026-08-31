@@ -56,7 +56,6 @@
       "name": "size",
       "label": "Size",
       "options": [
-        "XS",
         "S",
         "M",
         "L",
@@ -64,8 +63,6 @@
         "2XL",
         "3XL",
         "4XL",
-        "5XL",
-        "6XL",
         "2 YRS",
         "3/4 YRS",
         "5/6 YRS",
@@ -85,7 +82,6 @@
     "White"
   ],
   "sizes": [
-    "XS",
     "S",
     "M",
     "L",
@@ -93,8 +89,6 @@
     "2XL",
     "3XL",
     "4XL",
-    "5XL",
-    "6XL",
     "2 YRS",
     "3/4 YRS",
     "5/6 YRS",
@@ -145,8 +139,7 @@
       "XL",
       "2XL",
       "3XL",
-      "4XL",
-      "5XL"
+      "4XL"
     ],
     "Kids T-Shirt": [
       "2 YRS",
@@ -157,15 +150,13 @@
       "11/13 YRS"
     ],
     "Adult Hoodie": [
-      "XS",
       "S",
       "M",
       "L",
       "XL",
       "2XL",
       "3XL",
-      "4XL",
-      "5XL"
+      "4XL"
     ],
     "Kids Hoodie": [
       "2 YRS",
@@ -176,16 +167,13 @@
       "11/13 YRS"
     ],
     "Adult Sweatshirt": [
-      "XS",
       "S",
       "M",
       "L",
       "XL",
       "2XL",
       "3XL",
-      "4XL",
-      "5XL",
-      "6XL"
+      "4XL"
     ],
     "Kids Sweatshirt": [
       "2 YRS",
@@ -195,6 +183,47 @@
       "9/10 YRS",
       "11/13 YRS"
     ]
+  },
+  "default_size_price_map": {
+    "Adult T-Shirt||S": 11.99,
+    "Adult T-Shirt||M": 11.99,
+    "Adult T-Shirt||L": 11.99,
+    "Adult T-Shirt||XL": 11.99,
+    "Adult T-Shirt||2XL": 11.99,
+    "Adult T-Shirt||3XL": 13.99,
+    "Adult T-Shirt||4XL": 13.99,
+    "Kids T-Shirt||2 YRS": 9.99,
+    "Kids T-Shirt||3/4 YRS": 9.99,
+    "Kids T-Shirt||5/6 YRS": 9.99,
+    "Kids T-Shirt||7/8 YRS": 9.99,
+    "Kids T-Shirt||9/10 YRS": 9.99,
+    "Kids T-Shirt||11/13 YRS": 9.99,
+    "Adult Sweatshirt||S": 19.99,
+    "Adult Sweatshirt||M": 19.99,
+    "Adult Sweatshirt||L": 19.99,
+    "Adult Sweatshirt||XL": 19.99,
+    "Adult Sweatshirt||2XL": 19.99,
+    "Adult Sweatshirt||3XL": 21.99,
+    "Adult Sweatshirt||4XL": 21.99,
+    "Kids Sweatshirt||2 YRS": 18.99,
+    "Kids Sweatshirt||3/4 YRS": 18.99,
+    "Kids Sweatshirt||5/6 YRS": 18.99,
+    "Kids Sweatshirt||7/8 YRS": 18.99,
+    "Kids Sweatshirt||9/10 YRS": 18.99,
+    "Kids Sweatshirt||11/13 YRS": 18.99,
+    "Adult Hoodie||S": 21.99,
+    "Adult Hoodie||M": 21.99,
+    "Adult Hoodie||L": 21.99,
+    "Adult Hoodie||XL": 21.99,
+    "Adult Hoodie||2XL": 21.99,
+    "Adult Hoodie||3XL": 23.99,
+    "Adult Hoodie||4XL": 23.99,
+    "Kids Hoodie||2 YRS": 19.99,
+    "Kids Hoodie||3/4 YRS": 19.99,
+    "Kids Hoodie||5/6 YRS": 19.99,
+    "Kids Hoodie||7/8 YRS": 19.99,
+    "Kids Hoodie||9/10 YRS": 19.99,
+    "Kids Hoodie||11/13 YRS": 19.99
   },
   "size_display_prefix_by_design": {
     "Adult T-Shirt": "Adult T-Shirt",

@@ -61,6 +61,32 @@ def test_members_derive_codes_colours_and_sizes_from_existing_cp_maps() -> None:
     assert members["hoodie"]["sizes_by_design"]["Kids Hoodie"] == profile["design_size_map"]["Kids Hoodie"]
 
 
+def test_cp_grouped_sizes_exclude_unwanted_adult_sizes() -> None:
+    profile = load_cp_profile()
+    members = derive_christmas_group_members(profile)
+
+    assert {"XS", "5XL", "6XL"}.isdisjoint(profile["sizes"])
+    for member in members.values():
+        for design, sizes in member["sizes_by_design"].items():
+            if design.startswith("Adult "):
+                assert sizes == ["S", "M", "L", "XL", "2XL", "3XL", "4XL"]
+
+
+def test_cp_default_prices_cover_every_design_size_without_colour_keys() -> None:
+    profile = load_cp_profile()
+    members = derive_christmas_group_members(profile)
+    default_prices = profile["default_size_price_map"]
+    expected_keys = {
+        f"{design}||{size}"
+        for member in members.values()
+        for design, sizes in member["sizes_by_design"].items()
+        for size in sizes
+    }
+
+    assert set(default_prices) == expected_keys
+    assert all(key.count("||") == 1 for key in default_prices)
+
+
 @pytest.mark.parametrize(
     ("filename", "member_key", "designs", "colour"),
     [

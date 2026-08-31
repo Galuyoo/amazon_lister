@@ -712,6 +712,47 @@ def test_amazon_apparel_size_fields_use_template_values(
 
 
 @pytest.mark.parametrize(
+    ("design", "size", "expected_price"),
+    [
+        ("Adult T-Shirt", "S", 11.99),
+        ("Adult T-Shirt", "2XL", 11.99),
+        ("Adult T-Shirt", "3XL", 13.99),
+        ("Adult T-Shirt", "4XL", 13.99),
+        ("Kids T-Shirt", "5/6 YRS", 9.99),
+        ("Adult Sweatshirt", "S", 19.99),
+        ("Adult Sweatshirt", "4XL", 21.99),
+        ("Kids Sweatshirt", "5/6 YRS", 18.99),
+        ("Adult Hoodie", "S", 21.99),
+        ("Adult Hoodie", "4XL", 23.99),
+        ("Kids Hoodie", "5/6 YRS", 19.99),
+    ],
+)
+def test_cp_design_size_defaults_use_configured_prices(
+    design,
+    size,
+    expected_price,
+) -> None:
+    profile = load_cp_profile()
+
+    assert app.get_default_price_for_size(
+        profile,
+        size,
+        design=design,
+    ) == expected_price
+
+
+def test_saved_cp_design_size_price_wins_over_profile_default() -> None:
+    profile = load_cp_profile()
+
+    assert app.get_default_price_for_size(
+        profile,
+        "M",
+        {"Adult Hoodie||M": 27.49},
+        design="Adult Hoodie",
+    ) == 27.49
+
+
+@pytest.mark.parametrize(
     ("template_key", "parent_sku", "variant", "expected_sku"),
     [
         (

@@ -1027,7 +1027,12 @@ def get_variant_price_from_map(
         return size_price_map["default"]
 
     if size_value:
-        return get_default_price_for_size(profile, size_value, size_price_map)
+        return get_default_price_for_size(
+            profile,
+            size_value,
+            size_price_map,
+            design=design_value,
+        )
 
     return fallback
 
@@ -4888,7 +4893,12 @@ def build_design_size_price_inputs(
         first_key = build_variant_price_key(first_combo)
         fallback_price = (
             get_positive_variant_price_from_map(profile, saved_prices, first_combo)
-            or float(get_default_price_for_size(profile, first_combo.get("size", ""), {}))
+            or float(get_default_price_for_size(
+                profile,
+                first_combo.get("size", ""),
+                {},
+                design=first_combo.get("design", ""),
+            ))
         )
         if "shared_price_all_sizes" not in st.session_state:
             st.session_state["shared_price_all_sizes"] = float(fallback_price)
@@ -4928,7 +4938,12 @@ def build_design_size_price_inputs(
                     cluster_key = f"cluster_price_{sanitize_sku(design)}_{sanitize_sku(cluster_label)}"
                     fallback_price = (
                         get_positive_variant_price_from_map(profile, saved_prices, first_combo)
-                        or float(get_default_price_for_size(profile, first_size, {}))
+                        or float(get_default_price_for_size(
+                            profile,
+                            first_size,
+                            {},
+                            design=design,
+                        ))
                     )
                     with cols[idx % cols_per_row]:
                         if cluster_key not in st.session_state:
@@ -4966,7 +4981,12 @@ def build_design_size_price_inputs(
                     if widget_key not in st.session_state:
                         default_price = (
                             get_positive_variant_price_from_map(profile, saved_prices, combo)
-                            or float(get_default_price_for_size(profile, size, {}))
+                            or float(get_default_price_for_size(
+                                profile,
+                                size,
+                                {},
+                                design=design,
+                            ))
                         )
                         st.session_state[widget_key] = float(
                             default_price
@@ -5007,13 +5027,22 @@ def has_mixed_adult_child_sizes(sizes: list[str]) -> bool:
     )
 
 
-def get_configured_price(profile: dict[str, Any], size: str) -> float | None:
+def get_configured_price(
+    profile: dict[str, Any],
+    size: str,
+    design: str = "",
+) -> float | None:
     exact_map = profile.get("default_size_price_map", {})
-    if isinstance(exact_map, dict) and size in exact_map:
-        try:
-            return float(exact_map[size])
-        except (TypeError, ValueError):
-            return None
+    if isinstance(exact_map, dict):
+        exact_keys = [build_variant_price_key({"design": design, "size": size})]
+        if size not in exact_keys:
+            exact_keys.append(size)
+        for exact_key in exact_keys:
+            if exact_key in exact_map:
+                try:
+                    return float(exact_map[exact_key])
+                except (TypeError, ValueError):
+                    return None
 
     child_price = profile.get("child_default_price", profile.get("kids_default_price"))
     adult_price = profile.get("adult_default_price")
@@ -5033,15 +5062,20 @@ def get_default_price_for_size(
     profile: dict[str, Any],
     size: str,
     saved_prices: dict[str, float] | None = None,
+    design: str = "",
 ) -> float:
     saved_prices = saved_prices or {}
-    if size in saved_prices:
-        try:
-            return float(saved_prices[size])
-        except (TypeError, ValueError):
-            pass
+    saved_keys = [build_variant_price_key({"design": design, "size": size})]
+    if size not in saved_keys:
+        saved_keys.append(size)
+    for saved_key in saved_keys:
+        if saved_key in saved_prices:
+            try:
+                return float(saved_prices[saved_key])
+            except (TypeError, ValueError):
+                pass
 
-    configured_price = get_configured_price(profile, size)
+    configured_price = get_configured_price(profile, size, design)
     if configured_price is not None:
         return configured_price
 
