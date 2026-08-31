@@ -765,13 +765,13 @@ def test_saved_cp_design_size_price_wins_over_profile_default() -> None:
             "GENERIC_SWEATSHIRTS",
             "PRINT-XMDARTN-S",
             {"design": "Kids Sweatshirt", "color": "Black", "size": "3/4 YRS"},
-            "PRINT-XMDARTN-S-BLAC-34Y",
+            "PRINT-XMDARTN-S-BLAC-3Y",
         ),
         (
             "GENERIC_HOODIES",
             "PRINT-XMDARTN-H",
             {"design": "Kids Hoodie", "color": "Black", "size": "3/4 YRS"},
-            "PRINT-XMDARTN-H-BLAC-34Y",
+            "PRINT-XMDARTN-H-BLAC-3Y",
         ),
     ],
 )

@@ -87,6 +87,22 @@ def test_cp_default_prices_cover_every_design_size_without_colour_keys() -> None
     assert all(key.count("||") == 1 for key in default_prices)
 
 
+def test_cp_kids_size_sku_codes_use_first_year_only() -> None:
+    profile = load_cp_profile()
+
+    assert {
+        size: profile["size_code_map"][size]
+        for size in ["2 YRS", "3/4 YRS", "5/6 YRS", "7/8 YRS", "9/10 YRS", "11/13 YRS"]
+    } == {
+        "2 YRS": "2Y",
+        "3/4 YRS": "3Y",
+        "5/6 YRS": "5Y",
+        "7/8 YRS": "7Y",
+        "9/10 YRS": "9Y",
+        "11/13 YRS": "11Y",
+    }
+
+
 @pytest.mark.parametrize(
     ("filename", "member_key", "designs", "colour"),
     [

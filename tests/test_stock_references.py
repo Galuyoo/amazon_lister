@@ -115,7 +115,7 @@ def test_generic_hoodies_config_and_child_sku_codes() -> None:
     )
 
     assert adult_sku == "PRINT-IMBSE-RED-M"
-    assert kids_sku == "PRINT-IMBSE-RED-34Y"
+    assert kids_sku == "PRINT-IMBSE-RED-3Y"
 
     combinations = build_variant_combinations(
         profile,
@@ -175,7 +175,7 @@ def test_generic_sweatshirts_config_and_child_sku_codes() -> None:
     )
 
     assert adult_sku == "PRINT-IMBSE-RED-M"
-    assert kids_sku == "PRINT-IMBSE-RED-34Y"
+    assert kids_sku == "PRINT-IMBSE-RED-3Y"
 
     combinations = build_variant_combinations(
         profile,
@@ -216,6 +216,27 @@ def test_generic_split_profiles_remain_sku_unique_without_design_codes() -> None
         ]
 
         assert len(child_skus) == len(set(child_skus))
+
+
+def test_generic_christmas_targets_use_first_year_kids_size_tokens() -> None:
+    expected = {
+        "2 YRS": "2Y",
+        "3/4 YRS": "3Y",
+        "5/6 YRS": "5Y",
+        "7/8 YRS": "7Y",
+        "9/10 YRS": "9Y",
+        "11/13 YRS": "11Y",
+    }
+    for relative_path in [
+        "templates/HOODIE/Generic Sweatshirts/config.json",
+        "templates/HOODIE/Generic Hoodies/config.json",
+    ]:
+        profile = load_profile(relative_path)
+
+        assert {
+            size: profile["size_code_map"][size]
+            for size in expected
+        } == expected
 
 
 def test_design_code_remains_default_for_profiles_without_omit_flag() -> None:
