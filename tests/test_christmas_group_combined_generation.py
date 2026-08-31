@@ -685,6 +685,69 @@ def test_generic_shirts_historical_size_values_normalize_without_losing_prices()
     }
 
 
+@pytest.mark.parametrize(
+    ("size", "expected_size", "expected_size_to", "expected_class"),
+    [
+        ("1Yr", "1 Year", "", "Age"),
+        ("3Yr", "3 Years", "", "Age"),
+        ("3/4 YRS", "3 Years", "4 Years", "Age"),
+        ("11/13 YRS", "11 Years", "13 Years", "Age"),
+        ("2XL", "XXL", "", "Alpha"),
+    ],
+)
+def test_amazon_apparel_size_fields_use_template_values(
+    size,
+    expected_size,
+    expected_size_to,
+    expected_class,
+) -> None:
+    values = app.apply_apparel_size_fields({}, size, is_apparel=True)
+
+    assert values["apparel_size"] == expected_size
+    assert values["apparel_size_to"] == expected_size_to
+    assert values["shirt_size"] == expected_size
+    assert values["shirt_size_to"] == expected_size_to
+    assert values["apparel_size_class"] == expected_class
+    assert values["shirt_size_class"] == expected_class
+
+
+@pytest.mark.parametrize(
+    ("template_key", "parent_sku", "variant", "expected_sku"),
+    [
+        (
+            "GENERIC_SHIRTS",
+            "PRINT-XMDARTN-T",
+            {"design": "Kids T-Shirt", "color": "Black", "size": "3Yr"},
+            "PRINT-XMDARTN-T-BLAC-3Y",
+        ),
+        (
+            "GENERIC_SWEATSHIRTS",
+            "PRINT-XMDARTN-S",
+            {"design": "Kids Sweatshirt", "color": "Black", "size": "3/4 YRS"},
+            "PRINT-XMDARTN-S-BLAC-34Y",
+        ),
+        (
+            "GENERIC_HOODIES",
+            "PRINT-XMDARTN-H",
+            {"design": "Kids Hoodie", "color": "Black", "size": "3/4 YRS"},
+            "PRINT-XMDARTN-H-BLAC-34Y",
+        ),
+    ],
+)
+def test_christmas_target_child_skus_omit_redundant_design_code(
+    template_key,
+    parent_sku,
+    variant,
+    expected_sku,
+) -> None:
+    profile = next(
+        item for item in app.list_template_profiles()
+        if item.get("template_key") == template_key
+    )
+
+    assert app.build_child_sku(profile, parent_sku, variant) == expected_sku
+
+
 def test_new_christmas_targets_use_normal_workbook_compatibility_groups() -> None:
     profiles = app.list_template_profiles()
     by_key = {profile.get("template_key"): profile for profile in profiles}

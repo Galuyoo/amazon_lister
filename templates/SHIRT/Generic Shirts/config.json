@@ -119,6 +119,7 @@
     "11Yr"
   ],
   "design_sku_position": "after_parent",
+  "include_design_code_in_child_sku": false,
   "design_sku_map": {
     "Adult T-Shirt": "T01",
     "Kids T-Shirt": "T02"

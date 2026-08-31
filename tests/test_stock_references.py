@@ -68,7 +68,7 @@ def test_generic_shirts_kids_child_sku_order() -> None:
         },
     )
 
-    assert sku == "PRINT-IMBSE-T02-RED-1Y"
+    assert sku == "PRINT-IMBSE-RED-1Y"
 
 
 def test_generic_shirts_adult_child_sku_order() -> None:
@@ -84,7 +84,7 @@ def test_generic_shirts_adult_child_sku_order() -> None:
         },
     )
 
-    assert sku == "PRINT-IMBSE-T01-RED-M"
+    assert sku == "PRINT-IMBSE-RED-M"
 
 
 def test_generic_hoodies_config_and_child_sku_codes() -> None:
@@ -114,8 +114,8 @@ def test_generic_hoodies_config_and_child_sku_codes() -> None:
         {"design": "Kids Hoodie", "color": "Red", "size": "3/4 YRS"},
     )
 
-    assert adult_sku == "PRINT-IMBSE-H01-RED-M"
-    assert kids_sku == "PRINT-IMBSE-H02-RED-34Y"
+    assert adult_sku == "PRINT-IMBSE-RED-M"
+    assert kids_sku == "PRINT-IMBSE-RED-34Y"
 
     combinations = build_variant_combinations(
         profile,
@@ -174,8 +174,8 @@ def test_generic_sweatshirts_config_and_child_sku_codes() -> None:
         {"design": "Kids Sweatshirt", "color": "Red", "size": "3/4 YRS"},
     )
 
-    assert adult_sku == "PRINT-IMBSE-S01-RED-M"
-    assert kids_sku == "PRINT-IMBSE-S02-RED-34Y"
+    assert adult_sku == "PRINT-IMBSE-RED-M"
+    assert kids_sku == "PRINT-IMBSE-RED-34Y"
 
     combinations = build_variant_combinations(
         profile,
@@ -196,6 +196,41 @@ def test_generic_sweatshirts_config_and_child_sku_codes() -> None:
         "color": "Charcoal",
         "size": "3/4 YRS",
     } not in combinations
+
+
+def test_generic_split_profiles_remain_sku_unique_without_design_codes() -> None:
+    for relative_path in [
+        "templates/SHIRT/Generic Shirts/config.json",
+        "templates/HOODIE/Generic Sweatshirts/config.json",
+        "templates/HOODIE/Generic Hoodies/config.json",
+    ]:
+        profile = load_profile(relative_path)
+        dimensions = {
+            str(dimension["name"]): list(dimension.get("options", []))
+            for dimension in profile["variant_dimensions"]
+        }
+        combinations = build_variant_combinations(profile, dimensions)
+        child_skus = [
+            build_clear_child_sku(profile, "PRINT-XMDARTN-TARGET", combination)
+            for combination in combinations
+        ]
+
+        assert len(child_skus) == len(set(child_skus))
+
+
+def test_design_code_remains_default_for_profiles_without_omit_flag() -> None:
+    profile = {
+        "sku_decoration_code": "PRINT",
+        "design_sku_map": {"Kids T-Shirt": "T02"},
+        "color_sku_map": {"Black": "BLAC"},
+        "size_code_map": {"3Yr": "3Y"},
+    }
+
+    assert build_clear_child_sku(
+        profile,
+        "PRINT-XMDARTN",
+        {"design": "Kids T-Shirt", "color": "Black", "size": "3Yr"},
+    ) == "PRINT-XMDARTN-T02-BLAC-3Y"
 
 
 def test_uc301_red_child_sku_uses_red_token() -> None:

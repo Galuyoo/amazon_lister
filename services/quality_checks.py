@@ -146,7 +146,12 @@ def get_variant_size_display_label(profile: dict[str, Any], variant_values: dict
 
 def is_child_size_label(size: str) -> bool:
     normalized = str(size or "").strip().lower()
-    return "year" in normalized or "yrs" in normalized or normalized.startswith("child ")
+    return (
+        "year" in normalized
+        or "yrs" in normalized
+        or normalized.startswith("child ")
+        or bool(re.fullmatch(r"\d+\s*yrs?", normalized))
+    )
 
 
 def build_child_title_for_validation(

@@ -1336,7 +1336,8 @@ def apply_apparel_size_fields(
     size_values = {
         "apparel_size_system": "UK",
         "apparel_size_class": size_class,
-        "apparel_size": normalized_size,
+        "apparel_size": shirt_size,
+        "apparel_size_to": shirt_size_to,
         "size_map": normalized_size,
         "apparel_body_type": body_type,
         "apparel_height_type": height_type,
@@ -4992,7 +4993,12 @@ def get_design_size_price_cluster_label(design: str, size: str) -> str:
 
 def is_child_size_label(size: str) -> bool:
     normalized = str(size or "").strip().lower()
-    return "year" in normalized or "yrs" in normalized or normalized.startswith("child ")
+    return (
+        "year" in normalized
+        or "yrs" in normalized
+        or normalized.startswith("child ")
+        or bool(re.fullmatch(r"\d+\s*yrs?", normalized))
+    )
 
 
 def has_mixed_adult_child_sizes(sizes: list[str]) -> bool:
@@ -5363,8 +5369,6 @@ def write_child_rows(
         values = prepare_row_values(values, field_aliases, extra_child_fields)
         values = apply_apparel_size_fields(values, normalized_size, is_apparel=is_apparel)
         values["size_name"] = normalized_display_size
-        if is_apparel:
-            values["apparel_size"] = normalized_display_size
         values["item_sku"] = item_sku
         values["update_delete"] = update_delete_value
         values["parent_sku"] = data["parent_sku"]

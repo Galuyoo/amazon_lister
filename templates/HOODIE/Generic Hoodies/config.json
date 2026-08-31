@@ -124,6 +124,7 @@
     "11/13 YRS"
   ],
   "design_sku_position": "after_parent",
+  "include_design_code_in_child_sku": false,
   "design_sku_map": {
     "Adult Hoodie": "H01",
     "Kids Hoodie": "H02"
