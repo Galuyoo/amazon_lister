@@ -68,9 +68,9 @@ All three listings may share the same visible Christmas design or theme, but eac
 CONTENT REQUIREMENTS FOR EACH MEMBER
 
 Title:
-- maximum 150 characters for the base title;
+- hard maximum 170 characters for the base title;
 - target 120 to 150 characters;
-- the application adds garment, colour and size prefixes, so never use the full Amazon 200-character allowance here;
+- the application adds garment, colour and size prefixes and separately enforces Amazon's 200-character final child-title limit, so a base title near 170 characters may still need shortening;
 - readable and relevant rather than keyword-stuffed;
 - do not repeat the same individual word 3 or more times;
 - do not use "Mother's Day Gift" or unsupported promotional claims.
@@ -87,8 +87,8 @@ Product description:
 - use readable paragraphs and avoid repeating the bullets word-for-word.
 
 Generic keywords:
-- maximum 249 UTF-8 bytes;
-- target at least 120 bytes while remaining relevant;
+- hard maximum 249 UTF-8 bytes;
+- target 230 to 249 bytes while remaining relevant;
 - prefer plain ASCII words for predictable byte length;
 - do not include brands, competitors, punctuation without purpose or needless duplicates.
 

@@ -59,8 +59,10 @@ def test_prompt_has_exact_grouped_output_contract() -> None:
     assert "chrtst_christmas_grouped_listing_content.json" in prompt
     assert "cannot create downloadable files" in prompt
     assert "raw grouped object and as the only response" in prompt
-    assert "maximum 150 characters for the base title" in prompt
-    assert "never use the full amazon 200-character allowance" in prompt
+    assert "hard maximum 170 characters for the base title" in prompt
+    assert "200-character final child-title limit" in prompt
+    assert "hard maximum 249 utf-8 bytes" in prompt
+    assert "target 230 to 249 bytes" in prompt
 
 
 def test_prompt_always_generates_all_three_from_one_representative_garment() -> None:

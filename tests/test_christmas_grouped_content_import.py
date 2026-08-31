@@ -92,17 +92,52 @@ def test_malformed_member_uses_existing_validator_and_labels_errors() -> None:
     )
 
 
-def test_grouped_base_title_over_150_characters_is_rejected() -> None:
+def test_grouped_base_title_over_170_characters_is_rejected() -> None:
     payload = load_sample_payload()
-    payload["members"]["tshirt"]["title"] = "Safe Christmas T-Shirt " + ("x" * 130)
+    payload["members"]["tshirt"]["title"] = "Safe Christmas T-Shirt " + ("x" * 160)
 
     result = validate_christmas_grouped_content_payload(payload)
 
     assert result["valid"] is False
     assert any(
-        error.startswith("tshirt: title must not exceed 150 characters")
+        error.startswith("tshirt: title must not exceed 170 characters")
         for error in result["errors"]
     )
+
+
+def test_grouped_base_title_at_170_characters_is_accepted() -> None:
+    payload = load_sample_payload()
+    prefix = "Safe Christmas T-Shirt "
+    payload["members"]["tshirt"]["title"] = prefix + ("x" * (170 - len(prefix)))
+
+    result = validate_christmas_grouped_content_payload(payload)
+
+    assert result["valid"] is True
+    assert len(result["members"]["tshirt"]["title"]) == 170
+
+
+def test_grouped_keywords_target_230_bytes_and_hard_maximum_249() -> None:
+    below_target = load_sample_payload()
+    below_target["members"]["hoodie"]["generic_keywords"] = "x" * 229
+
+    warning_result = validate_christmas_grouped_content_payload(below_target)
+
+    assert warning_result["valid"] is True
+    assert any(
+        warning.startswith("hoodie: Generic keywords are below the grouped Christmas target of 230 UTF-8 bytes")
+        for warning in warning_result["warnings"]
+    )
+
+    at_target = load_sample_payload()
+    at_target["members"]["hoodie"]["generic_keywords"] = "x" * 230
+    target_result = validate_christmas_grouped_content_payload(at_target)
+    assert not any("hoodie: Generic keywords" in warning for warning in target_result["warnings"])
+
+    over_maximum = load_sample_payload()
+    over_maximum["members"]["hoodie"]["generic_keywords"] = "x" * 250
+    maximum_result = validate_christmas_grouped_content_payload(over_maximum)
+    assert maximum_result["valid"] is False
+    assert any("hoodie: generic_keywords must not exceed 249 UTF-8 bytes" in error for error in maximum_result["errors"])
 
 
 def test_grouped_parser_does_not_mutate_decoded_payload() -> None:

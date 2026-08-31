@@ -11,7 +11,9 @@ SCHEMA_VERSION = 1
 GROUP_TYPE = "christmas_project"
 MEMBER_KEYS = ("tshirt", "sweatshirt", "hoodie")
 REQUIRED_FIELDS = {"schema_version", "group_type", "members"}
-MAX_GROUPED_BASE_TITLE_CHARS = 150
+MAX_GROUPED_BASE_TITLE_CHARS = 170
+GROUPED_KEYWORDS_TARGET_BYTES = 230
+_GENERIC_KEYWORDS_WARNING_PREFIX = "Generic keywords use materially less"
 
 _JSON_FENCE_PATTERN = re.compile(
     r"\A\s*```json\s*\r?\n(?P<json>.*?)\r?\n```\s*\Z",
@@ -73,17 +75,27 @@ def validate_christmas_grouped_content_payload(payload: Any) -> dict[str, Any]:
 
         member_result = validate_listing_content_payload(members[member_key])
         errors.extend(f"{member_key}: {message}" for message in member_result["errors"])
-        warnings.extend(f"{member_key}: {message}" for message in member_result["warnings"])
+        warnings.extend(
+            f"{member_key}: {message}"
+            for message in member_result["warnings"]
+            if not message.startswith(_GENERIC_KEYWORDS_WARNING_PREFIX)
+        )
         if member_result["valid"]:
             normalized_content = dict(member_result["content"])
             title_length = len(normalized_content["title"])
+            keyword_bytes = len(normalized_content["generic_keywords"].encode("utf-8"))
             if title_length > MAX_GROUPED_BASE_TITLE_CHARS:
                 errors.append(
                     f"{member_key}: title must not exceed {MAX_GROUPED_BASE_TITLE_CHARS} characters "
-                    f"so garment, colour, and size prefixes remain Amazon-safe (received {title_length})."
+                    f"for grouped Christmas content (received {title_length})."
                 )
             else:
                 normalized_members[member_key] = normalized_content
+            if keyword_bytes < GROUPED_KEYWORDS_TARGET_BYTES:
+                warnings.append(
+                    f"{member_key}: Generic keywords are below the grouped Christmas target of "
+                    f"{GROUPED_KEYWORDS_TARGET_BYTES} UTF-8 bytes (received {keyword_bytes}; hard maximum 249)."
+                )
 
     return _result(members=normalized_members, errors=errors, warnings=warnings)
 
