@@ -326,6 +326,7 @@ def render_product_setup_controls(
 ) -> tuple[str, str | None, str | None]:
     staged_folder_name = None
     selected_finished_folder = None
+    show_create_task_form = False
 
     top_left_col, top_right_col = st.columns(2)
     with top_left_col:
@@ -426,53 +427,7 @@ def render_product_setup_controls(
                     st.error(f"Could not restage folder: {exc}")
                     st.stop()
         else:
-            render_create_staged_listing_task_form(
-                profile=profile,
-                dropbox_cfg=dropbox_cfg,
-                merchant_shipping_group_options=merchant_shipping_group_options,
-                sku_decoration_options=sku_decoration_options,
-                default_variant_quantity=default_variant_quantity,
-                get_default_sku_decoration_code=get_default_sku_decoration_code,
-                sanitize_sku=sanitize_sku,
-                generate_unique_sku=generate_unique_sku,
-                get_default=get_default,
-                build_parent_sku_from_context=build_parent_sku_from_context,
-                create_listing_task=create_listing_task,
-                refresh_cached_folder_names=refresh_cached_folder_names,
-                clear_cached_listing_memory=clear_cached_listing_memory,
-                clear_runtime_caches=clear_runtime_caches,
-                set_workflow_flash=set_workflow_flash,
-            )
-
-        with st.expander("Staged folder readiness", expanded=False):
-            st.caption("Scan staged folders to see which ones are ready to generate.")
-            if st.button("Scan staged folders", key="scan_staged_folders_btn"):
-                stage_root = dropbox_cfg.get("stage_root", "").rstrip("/")
-                try:
-                    scan_folder_names = list_folder_names(stage_root) if stage_root else []
-                except Exception as exc:
-                    st.session_state["staged_folder_readiness_results"] = []
-                    st.session_state["staged_folder_readiness_error"] = str(exc)
-                else:
-                    st.session_state["staged_folder_readiness_error"] = ""
-                    st.session_state["staged_folder_readiness_results"] = [
-                        scan_staged_folder_readiness(folder_name, profiles, dropbox_cfg)
-                        for folder_name in scan_folder_names
-                    ]
-
-            readiness_error = st.session_state.get("staged_folder_readiness_error", "")
-            readiness_results = st.session_state.get("staged_folder_readiness_results", [])
-
-            if readiness_error:
-                st.error(readiness_error)
-            elif readiness_results:
-                st.dataframe(
-                    readiness_results,
-                    width="stretch",
-                    hide_index=True,
-                )
-            else:
-                st.caption("No scan results yet.")
+            show_create_task_form = True
 
     with top_right_col:
         st.subheader("Template selection")
@@ -511,6 +466,55 @@ def render_product_setup_controls(
             workflow_assignees,
             key="assets_prepared_by",
         )
+
+    if show_create_task_form:
+        render_create_staged_listing_task_form(
+            profile=profile,
+            dropbox_cfg=dropbox_cfg,
+            merchant_shipping_group_options=merchant_shipping_group_options,
+            sku_decoration_options=sku_decoration_options,
+            default_variant_quantity=default_variant_quantity,
+            get_default_sku_decoration_code=get_default_sku_decoration_code,
+            sanitize_sku=sanitize_sku,
+            generate_unique_sku=generate_unique_sku,
+            get_default=get_default,
+            build_parent_sku_from_context=build_parent_sku_from_context,
+            create_listing_task=create_listing_task,
+            refresh_cached_folder_names=refresh_cached_folder_names,
+            clear_cached_listing_memory=clear_cached_listing_memory,
+            clear_runtime_caches=clear_runtime_caches,
+            set_workflow_flash=set_workflow_flash,
+        )
+
+    with st.expander("Staged folder readiness", expanded=False):
+        st.caption("Scan staged folders to see which ones are ready to generate.")
+        if st.button("Scan staged folders", key="scan_staged_folders_btn"):
+            stage_root = dropbox_cfg.get("stage_root", "").rstrip("/")
+            try:
+                scan_folder_names = list_folder_names(stage_root) if stage_root else []
+            except Exception as exc:
+                st.session_state["staged_folder_readiness_results"] = []
+                st.session_state["staged_folder_readiness_error"] = str(exc)
+            else:
+                st.session_state["staged_folder_readiness_error"] = ""
+                st.session_state["staged_folder_readiness_results"] = [
+                    scan_staged_folder_readiness(folder_name, profiles, dropbox_cfg)
+                    for folder_name in scan_folder_names
+                ]
+
+        readiness_error = st.session_state.get("staged_folder_readiness_error", "")
+        readiness_results = st.session_state.get("staged_folder_readiness_results", [])
+
+        if readiness_error:
+            st.error(readiness_error)
+        elif readiness_results:
+            st.dataframe(
+                readiness_results,
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.caption("No scan results yet.")
 
     st.session_state["active_folder_source_mode"] = st.session_state.get("folder_source_mode") or "Use staged folder"
     st.session_state["active_staged_folder_select"] = st.session_state.get("staged_folder_select") or ""

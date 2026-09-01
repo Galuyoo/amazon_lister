@@ -711,6 +711,51 @@ def test_amazon_apparel_size_fields_use_template_values(
     assert values["shirt_size_class"] == expected_class
 
 
+@pytest.mark.parametrize("size", ["1Yr", "3/4 YRS", "11/13 YRS"])
+def test_amazon_age_sizes_omit_disallowed_body_and_height_types(size) -> None:
+    values = app.apply_apparel_size_fields(
+        {
+            "apparel_body_type": "Regular",
+            "shirt_body_type": "Regular",
+            "apparel_height_type": "Regular",
+            "shirt_height_type": "Regular",
+        },
+        size,
+        is_apparel=True,
+    )
+
+    assert values["apparel_body_type"] == ""
+    assert values["shirt_body_type"] == ""
+    assert values["apparel_height_type"] == ""
+    assert values["shirt_height_type"] == ""
+
+
+def test_amazon_alpha_sizes_keep_regular_body_and_height_types() -> None:
+    values = app.apply_apparel_size_fields({}, "M", is_apparel=True)
+
+    assert values["apparel_body_type"] == "Regular"
+    assert values["shirt_body_type"] == "Regular"
+    assert values["apparel_height_type"] == "Regular"
+    assert values["shirt_height_type"] == "Regular"
+
+
+def test_age_size_normalization_clears_all_configured_body_type_aliases() -> None:
+    aliases = app.get_field_aliases({})
+    values = app.prepare_row_values(
+        {},
+        aliases,
+        {"apparel_body_type": "Regular", "apparel_height_type": "Regular"},
+    )
+
+    values = app.apply_apparel_size_fields(values, "3/4 YRS", is_apparel=True)
+    values = app.expand_field_aliases(values, aliases)
+
+    for field in ["apparel_body_type", *aliases["apparel_body_type"]]:
+        assert values[field] == ""
+    for field in ["apparel_height_type", *aliases["apparel_height_type"]]:
+        assert values[field] == ""
+
+
 @pytest.mark.parametrize(
     ("design", "size", "expected_price"),
     [

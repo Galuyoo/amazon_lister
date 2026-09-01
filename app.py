@@ -1327,7 +1327,7 @@ def apply_apparel_size_fields(
     normalized_size = normalize_size(size_value) if size_value else ""
     size_class = get_apparel_size_class(normalized_size)
     shirt_size, shirt_size_to = get_amazon_shirt_size_range(normalized_size)
-    body_type = str(
+    body_type = "" if size_class == "Age" else str(
         values.get("apparel_body_type")
         or values.get("shirt_body_type")
         or ("Regular" if normalized_size else "")
@@ -2807,7 +2807,8 @@ def render_stage_images_zip_upload(
     dropbox_cfg: dict[str, Any],
     staged_folder_name: str,
 ) -> None:
-    with st.expander("Upload staged images from ZIP", expanded=False):
+    zip_upload_active = st.session_state.get("stage_images_zip_upload") is not None
+    with st.expander("Upload staged images from ZIP", expanded=zip_upload_active):
         uploaded_zip = st.file_uploader(
             "Upload ZIP with mockup images in the root and resource images inside resources/",
             type=["zip"],
@@ -5402,6 +5403,7 @@ def write_child_rows(
         )
         values = prepare_row_values(values, field_aliases, extra_child_fields)
         values = apply_apparel_size_fields(values, normalized_size, is_apparel=is_apparel)
+        values = expand_field_aliases(values, field_aliases)
         values["size_name"] = normalized_display_size
         values["item_sku"] = item_sku
         values["update_delete"] = update_delete_value

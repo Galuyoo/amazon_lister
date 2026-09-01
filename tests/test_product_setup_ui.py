@@ -44,6 +44,39 @@ def test_product_setup_has_exact_folder_source_options() -> None:
     assert "render_create_staged_listing_task_form(" in source
 
 
+def test_create_task_form_and_readiness_render_outside_the_half_width_columns() -> None:
+    source = inspect.getsource(product_setup.render_product_setup_controls)
+
+    right_column_end = source.index("    if show_create_task_form:")
+    create_form_call = source.index(
+        "        render_create_staged_listing_task_form(",
+        right_column_end,
+    )
+    readiness_panel = source.index(
+        '    with st.expander("Staged folder readiness", expanded=False):',
+        create_form_call,
+    )
+
+    assert source.index("    with top_right_col:") < right_column_end
+    assert right_column_end < create_form_call < readiness_panel
+
+
+def test_zip_upload_panel_stays_open_when_an_uploaded_file_is_present() -> None:
+    app_source = Path("app.py").read_text(encoding="utf-8")
+    tree = ast.parse(app_source)
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "render_stage_images_zip_upload"
+    )
+    source = ast.get_source_segment(app_source, function) or ""
+
+    assert 'st.session_state.get("stage_images_zip_upload") is not None' in source
+    assert 'st.expander("Upload staged images from ZIP", expanded=zip_upload_active)' in source
+    assert 'key="stage_images_zip_upload"' in source
+
+
 def test_create_task_form_has_stable_widgets_and_no_listing_content_key_changes() -> None:
     source = inspect.getsource(product_setup.render_create_staged_listing_task_form)
     expected_widget_contract = {
