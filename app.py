@@ -2888,8 +2888,8 @@ def render_stage_images_zip_upload(
                     return
 
                 clear_runtime_caches()
+                clear_loaded_image_mapping_state(st.session_state)
                 refresh_cached_folder_names("stage")
-                st.session_state["load_image_mappings_now"] = bool(uploaded_zip)
                 st.session_state["active_folder_source_mode"] = "Use staged folder"
                 st.session_state["active_staged_folder_select"] = new_folder_name
                 st.session_state["pending_staged_folder_selection_on_rerun"] = new_folder_name
@@ -2907,8 +2907,13 @@ def render_stage_images_zip_upload(
 
         staged_folder_path = build_stage_folder_path(dropbox_cfg, staged_folder_name)
         resources_folder_path = f"{staged_folder_path.rstrip('/')}/resources"
-        existing_mockups = count_stage_image_files(staged_folder_path)
-        existing_resources = count_stage_image_files(resources_folder_path)
+        last_upload_result = st.session_state.get("stage_images_zip_upload_result", {})
+        if last_upload_result.get("staged_folder_path") == staged_folder_path:
+            existing_mockups = last_upload_result.get("after_mockups", 0)
+            existing_resources = last_upload_result.get("after_resources", 0)
+        else:
+            existing_mockups = count_stage_image_files(staged_folder_path)
+            existing_resources = count_stage_image_files(resources_folder_path)
 
         metric_cols = st.columns(4)
         metric_cols[0].metric("Current mockups", existing_mockups)
@@ -2964,9 +2969,7 @@ def render_stage_images_zip_upload(
                 st.error(f"ZIP upload failed: {exc}")
                 return
 
-            clear_runtime_caches()
-            refresh_cached_folder_names("stage")
-            st.session_state["load_image_mappings_now"] = True
+            clear_loaded_image_mapping_state(st.session_state)
             st.session_state["stage_images_zip_upload_result"] = result
             set_workflow_flash(
                 "success",
@@ -3733,6 +3736,18 @@ def clear_runtime_caches() -> None:
     for key in list(st.session_state.keys()):
         if key.endswith("_load_image_review") or key.endswith("_run_full_quality"):
             st.session_state.pop(key, None)
+
+
+def clear_loaded_image_mapping_state(session_state: Any) -> None:
+    for key in [
+        "load_image_mappings_now",
+        "image_mappings_loaded_folder",
+        "image_mappings_loaded_context",
+        "preview_image_cache",
+        "preview_image_mapping_cache",
+        "resolved_image_bundle_cache",
+    ]:
+        session_state.pop(key, None)
 
 
 def set_workflow_flash(level: str, message: str, detail: str = "") -> None:
@@ -10324,21 +10339,13 @@ def main() -> None:
     profile = active_profile
     variant_dimensions = active_profile.get("variant_dimensions", [])
     saved_selected_variants = listing_memory.get("selected_variants", {})
-    had_color_widget_state_before_normalize = any(
-        widget_key in st.session_state
-        for widget_key in get_color_widget_keys(active_profile)
-    )
     selected_variants = normalize_selected_variants_session_state(active_profile, listing_memory)
 
     auto_load_image_mappings = bool(st.session_state.get("auto_load_image_mappings", False))
     load_image_mappings_now = bool(st.session_state.pop("load_image_mappings_now", False))
     scan_mapped_colours_now = bool(st.session_state.pop("scan_mapped_colours_now", False))
     manual_image_load_requested = bool(load_image_mappings_now and staged_folder_name)
-    auto_apply_mapped_colors = bool(
-        active_workflow_tab == "Listing content"
-        and staged_folder_name
-        and not had_color_widget_state_before_normalize
-    )
+    auto_apply_mapped_colors = False
 
     # Image mappings should persist while editing listing content.
     # Treat mappings as loaded for the staged folder + template, not for every selected colour/size change.
@@ -10410,27 +10417,30 @@ def main() -> None:
             include_garment_resource_images=True,
         )
 
-    preview_image_cache_hit = (
-        st.session_state.get("preview_image_cache", {}).get("key")
-        == build_preview_image_cache_key(
-            profile,
-            dropbox_cfg,
-            staged_folder_name or "",
-            image_preview_variants,
-            should_load_image_mappings,
-            resolve_preview_image_urls,
-        )
-    )
+    preview_image_cache_hit = False
     t_preview_image_start = time.perf_counter()
-    preview_image_data = get_cached_preview_image_data(
-        profile=profile,
-        dropbox_cfg=dropbox_cfg,
-        staged_folder_name=staged_folder_name or "",
-        selected_variants=image_preview_variants,
-        dropbox_overview=dropbox_overview,
-        include_mappings=should_load_image_mappings,
-        resolve_preview_urls=resolve_preview_image_urls,
-    )
+    preview_image_data: dict[str, Any] = {}
+    if should_load_image_mappings:
+        preview_image_cache_hit = (
+            st.session_state.get("preview_image_cache", {}).get("key")
+            == build_preview_image_cache_key(
+                profile,
+                dropbox_cfg,
+                staged_folder_name or "",
+                image_preview_variants,
+                should_load_image_mappings,
+                resolve_preview_image_urls,
+            )
+        )
+        preview_image_data = get_cached_preview_image_data(
+            profile=profile,
+            dropbox_cfg=dropbox_cfg,
+            staged_folder_name=staged_folder_name or "",
+            selected_variants=image_preview_variants,
+            dropbox_overview=dropbox_overview,
+            include_mappings=should_load_image_mappings,
+            resolve_preview_urls=resolve_preview_image_urls,
+        )
     t_preview_image_end = time.perf_counter()
     record_load_event(
         "Images: preview/mapping data",

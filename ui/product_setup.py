@@ -601,39 +601,42 @@ def render_product_setup(
 
     st.subheader("Image review")
 
-    with st.expander("Dropbox image overview", expanded=True):
-        if not dropbox_overview:
-            st.warning("No shared Dropbox config loaded yet.")
-        else:
-            st.write(f"Resource root: `{dropbox_overview['resource_root']}`")
-            st.write(f"Variant folder: `{dropbox_overview['variant_folder']}`")
-            if dropbox_overview.get("garment_resource_warning") and not staged_resource_paths:
-                st.warning(dropbox_overview["garment_resource_warning"])
-
-            st.write(f"Staged image files found: `{len(staged_preview_paths)}`")
-            st.write(f"Staged resources folder files found: `{len(staged_resource_paths)}`")
-            st.write(f"Selected variants: `{build_variants_summary(selected_variants)}`")
-            st.write(f"Fallback garment support files configured: `{len(dropbox_overview.get('garment_resource_images', []))}`")
-            st.write(f"Fallback shared support files configured: `{len(dropbox_overview.get('shared_resource_images', []))}`")
-            st.checkbox(
-                "Use fallback resource images when listing resources is empty",
-                key="use_resource_fallback_images",
-                help="When this is off, only images inside the staged folder's resources folder are used as secondary images.",
-            )
-
-            if st.session_state.get("show_header_debug", False):
-                with st.expander("Raw staged folder contents", expanded=False):
-                    if not staged_folder_name:
-                        st.caption("Select a staged Dropbox folder to preview its images.")
-                    elif staged_preview_paths:
-                        for preview_path in staged_preview_paths:
-                            st.code(preview_path, language=None)
-                    else:
-                        st.caption("No staged image files found.")
-
-            if image_mapping_status != "loaded":
-                st.info("Image mappings are not loaded yet. Use Load image mappings when you need parent/child/support image resolution.")
+    if image_mapping_status != "loaded":
+        st.caption(
+            "Images remain unloaded for faster editing. They are resolved during quality checks "
+            "and generation, or when Load / refresh image mappings is clicked."
+        )
+    else:
+        with st.expander("Dropbox image overview", expanded=True):
+            if not dropbox_overview:
+                st.warning("No shared Dropbox config loaded yet.")
             else:
+                st.write(f"Resource root: `{dropbox_overview['resource_root']}`")
+                st.write(f"Variant folder: `{dropbox_overview['variant_folder']}`")
+                if dropbox_overview.get("garment_resource_warning") and not staged_resource_paths:
+                    st.warning(dropbox_overview["garment_resource_warning"])
+
+                st.write(f"Staged image files found: `{len(staged_preview_paths)}`")
+                st.write(f"Staged resources folder files found: `{len(staged_resource_paths)}`")
+                st.write(f"Selected variants: `{build_variants_summary(selected_variants)}`")
+                st.write(f"Fallback garment support files configured: `{len(dropbox_overview.get('garment_resource_images', []))}`")
+                st.write(f"Fallback shared support files configured: `{len(dropbox_overview.get('shared_resource_images', []))}`")
+                st.checkbox(
+                    "Use fallback resource images when listing resources is empty",
+                    key="use_resource_fallback_images",
+                    help="When this is off, only images inside the staged folder's resources folder are used as secondary images.",
+                )
+
+                if st.session_state.get("show_header_debug", False):
+                    with st.expander("Raw staged folder contents", expanded=False):
+                        if not staged_folder_name:
+                            st.caption("Select a staged Dropbox folder to preview its images.")
+                        elif staged_preview_paths:
+                            for preview_path in staged_preview_paths:
+                                st.code(preview_path, language=None)
+                        else:
+                            st.caption("No staged image files found.")
+
                 tab_names = ["Staged variant images", "Secondary images", "Variant combinations"]
                 colours_tab, resources_tab, combos_tab = st.tabs(tab_names)
 
