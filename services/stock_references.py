@@ -330,7 +330,7 @@ def build_legacy_child_sku(
     return "-".join(part for part in parts if part)
 
 
-SKU_DECORATION_CODES = {"PRINT", "EMB", "PERSO", "PLAIN"}
+SKU_DECORATION_CODES = {"DEF", "PRINT", "EMB", "PERSO", "PLAIN"}
 
 
 def resolve_sku_decoration_code(profile: dict[str, Any]) -> str:
@@ -359,7 +359,7 @@ def resolve_sku_decoration_code(profile: dict[str, Any]) -> str:
     if "embroider" in searchable_text or "embroidery" in searchable_text:
         return "EMB"
     if "print" in searchable_text:
-        return "PRINT"
+        return "DEF"
     if "plain" in searchable_text:
         return "PLAIN"
 
@@ -432,6 +432,9 @@ def build_clear_child_sku(
     variant_values: dict[str, str],
 ) -> str:
     decoration_code = resolve_sku_decoration_code(profile)
+    parent_decoration_code = sanitize_sku_part(parent_sku).partition("-")[0].upper()
+    if parent_decoration_code in SKU_DECORATION_CODES:
+        decoration_code = parent_decoration_code
     include_design_code = bool(profile.get("include_design_code_in_child_sku", True))
     design_code = resolve_variant_design_code(profile, variant_values) if include_design_code else ""
     if design_code and sku_code_contains_trailing_segment(decoration_code, design_code):

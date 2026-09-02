@@ -181,9 +181,9 @@ def _render_create_form(
         profile=profile,
         dropbox_cfg={},
         merchant_shipping_group_options=[""],
-        sku_decoration_options=["PRINT", "Custom"],
+        sku_decoration_options=["DEF", "Custom"],
         default_variant_quantity=100,
-        get_default_sku_decoration_code=lambda _profile: "PRINT",
+        get_default_sku_decoration_code=lambda _profile: "DEF",
         sanitize_sku=lambda value: value,
         generate_unique_sku=lambda _length: "12345",
         get_default=lambda selected, key, fallback="": selected.get(key, fallback),
@@ -270,7 +270,7 @@ def test_cp_submit_automatically_uses_grouped_payload_builder_without_price(
     assert create_listing_task.call_args.kwargs["payload"] is grouped_payload
     assert create_listing_task.call_args.kwargs["staged_folder_name"] == "TSTGP"
     assert "MPN: `D304VG`" in fake_streamlit.captions
-    assert any("PRINT-D304VG-T" in caption for caption in fake_streamlit.captions)
+    assert any("DEF-D304VG-T" in caption for caption in fake_streamlit.captions)
 
 
 def test_blank_manual_code_uses_generated_code_for_new_mpn_without_changing_folder(

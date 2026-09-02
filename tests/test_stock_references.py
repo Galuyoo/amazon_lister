@@ -7,6 +7,7 @@ from services.stock_references import (
     build_clear_child_sku,
     build_size_sku_part,
     lookup_mapping,
+    resolve_sku_decoration_code,
     sanitize_sku_part,
     slugify_part,
 )
@@ -42,6 +43,19 @@ def test_kids_size_tokens_are_shortened() -> None:
 
 def test_mapping_lookup_is_case_insensitive() -> None:
     assert lookup_mapping({"Red": "RED"}, "red") == "RED"
+
+
+def test_print_templates_default_to_def_while_explicit_print_remains_compatible() -> None:
+    assert resolve_sku_decoration_code({"label": "Printed T-Shirt"}) == "DEF"
+    assert resolve_sku_decoration_code({"sku_decoration_code": "PRINT"}) == "PRINT"
+
+
+def test_new_def_and_legacy_print_parent_prefixes_remain_authoritative() -> None:
+    profile = load_profile("templates/SHIRT/Generic Shirts/config.json")
+    variant = {"design": "Adult T-Shirt", "color": "Red", "size": "M"}
+
+    assert build_clear_child_sku(profile, "DEF-NEW", variant) == "DEF-NEW-RED-M"
+    assert build_clear_child_sku(profile, "PRINT-OLD", variant) == "PRINT-OLD-RED-M"
 
 
 def test_generic_shirts_config_contract() -> None:

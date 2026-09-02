@@ -627,7 +627,7 @@ HEADER_ROW = 3
 PARENT_ROW = 4
 FIRST_CHILD_ROW = 5
 
-SKU_DECORATION_OPTIONS = ["PRINT", "EMB", "PERSO", "PLAIN", "Custom"]
+SKU_DECORATION_OPTIONS = ["DEF", "EMB", "PERSO", "PLAIN", "Custom"]
 
 
 def get_workbook_layout(profile: dict[str, Any]) -> dict[str, Any]:

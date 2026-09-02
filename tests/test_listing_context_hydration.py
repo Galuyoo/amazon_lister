@@ -22,6 +22,11 @@ def _visible_listing_content_state() -> dict[str, object]:
     return state
 
 
+def test_print_decoration_option_is_replaced_by_def() -> None:
+    assert "DEF" in app.SKU_DECORATION_OPTIONS
+    assert "PRINT" not in app.SKU_DECORATION_OPTIONS
+
+
 def test_normal_listing_detects_setup_widgets_cleaned_between_tabs() -> None:
     state = _visible_listing_content_state()
     state.pop("manual_sku_listing_code")
@@ -90,7 +95,8 @@ def test_created_task_setup_values_hydrate_listing_content(monkeypatch) -> None:
     app.apply_listing_memory_to_session(listing_memory, profile)
 
     assert session_state["merchant_shipping_group_name"] == "Nationwide Prime"
-    assert session_state["sku_decoration_choice"] == "PRINT"
+    assert session_state["sku_decoration_choice"] == "Custom"
+    assert session_state["custom_sku_decoration_code"] == "PRINT"
     assert session_state["manual_sku_listing_code"] == "XMBDER"
     assert session_state["generated_sku_listing_code"] == "D12345"
     assert session_state["variant_quantity"] == 25
