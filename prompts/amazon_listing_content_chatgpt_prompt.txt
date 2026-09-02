@@ -4,7 +4,7 @@ The user will normally provide:
 - an image showing the garment/product and design;
 - optional written notes containing factual product information.
 
-Use the attached image as visual evidence and use the user's notes for additional factual details.
+Use the attached image as visual evidence. When useful notes are provided, treat them as the primary source for the title's subject, wording and intended theme, and use the image to support accurate visible details. Also reuse relevant customer-facing words and phrases from the notes as some of the backend search terms.
 
 CONTEXT
 
@@ -13,7 +13,7 @@ MPN (internal identifier only): $MPN
 Optional factual notes:
 $OPTIONAL_NOTES
 
-The MPN is internal context and may be used for the requested output filename. Do not infer product meaning from the MPN and do not add the MPN to the JSON object unless it is naturally required in listing copy, which normally it is not. Optional notes provide additional factual context only and do not override clearly visible evidence without an explicit factual reason.
+The MPN is internal context and may be used for the requested output filename. Do not infer product meaning from the MPN and do not add the MPN to the JSON object unless it is naturally required in listing copy, which normally it is not. Use useful optional notes as the main source for the title and as a source of relevant search phrases. Do not copy instructions, labels or irrelevant note text into the listing. Notes do not override clearly visible evidence without an explicit factual reason.
 
 IMPORTANT FACTUAL RULES
 
@@ -32,6 +32,8 @@ TITLE
 Generate one Amazon product title.
 
 Requirements:
+- when useful notes are provided, base the title mainly on their product/design wording, subject and intended theme;
+- preserve important accurate phrases from the notes where they read naturally, while adding only supported product-type and use-case context;
 - minimum 150 characters;
 - maximum 200 characters;
 - aim close to 170-190 characters when possible;
@@ -76,6 +78,8 @@ Generate one generic_keywords string for Amazon backend search terms.
 Requirements:
 - maximum 249 UTF-8 bytes;
 - aim as close as safely possible to the limit without exceeding it;
+- reuse relevant customer search words and phrases from the notes as some of the generic_keywords terms;
+- do not copy full sentences, instructions or irrelevant text from the notes into generic_keywords;
 - preferably use plain ASCII words so character count and UTF-8 byte count remain predictable;
 - use relevant customer search phrases and synonyms;
 - no brand names;

@@ -11,7 +11,7 @@ $OPTIONAL_NOTES
 
 The MPN is internal context. Do not infer the product, design, theme or meaning from the MPN itself. Do not include the MPN in the output JSON or listing copy unless it is naturally necessary, which normally it is not.
 
-Use the attached mockup or design image as the primary visual source for the artwork, wording visible in the design, motifs, visual theme, placement and general appearance. Use optional notes only as additional factual context. If notes conflict with the image, prefer explicit factual notes for non-visual facts, but do not invent unsupported details. If no image is provided, use only useful facts in the notes. If neither source is informative, write conservative generic garment copy without inventing specific visual or design details.
+Use the attached mockup or design image as the primary visual source for visible artwork, wording, motifs, placement and general appearance. When useful notes are provided, treat them as the primary source for each title's subject, wording and intended theme, and reuse relevant customer-facing words and phrases from the notes as some of each member's backend search terms. Do not copy instructions, labels or irrelevant note text into listing content. If notes conflict with the image, prefer explicit factual notes for non-visual facts, but do not invent unsupported details. If no image is provided, use only useful facts in the notes. If neither source is informative, write conservative generic garment copy without inventing specific visual or design details.
 
 ALL THREE MEMBERS ARE REQUIRED
 
@@ -68,6 +68,8 @@ All three listings may share the same visible Christmas design or theme, but eac
 CONTENT REQUIREMENTS FOR EACH MEMBER
 
 Title:
+- when useful notes are provided, base each title mainly on their product/design wording, subject and intended theme;
+- preserve important accurate phrases from the notes where they read naturally, while adapting the title to the correct garment family;
 - hard maximum 170 characters for the base title;
 - target 120 to 150 characters;
 - the application adds garment, colour and size prefixes and separately enforces Amazon's 200-character final child-title limit, so a base title near 170 characters may still need shortening;
@@ -89,6 +91,8 @@ Product description:
 Generic keywords:
 - hard maximum 249 UTF-8 bytes;
 - target 230 to 249 bytes while remaining relevant;
+- reuse relevant customer search words and phrases from the notes as some of the generic_keywords terms;
+- do not copy full sentences, instructions or irrelevant text from the notes into generic_keywords;
 - prefer plain ASCII words for predictable byte length;
 - do not include brands, competitors, punctuation without purpose or needless duplicates.
 

@@ -40,6 +40,10 @@ def test_canonical_prompt_exists_and_contains_required_contract() -> None:
     assert "attach or provide that .json file" in prompt_lower
     assert "cannot create downloadable files" in prompt_lower
     assert "return only valid json" in prompt_lower
+    assert "treat them as the primary source for the title's subject" in prompt_lower
+    assert "base the title mainly on their product/design wording" in prompt_lower
+    assert "reuse relevant customer search words and phrases from the notes" in prompt_lower
+    assert "do not copy full sentences, instructions or irrelevant text" in prompt_lower
 
 
 def test_normal_prompt_renderer_includes_context_and_download_filename() -> None:

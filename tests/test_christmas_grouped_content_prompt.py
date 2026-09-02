@@ -63,6 +63,10 @@ def test_prompt_has_exact_grouped_output_contract() -> None:
     assert "200-character final child-title limit" in prompt
     assert "hard maximum 249 utf-8 bytes" in prompt
     assert "target 230 to 249 bytes" in prompt
+    assert "treat them as the primary source for each title's subject" in prompt
+    assert "base each title mainly on their product/design wording" in prompt
+    assert "reuse relevant customer search words and phrases from the notes" in prompt
+    assert "do not copy full sentences, instructions or irrelevant text" in prompt
 
 
 def test_prompt_always_generates_all_three_from_one_representative_garment() -> None:
