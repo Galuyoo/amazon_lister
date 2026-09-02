@@ -690,8 +690,14 @@ def test_generic_shirts_historical_size_values_normalize_without_losing_prices()
     [
         ("1Yr", "1 Year", "", "Age"),
         ("3Yr", "3 Years", "", "Age"),
+        ("1-2 Years", "1 Year", "2 Years", "Age"),
         ("3/4 YRS", "3 Years", "4 Years", "Age"),
+        ("5/6 YRS", "5 Years", "6 Years", "Age"),
+        ("7/8 YRS", "7 Years", "8 Years", "Age"),
+        ("9/10 YRS", "9 Years", "10 Years", "Age"),
+        ("9/11 YRS", "9 Years", "11 Years", "Age"),
         ("11/13 YRS", "11 Years", "13 Years", "Age"),
+        ("12/13 Years", "12 Years", "13 Years", "Age"),
         ("2XL", "XXL", "", "Alpha"),
     ],
 )
@@ -709,6 +715,85 @@ def test_amazon_apparel_size_fields_use_template_values(
     assert values["shirt_size_to"] == expected_size_to
     assert values["apparel_size_class"] == expected_class
     assert values["shirt_size_class"] == expected_class
+
+
+@pytest.mark.parametrize(
+    ("size", "expected_size", "expected_size_to"),
+    [
+        ("1Yr", "1 Year", "2 Years"),
+        ("3Yr", "3 Years", "4 Years"),
+        ("5Yr", "5 Years", "6 Years"),
+        ("7Yr", "7 Years", "8 Years"),
+        ("9Yr", "9 Years", "11 Years"),
+        ("11Yr", "11 Years", "13 Years"),
+    ],
+)
+def test_generic_shirt_compact_kids_sizes_restore_configured_ranges(
+    size,
+    expected_size,
+    expected_size_to,
+) -> None:
+    profile = next(
+        item
+        for item in app.list_template_profiles()
+        if item.get("template_key") == "GENERIC_SHIRTS"
+    )
+
+    values = app.apply_apparel_size_fields(
+        {},
+        size,
+        is_apparel=True,
+        profile=profile,
+    )
+
+    assert values["apparel_size"] == expected_size
+    assert values["apparel_size_to"] == expected_size_to
+    assert values["shirt_size"] == expected_size
+    assert values["shirt_size_to"] == expected_size_to
+
+
+@pytest.mark.parametrize(
+    ("template_key", "size", "expected_size", "expected_size_to"),
+    [
+        ("GENERIC_SHIRTS", "1Yr", "1 Year", "2 Years"),
+        ("UC301", "9-11 Years", "9 Years", "11 Years"),
+        ("CP", "11/13 YRS", "11 Years", "13 Years"),
+    ],
+)
+def test_generic_uc301_and_special_projects_share_amazon_age_size_rules(
+    template_key,
+    size,
+    expected_size,
+    expected_size_to,
+) -> None:
+    profile = next(
+        item
+        for item in app.list_template_profiles()
+        if item.get("template_key") == template_key
+    )
+
+    values = app.apply_apparel_size_fields(
+        {
+            "apparel_body_type": "Regular",
+            "apparel_height_type": "Regular",
+        },
+        size,
+        is_apparel=True,
+        profile=profile,
+    )
+
+    assert values["apparel_size_system"] == "UK"
+    assert values["apparel_size_class"] == "Age"
+    assert values["apparel_size"] == expected_size
+    assert values["apparel_size_to"] == expected_size_to
+    assert values["shirt_size_system"] == "UK"
+    assert values["shirt_size_class"] == "Age"
+    assert values["shirt_size"] == expected_size
+    assert values["shirt_size_to"] == expected_size_to
+    assert values["apparel_body_type"] == ""
+    assert values["apparel_height_type"] == ""
+    assert values["shirt_body_type"] == ""
+    assert values["shirt_height_type"] == ""
 
 
 @pytest.mark.parametrize("size", ["1Yr", "3/4 YRS", "11/13 YRS"])

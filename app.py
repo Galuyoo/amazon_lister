@@ -872,7 +872,31 @@ def format_year_size(year: int) -> str:
     return f"{year} Year" if year == 1 else f"{year} Years"
 
 
-def get_amazon_shirt_size_range(size: str) -> tuple[str, str]:
+def get_profile_size_range_end(profile: dict[str, Any], size: str) -> str:
+    aliases_by_dimension = profile.get("saved_variant_value_aliases", {})
+    size_aliases = (
+        aliases_by_dimension.get("size", {})
+        if isinstance(aliases_by_dimension, dict)
+        else {}
+    )
+    if not isinstance(size_aliases, dict):
+        return ""
+
+    normalized_size = str(size or "").strip().casefold()
+    for source_size, target_size in size_aliases.items():
+        if str(target_size or "").strip().casefold() != normalized_size:
+            continue
+        compact_source = str(source_size or "").replace("/", "-")
+        match = re.search(r"(\d+)\s*-\s*(\d+)", compact_source)
+        if match:
+            return format_year_size(int(match.group(2)))
+    return ""
+
+
+def get_amazon_shirt_size_range(
+    size: str,
+    profile: dict[str, Any] | None = None,
+) -> tuple[str, str]:
     normalized_size = normalize_size(str(size or "").strip())
     if not is_child_size_label(normalized_size):
         return normalized_size, ""
@@ -886,7 +910,10 @@ def get_amazon_shirt_size_range(size: str) -> tuple[str, str]:
 
     match = re.search(r"(\d+)", normalized_size)
     if match:
-        return format_year_size(int(match.group(1))), ""
+        return (
+            format_year_size(int(match.group(1))),
+            get_profile_size_range_end(profile or {}, normalized_size),
+        )
 
     return normalized_size, ""
 
@@ -1320,13 +1347,17 @@ def apply_apparel_size_fields(
     size_value: str,
     *,
     is_apparel: bool,
+    profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not is_apparel:
         return values
 
     normalized_size = normalize_size(size_value) if size_value else ""
     size_class = get_apparel_size_class(normalized_size)
-    shirt_size, shirt_size_to = get_amazon_shirt_size_range(normalized_size)
+    shirt_size, shirt_size_to = get_amazon_shirt_size_range(
+        normalized_size,
+        profile,
+    )
     body_type = "" if size_class == "Age" else str(
         values.get("apparel_body_type")
         or values.get("shirt_body_type")
@@ -5417,7 +5448,12 @@ def write_child_rows(
             variant_values,
         )
         values = prepare_row_values(values, field_aliases, extra_child_fields)
-        values = apply_apparel_size_fields(values, normalized_size, is_apparel=is_apparel)
+        values = apply_apparel_size_fields(
+            values,
+            normalized_size,
+            is_apparel=is_apparel,
+            profile=profile,
+        )
         values = expand_field_aliases(values, field_aliases)
         values["size_name"] = normalized_display_size
         values["item_sku"] = item_sku
