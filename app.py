@@ -2176,6 +2176,28 @@ def listing_memory_has_content(listing_memory: dict[str, Any]) -> bool:
     return any(str(value or "").strip() for value in content_values)
 
 
+def listing_content_widget_state_is_missing(
+    session_state: dict[str, Any],
+    listing_memory: dict[str, Any],
+) -> bool:
+    widget_keys = [
+        "handling_time_days",
+        "merchant_shipping_group_name",
+        "sku_decoration_choice",
+        "manual_sku_listing_code",
+        "variant_quantity",
+        "content_prepared_by",
+    ]
+    if not is_grouped_christmas_memory(listing_memory):
+        widget_keys.extend([
+            CONTENT_EDITOR_KEYS["title"],
+            CONTENT_EDITOR_KEYS["description"],
+            CONTENT_EDITOR_KEYS["keywords"],
+            *CONTENT_EDITOR_KEYS["bullets"],
+        ])
+    return any(key not in session_state for key in widget_keys)
+
+
 def selectbox_index_without_state_conflict(
     key: str,
     options: list[Any],
@@ -7362,7 +7384,8 @@ def normalize_saved_price_map_for_profile(
     for raw_key, value in dict(size_price_map or {}).items():
         key = str(raw_key)
         design, separator, size = key.partition("||")
-        translated_size = lookup.get(size.strip().casefold(), size)
+        source_size = size if separator else design
+        translated_size = lookup.get(source_size.strip().casefold(), source_size)
         translated_key = f"{design}{separator}{translated_size}" if separator else translated_size
         normalized[translated_key] = value
     return normalized
@@ -10276,6 +10299,12 @@ def main() -> None:
                 "quantity": normalize_variant_quantity(
                     listing_memory.get("quantity", DEFAULT_VARIANT_QUANTITY)
                 ),
+                "handling_time_days": normalize_handling_time_days(
+                    listing_memory.get("handling_time_days", DEFAULT_HANDLING_TIME_DAYS)
+                ),
+                "merchant_shipping_group_name": normalize_merchant_shipping_group(
+                    listing_memory.get("merchant_shipping_group_name", "")
+                ),
             },
             sort_keys=True,
         )
@@ -10306,17 +10335,31 @@ def main() -> None:
             not str(st.session_state.get(key, "") or "").strip()
             for key in content_widget_keys
         )
+        listing_content_widgets_missing = (
+            active_workflow_tab == "Listing content"
+            and listing_content_widget_state_is_missing(
+                st.session_state,
+                listing_memory,
+            )
+        )
         should_apply_memory = (
             applied_memory_key != memory_fingerprint
-            or applied_widget_memory_key != memory_fingerprint
             or content_widgets_missing
             or (memory_has_content and content_widgets_empty)
+            or (
+                active_workflow_tab == "Listing content"
+                and (
+                    applied_widget_memory_key != memory_fingerprint
+                    or listing_content_widgets_missing
+                )
+            )
         )
 
         if should_apply_memory:
             apply_listing_memory_to_session(listing_memory, active_profile)
             st.session_state["applied_listing_memory_key_v2"] = memory_fingerprint
-            st.session_state["applied_listing_memory_widget_key_v2"] = memory_fingerprint
+            if active_workflow_tab == "Listing content":
+                st.session_state["applied_listing_memory_widget_key_v2"] = memory_fingerprint
             st.session_state["initialized_listing_context_key"] = listing_context_key
             st.session_state["last_loaded_listing_memory_signature"] = f"{staged_folder_name}|{active_profile_slug}"
     elif listing_context_key:
