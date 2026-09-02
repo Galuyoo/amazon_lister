@@ -175,7 +175,7 @@ def render_create_staged_listing_task_form(
             "Merchant Shipping Group",
             merchant_shipping_group_options,
             key="create_task_shipping_group",
-            help="Leave empty to skip this Amazon field.",
+            help="Defaults to INSTOCK Template when no saved selection is available.",
         )
         if not grouped_christmas:
             selected_sizes = st.multiselect(

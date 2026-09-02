@@ -21,6 +21,7 @@ from openpyxl import load_workbook
 from itertools import product
 from services.listing_memory import (
     DEFAULT_HANDLING_TIME_DAYS,
+    DEFAULT_MERCHANT_SHIPPING_GROUP,
     DEFAULT_VARIANT_QUANTITY,
     MERCHANT_SHIPPING_GROUP_OPTIONS,
     build_listing_memory_path,
@@ -2129,7 +2130,7 @@ def initialize_listing_context_defaults(profile: dict[str, Any]) -> None:
     st.session_state["parent_main_image_choice"] = "Automatic (recommended)"
     st.session_state["variant_quantity"] = 100
     st.session_state["handling_time_days"] = DEFAULT_HANDLING_TIME_DAYS
-    st.session_state["merchant_shipping_group_name"] = ""
+    st.session_state["merchant_shipping_group_name"] = DEFAULT_MERCHANT_SHIPPING_GROUP
     sku_decoration_code = get_default_sku_decoration_code(profile)
     st.session_state["sku_decoration_choice"] = sku_decoration_code if sku_decoration_code in SKU_DECORATION_OPTIONS else "Custom"
     st.session_state["custom_sku_decoration_code"] = "" if sku_decoration_code in SKU_DECORATION_OPTIONS else sku_decoration_code

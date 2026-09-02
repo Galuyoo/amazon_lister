@@ -196,7 +196,7 @@ def test_common_fields_workflow_metadata_and_internal_mpn_are_preserved() -> Non
         assert payload["mpn"] == "D12345"
         assert payload["staged_folder_name"] == "CHRTST"
         assert payload["quantity"] == 100
-        assert payload["merchant_shipping_group_name"] == ""
+        assert payload["merchant_shipping_group_name"] == "INSTOCK Template"
         assert payload["assets_prepared_by"] == "Sal"
         assert payload["workflow_events"] == [{"action": "draft_saved"}]
         assert payload["review_snapshot"] == {"status": "draft"}

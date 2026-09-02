@@ -11,6 +11,7 @@ from services.christmas_project_grouping import (
 from services.listing_memory import (
     DEFAULT_HANDLING_TIME_DAYS,
     MERCHANT_SHIPPING_GROUP_OPTIONS,
+    normalize_merchant_shipping_group,
 )
 
 
@@ -96,8 +97,9 @@ def _validate_common_task_fields(
     if normalized_quantity <= 0:
         errors.append("Quantity must be greater than zero.")
 
-    shipping_group = str(merchant_shipping_group_name or "").strip()
-    if shipping_group not in MERCHANT_SHIPPING_GROUP_OPTIONS:
+    raw_shipping_group = str(merchant_shipping_group_name or "").strip()
+    shipping_group = normalize_merchant_shipping_group(raw_shipping_group)
+    if raw_shipping_group and raw_shipping_group not in MERCHANT_SHIPPING_GROUP_OPTIONS:
         errors.append("Merchant Shipping Group must use an existing allowed option.")
     if not str(sku_decoration_code or "").strip():
         errors.append("Decoration code is required.")

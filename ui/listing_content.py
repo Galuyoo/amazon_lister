@@ -497,7 +497,7 @@ def render_grouped_christmas_listing_content(
                 current_shipping_group,
             ),
             key="merchant_shipping_group_name",
-            help="Leave empty to skip this Amazon field.",
+            help="Defaults to INSTOCK Template when no saved selection is available.",
         )
 
     st.subheader("Variants")
@@ -1216,7 +1216,7 @@ def render_listing_content(
                 current_shipping_group,
             ),
             key="merchant_shipping_group_name",
-            help="Leave empty to skip this Amazon field.",
+            help="Defaults to INSTOCK Template when no saved selection is available.",
         )
 
     st.subheader("Variants")

@@ -13,7 +13,10 @@ from services.christmas_project_grouping import (
     partition_christmas_group_price_map,
 )
 from services.listing_content_import import validate_listing_content_payload
-from services.listing_memory import MERCHANT_SHIPPING_GROUP_OPTIONS
+from services.listing_memory import (
+    MERCHANT_SHIPPING_GROUP_OPTIONS,
+    normalize_merchant_shipping_group,
+)
 from services.quality_checks import build_variant_combinations, find_oversized_child_titles
 from services.staged_listing_tasks import validate_mpn
 
@@ -214,6 +217,9 @@ def build_christmas_group_child_payload(
         "colors": list(selected_variants["color"]),
         "sizes": list(selected_variants["size"]),
         "size_price_map": price_map,
+        "merchant_shipping_group_name": normalize_merchant_shipping_group(
+            source_memory.get("merchant_shipping_group_name")
+        ),
         **child_identity,
     })
 
@@ -613,7 +619,7 @@ def _validate_common_fields(
     if type(quantity) is not int or quantity <= 0:
         _add_error(errors, "common.quantity", "Quantity must be a positive integer.")
     shipping_group = _text(source_memory.get("merchant_shipping_group_name"))
-    if shipping_group not in MERCHANT_SHIPPING_GROUP_OPTIONS:
+    if shipping_group and shipping_group not in MERCHANT_SHIPPING_GROUP_OPTIONS:
         _add_error(errors, "common.shipping", "Merchant Shipping Group is not an allowed value.")
     if not _text(source_memory.get("sku_decoration_code")):
         _add_error(errors, "identity.decoration", "Decoration code is required.")

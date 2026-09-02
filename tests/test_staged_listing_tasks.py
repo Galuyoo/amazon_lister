@@ -7,7 +7,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from services.listing_memory import DEFAULT_HANDLING_TIME_DAYS, build_listing_memory_payload
+from services.listing_memory import (
+    DEFAULT_HANDLING_TIME_DAYS,
+    DEFAULT_MERCHANT_SHIPPING_GROUP,
+    build_listing_memory_payload,
+)
 from services.staged_listing_tasks import (
     build_staged_listing_task_payload,
     create_staged_listing_task,
@@ -159,6 +163,17 @@ def test_new_task_requires_mpn_to_equal_resolved_listing_code() -> None:
 
     assert result["valid"] is False
     assert "MPN must equal the resolved listing/design code." in result["errors"]
+
+
+@pytest.mark.parametrize("shipping_group", ["", "   ", None])
+def test_new_task_defaults_missing_shipping_group(shipping_group) -> None:
+    result = valid_task_result(merchant_shipping_group_name=shipping_group)
+
+    assert result["valid"] is True
+    assert (
+        result["payload"]["merchant_shipping_group_name"]
+        == DEFAULT_MERCHANT_SHIPPING_GROUP
+    )
 
 
 @pytest.mark.parametrize(

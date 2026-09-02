@@ -6,11 +6,11 @@ from typing import Any
 
 DEFAULT_HANDLING_TIME_DAYS = 2
 DEFAULT_VARIANT_QUANTITY = 100
+DEFAULT_MERCHANT_SHIPPING_GROUP = "INSTOCK Template"
 MERCHANT_SHIPPING_GROUP_OPTIONS = [
-    "",
+    DEFAULT_MERCHANT_SHIPPING_GROUP,
     "Migrated TemplateDEFAULT",
     "Nationwide Prime",
-    "INSTOCK Template",
     "Template",
 ]
 
@@ -37,7 +37,11 @@ def normalize_variant_quantity(value: Any, default: int = DEFAULT_VARIANT_QUANTI
 
 def normalize_merchant_shipping_group(value: Any) -> str:
     group = str(value or "").strip()
-    return group if group in MERCHANT_SHIPPING_GROUP_OPTIONS else ""
+    return (
+        group
+        if group in MERCHANT_SHIPPING_GROUP_OPTIONS
+        else DEFAULT_MERCHANT_SHIPPING_GROUP
+    )
 
 
 def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:

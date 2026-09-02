@@ -6,7 +6,9 @@ import sys
 
 from services.listing_memory import (
     DEFAULT_HANDLING_TIME_DAYS,
+    DEFAULT_MERCHANT_SHIPPING_GROUP,
     DEFAULT_VARIANT_QUANTITY,
+    MERCHANT_SHIPPING_GROUP_OPTIONS,
     build_listing_memory_payload,
     build_listing_memory_path,
     normalize_handling_time_days,
@@ -172,7 +174,11 @@ def test_quantity_and_fulfillment_values_preserve_normalization_defaults() -> No
     assert normalize_handling_time_days("-3") == 0
     assert normalize_handling_time_days("bad") == DEFAULT_HANDLING_TIME_DAYS
     assert normalize_merchant_shipping_group(" Nationwide Prime ") == "Nationwide Prime"
-    assert normalize_merchant_shipping_group("Unknown group") == ""
+    assert normalize_merchant_shipping_group("") == DEFAULT_MERCHANT_SHIPPING_GROUP
+    assert normalize_merchant_shipping_group(None) == DEFAULT_MERCHANT_SHIPPING_GROUP
+    assert normalize_merchant_shipping_group("Unknown group") == DEFAULT_MERCHANT_SHIPPING_GROUP
+    assert "" not in MERCHANT_SHIPPING_GROUP_OPTIONS
+    assert MERCHANT_SHIPPING_GROUP_OPTIONS[0] == DEFAULT_MERCHANT_SHIPPING_GROUP
 
     memory = build_listing_memory_payload(
         sample_profile(),
@@ -181,7 +187,7 @@ def test_quantity_and_fulfillment_values_preserve_normalization_defaults() -> No
 
     assert memory["quantity"] == DEFAULT_VARIANT_QUANTITY
     assert memory["handling_time_days"] == DEFAULT_HANDLING_TIME_DAYS
-    assert memory["merchant_shipping_group_name"] == ""
+    assert memory["merchant_shipping_group_name"] == DEFAULT_MERCHANT_SHIPPING_GROUP
 
 
 def test_building_memory_does_not_mutate_input_lists_or_dictionaries() -> None:
