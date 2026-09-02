@@ -2716,6 +2716,43 @@ def is_image_file(path: str) -> bool:
     return suffix in {".png", ".jpg", ".jpeg", ".webp"}
 
 
+REVIEW_RESOURCE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
+
+
+def validate_review_resource_image(filename: str, content: bytes) -> str:
+    safe_filename = Path(str(filename or "").replace("\\", "/")).name.strip()
+    suffix = Path(safe_filename).suffix.lower()
+    if not safe_filename or safe_filename in {".", ".."}:
+        raise ValueError("Choose a PNG or JPG resource image.")
+    if suffix not in REVIEW_RESOURCE_IMAGE_EXTENSIONS:
+        raise ValueError("Resource images must be PNG or JPG files.")
+    if not content:
+        raise ValueError("The selected resource image is empty.")
+    if suffix == ".png" and not content.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("The selected file is not a valid PNG image.")
+    if suffix in {".jpg", ".jpeg"} and not content.startswith(b"\xff\xd8\xff"):
+        raise ValueError("The selected file is not a valid JPG image.")
+    return safe_filename
+
+
+def upload_ready_review_resource_image(
+    source_folder_path: str,
+    filename: str,
+    content: bytes,
+) -> str:
+    ready_folder_path = str(source_folder_path or "").rstrip("/")
+    if not ready_folder_path:
+        raise ValueError("The ready listing folder is unavailable.")
+
+    safe_filename = validate_review_resource_image(filename, content)
+    resources_folder_path = f"{ready_folder_path}/resources"
+    create_folder_if_missing(resources_folder_path)
+    return upload_binary_file(
+        f"{resources_folder_path}/{safe_filename}",
+        content,
+    )
+
+
 def is_ignored_zip_member(parts: list[str]) -> bool:
     if not parts:
         return True
@@ -8326,6 +8363,47 @@ def render_ready_review_panel(
     if active_review_section == "Images":
         dropbox_overview = get_cached_dropbox_overview(item.get("profile", {}), dropbox_cfg)
         render_dropbox_folder_links(source_folder_path, dropbox_overview)
+
+        st.markdown("**Add resource image**")
+        uploaded_resource_image = st.file_uploader(
+            "Resource image",
+            type=["png", "jpg", "jpeg"],
+            accept_multiple_files=False,
+            key=f"{review_key_prefix}_resource_image_upload",
+            help="Uploads this image to the selected listing's resources folder.",
+        )
+        if st.button(
+            "Upload resource image",
+            key=f"{review_key_prefix}_resource_image_upload_btn",
+            width="content",
+            disabled=not bool(source_folder_path and uploaded_resource_image),
+        ):
+            try:
+                uploaded_path = upload_ready_review_resource_image(
+                    source_folder_path or "",
+                    uploaded_resource_image.name,
+                    uploaded_resource_image.getvalue(),
+                )
+                for cache_key in [
+                    "dropbox_overview_cache",
+                    "preview_image_cache",
+                    "preview_image_mapping_cache",
+                    "resolved_image_bundle_cache",
+                ]:
+                    st.session_state.pop(cache_key, None)
+                st.session_state[f"{review_key_prefix}_load_image_review"] = True
+                review_data = build_ready_review_data(
+                    profile=item.get("profile"),
+                    listing_memory=item.get("listing_memory", {}),
+                    ready_folder_name=item.get("folder_name", ""),
+                    dropbox_cfg=dropbox_cfg,
+                    source_folder_path=source_folder_path,
+                    include_images=True,
+                    include_quality=quality_check_loaded,
+                )
+                st.success(f"Uploaded resource image: {Path(uploaded_path).name}")
+            except Exception as exc:
+                st.error(f"Could not upload resource image: {exc}")
 
         if not review_data["image_review_loaded"]:
             st.info("Image mappings are not loaded for this review yet. Use the Dropbox folder links above for normal review.")
