@@ -461,6 +461,24 @@
     },
     "CP": {
       "variant_folder": "CP",
+      "resource_groups_folder": "Christmas Project",
+      "resource_groups": [
+        {
+          "key": "tshirt",
+          "label": "Shirt",
+          "folder": "Shirt"
+        },
+        {
+          "key": "sweatshirt",
+          "label": "Sweatshirt",
+          "folder": "Sweatshirt"
+        },
+        {
+          "key": "hoodie",
+          "label": "Hoodie",
+          "folder": "Hoodie"
+        }
+      ],
       "main_image_map": {},
       "design_color_image_map": {
         "Black": {

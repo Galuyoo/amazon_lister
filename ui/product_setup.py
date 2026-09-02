@@ -545,6 +545,8 @@ def render_product_setup(
     selected_variants: dict[str, list[str]],
     staged_resource_entries: list[dict[str, Any]],
     garment_resource_entries: list[dict[str, Any]],
+    garment_resource_group_root_entries: list[dict[str, Any]],
+    garment_resource_group_entries: list[dict[str, Any]],
     global_resource_entries: list[dict[str, Any]],
     parent_main_image_options: list[tuple[str, str]],
     variant_dimensions: list[dict[str, Any]],
@@ -557,6 +559,8 @@ def render_product_setup(
     global_brand_name: str,
     render_active_product_context: Callable[..., None],
     render_stage_images_zip_upload: Callable[..., None],
+    upload_resource_images_to_folder: Callable[..., list[str]],
+    clear_resource_image_caches: Callable[[], None],
     build_variants_summary: Callable[..., str],
     render_path_grid: Callable[..., None],
     selectbox_index_without_state_conflict: Callable[..., int],
@@ -613,14 +617,29 @@ def render_product_setup(
             else:
                 st.write(f"Resource root: `{dropbox_overview['resource_root']}`")
                 st.write(f"Variant folder: `{dropbox_overview['variant_folder']}`")
-                if dropbox_overview.get("garment_resource_warning") and not staged_resource_paths:
+                has_grouped_resource_library = bool(dropbox_overview.get("garment_resource_groups"))
+                if (
+                    not has_grouped_resource_library
+                    and dropbox_overview.get("garment_resource_warning")
+                    and not staged_resource_paths
+                ):
                     st.warning(dropbox_overview["garment_resource_warning"])
 
                 st.write(f"Staged image files found: `{len(staged_preview_paths)}`")
                 st.write(f"Staged resources folder files found: `{len(staged_resource_paths)}`")
                 st.write(f"Selected variants: `{build_variants_summary(selected_variants)}`")
-                st.write(f"Fallback garment support files configured: `{len(dropbox_overview.get('garment_resource_images', []))}`")
-                st.write(f"Fallback shared support files configured: `{len(dropbox_overview.get('shared_resource_images', []))}`")
+                if has_grouped_resource_library:
+                    grouped_resource_count = sum(
+                        len(group.get("images", []))
+                        for group in dropbox_overview.get("garment_resource_groups", [])
+                    )
+                    st.write(
+                        "Christmas Project resource files found: "
+                        f"`{len(dropbox_overview.get('garment_resource_group_root_images', [])) + grouped_resource_count}`"
+                    )
+                else:
+                    st.write(f"Fallback garment support files configured: `{len(dropbox_overview.get('garment_resource_images', []))}`")
+                    st.write(f"Fallback shared support files configured: `{len(dropbox_overview.get('shared_resource_images', []))}`")
                 st.checkbox(
                     "Use fallback resource images when listing resources is empty",
                     key="use_resource_fallback_images",
@@ -648,18 +667,80 @@ def render_product_setup(
                         cols_per_row=5,
                         image_width=150,
                     )
-                    render_path_grid(
-                        "Fallback garment support images",
-                        garment_resource_entries,
-                        cols_per_row=5,
-                        image_width=150,
-                    )
-                    render_path_grid(
-                        "Fallback global resource images",
-                        global_resource_entries,
-                        cols_per_row=5,
-                        image_width=150,
-                    )
+                    if garment_resource_group_entries:
+                        upload_notice = st.session_state.pop("christmas_resource_upload_notice", "")
+                        if upload_notice:
+                            st.success(upload_notice)
+
+                        if (
+                            dropbox_overview.get("garment_resource_group_root_warning")
+                            and not garment_resource_group_root_entries
+                        ):
+                            st.warning(dropbox_overview["garment_resource_group_root_warning"])
+
+                        render_path_grid(
+                            "Christmas Project shared resources",
+                            garment_resource_group_root_entries,
+                            cols_per_row=5,
+                            image_width=150,
+                        )
+                        for resource_group in garment_resource_group_entries:
+                            group_key = str(resource_group.get("key", "")).strip()
+                            group_label = str(resource_group.get("label", group_key)).strip()
+                            group_path = str(resource_group.get("path", "")).strip()
+                            st.markdown(f"**{group_label} resources**")
+                            uploaded_images = st.file_uploader(
+                                f"Add {group_label} resource images",
+                                type=["png", "jpg", "jpeg"],
+                                accept_multiple_files=True,
+                                key=f"christmas_resource_{group_key}_upload",
+                            )
+                            if st.button(
+                                f"Upload {group_label} resources",
+                                key=f"christmas_resource_{group_key}_upload_btn",
+                                width="content",
+                                disabled=not bool(group_path and uploaded_images),
+                            ):
+                                try:
+                                    uploaded_paths = upload_resource_images_to_folder(
+                                        group_path,
+                                        [
+                                            (uploaded_image.name, uploaded_image.getvalue())
+                                            for uploaded_image in uploaded_images
+                                        ],
+                                    )
+                                    clear_resource_image_caches()
+                                    st.session_state["load_image_mappings_now"] = True
+                                    st.session_state["image_mappings_loaded_folder"] = staged_folder_name
+                                    st.session_state["image_mappings_loaded_context"] = image_mapping_context_key
+                                    st.session_state["christmas_resource_upload_notice"] = (
+                                        f"Uploaded {len(uploaded_paths)} {group_label} resource image(s)."
+                                    )
+                                    st.rerun()
+                                except Exception as exc:
+                                    st.error(f"Could not upload {group_label} resource images: {exc}")
+
+                            if resource_group.get("warning") and not resource_group.get("entries"):
+                                st.warning(resource_group["warning"])
+                            render_path_grid(
+                                f"{group_label} resource images",
+                                resource_group.get("entries", []),
+                                cols_per_row=5,
+                                image_width=150,
+                            )
+                    else:
+                        render_path_grid(
+                            "Fallback garment support images",
+                            garment_resource_entries,
+                            cols_per_row=5,
+                            image_width=150,
+                        )
+                        render_path_grid(
+                            "Fallback global resource images",
+                            global_resource_entries,
+                            cols_per_row=5,
+                            image_width=150,
+                        )
 
                 with colours_tab:
                     st.caption("These are the staged mapped variant images expected from the selected staged folder.")

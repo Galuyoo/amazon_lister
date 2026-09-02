@@ -2744,13 +2744,38 @@ def upload_ready_review_resource_image(
     if not ready_folder_path:
         raise ValueError("The ready listing folder is unavailable.")
 
-    safe_filename = validate_review_resource_image(filename, content)
     resources_folder_path = f"{ready_folder_path}/resources"
-    create_folder_if_missing(resources_folder_path)
-    return upload_binary_file(
-        f"{resources_folder_path}/{safe_filename}",
-        content,
-    )
+    return upload_resource_images_to_folder(
+        resources_folder_path,
+        [(filename, content)],
+    )[0]
+
+
+def upload_resource_images_to_folder(
+    folder_path: str,
+    images: list[tuple[str, bytes]],
+) -> list[str]:
+    target_folder_path = str(folder_path or "").rstrip("/")
+    if not target_folder_path:
+        raise ValueError("The resource folder is unavailable.")
+    if not images:
+        raise ValueError("Choose at least one PNG or JPG resource image.")
+
+    validated_images: list[tuple[str, bytes]] = []
+    seen_filenames: set[str] = set()
+    for filename, content in images:
+        safe_filename = validate_review_resource_image(filename, content)
+        filename_key = safe_filename.casefold()
+        if filename_key in seen_filenames:
+            raise ValueError(f"Duplicate resource image filename: {safe_filename}")
+        seen_filenames.add(filename_key)
+        validated_images.append((safe_filename, content))
+
+    create_folder_if_missing(target_folder_path)
+    return [
+        upload_binary_file(f"{target_folder_path}/{safe_filename}", content)
+        for safe_filename, content in validated_images
+    ]
 
 
 def is_ignored_zip_member(parts: list[str]) -> bool:
@@ -3438,6 +3463,15 @@ def build_dropbox_overview(
     garment_resource_root = f"{resource_root}/{variant_folder}" if resource_root and variant_folder else ""
     garment_resource_images: list[str] = []
     garment_resource_warning = ""
+    resource_groups_folder = str(template_block.get("resource_groups_folder", "")).strip().strip("/")
+    garment_resource_group_root = (
+        f"{resource_root}/{resource_groups_folder}"
+        if resource_root and resource_groups_folder
+        else ""
+    )
+    garment_resource_group_root_images: list[str] = []
+    garment_resource_group_root_warning = ""
+    garment_resource_groups: list[dict[str, Any]] = []
 
     if garment_resource_root and include_garment_resource_images:
         try:
@@ -3458,6 +3492,58 @@ def build_dropbox_overview(
     elif garment_resource_root:
         garment_resource_warning = "Garment support images not loaded yet."
 
+    if garment_resource_group_root and include_garment_resource_images:
+        try:
+            garment_resource_group_root_images = sorted(
+                [
+                    path
+                    for path in list_folder_files(garment_resource_group_root)
+                    if is_image_file(path)
+                ],
+                key=lambda path: Path(path).name.lower(),
+            )
+            if not garment_resource_group_root_images:
+                garment_resource_group_root_warning = (
+                    f"No shared resource images found in {garment_resource_group_root}."
+                )
+        except Exception as exc:
+            garment_resource_group_root_warning = f"Shared resource images unavailable: {exc}"
+    elif garment_resource_group_root:
+        garment_resource_group_root_warning = "Shared resource images not loaded yet."
+
+    for resource_group in template_block.get("resource_groups", []):
+        group_key = str(resource_group.get("key", "")).strip()
+        group_label = str(resource_group.get("label", "")).strip()
+        group_folder = str(resource_group.get("folder", "")).strip().strip("/")
+        group_path = (
+            f"{garment_resource_group_root}/{group_folder}"
+            if garment_resource_group_root and group_folder
+            else ""
+        )
+        group_images: list[str] = []
+        group_warning = ""
+        if group_path and include_garment_resource_images:
+            try:
+                group_images = sorted(
+                    [path for path in list_folder_files(group_path) if is_image_file(path)],
+                    key=lambda path: Path(path).name.lower(),
+                )
+                if not group_images:
+                    group_warning = f"No resource images found in {group_path}."
+            except Exception as exc:
+                group_warning = f"{group_label or group_key} resource images unavailable: {exc}"
+        elif group_path:
+            group_warning = "Resource images not loaded yet."
+
+        garment_resource_groups.append({
+            "key": group_key,
+            "label": group_label,
+            "folder": group_folder,
+            "path": group_path,
+            "images": group_images,
+            "warning": group_warning,
+        })
+
     return {
         "resource_root": resource_root,
         "template_key": template_key,
@@ -3465,6 +3551,10 @@ def build_dropbox_overview(
         "garment_resource_root": garment_resource_root,
         "garment_resource_images": garment_resource_images,
         "garment_resource_warning": garment_resource_warning,
+        "garment_resource_group_root": garment_resource_group_root,
+        "garment_resource_group_root_images": garment_resource_group_root_images,
+        "garment_resource_group_root_warning": garment_resource_group_root_warning,
+        "garment_resource_groups": garment_resource_groups,
         "shared_resource_images": shared_resource_images,
         "main_image_map": template_block.get("main_image_map", {}),
         "design_color_image_map": template_block.get("design_color_image_map", {}),
@@ -3827,6 +3917,16 @@ def clear_runtime_caches() -> None:
     for key in list(st.session_state.keys()):
         if key.endswith("_load_image_review") or key.endswith("_run_full_quality"):
             st.session_state.pop(key, None)
+
+
+def clear_resource_image_caches() -> None:
+    for key in [
+        "dropbox_overview_cache",
+        "preview_image_cache",
+        "preview_image_mapping_cache",
+        "resolved_image_bundle_cache",
+    ]:
+        st.session_state.pop(key, None)
 
 
 def clear_loaded_image_mapping_state(session_state: Any) -> None:
@@ -4303,6 +4403,20 @@ def get_cached_preview_image_data(
     staged_preview_entries = resolve_display_entries([(Path(path).name, path) for path in staged_preview_paths])
     staged_resource_entries = resolve_display_entries([(Path(path).name, path) for path in staged_resource_paths])
     garment_resource_entries = resolve_display_entries([(Path(path).name, path) for path in dropbox_overview.get("garment_resource_images", [])])
+    garment_resource_group_root_entries = resolve_display_entries([
+        (Path(path).name, path)
+        for path in dropbox_overview.get("garment_resource_group_root_images", [])
+    ])
+    garment_resource_group_entries = [
+        {
+            **resource_group,
+            "entries": resolve_display_entries([
+                (Path(path).name, path)
+                for path in resource_group.get("images", [])
+            ]),
+        }
+        for resource_group in dropbox_overview.get("garment_resource_groups", [])
+    ]
     global_resource_entries = resolve_display_entries([(Path(path).name, path) for path in dropbox_overview.get("shared_resource_images", [])])
 
     stage_folder_path_for_preview = build_stage_folder_path(dropbox_cfg, staged_folder_name) if staged_folder_name else ""
@@ -4369,6 +4483,8 @@ def get_cached_preview_image_data(
         "full_design_color_image_url_map": full_design_color_image_url_map,
         "parent_main_image_options": parent_main_image_options,
         "garment_resource_entries": garment_resource_entries,
+        "garment_resource_group_root_entries": garment_resource_group_root_entries,
+        "garment_resource_group_entries": garment_resource_group_entries,
         "global_resource_entries": global_resource_entries,
         "staged_variant_entries": staged_variant_entries,
     }
@@ -8384,13 +8500,7 @@ def render_ready_review_panel(
                     uploaded_resource_image.name,
                     uploaded_resource_image.getvalue(),
                 )
-                for cache_key in [
-                    "dropbox_overview_cache",
-                    "preview_image_cache",
-                    "preview_image_mapping_cache",
-                    "resolved_image_bundle_cache",
-                ]:
-                    st.session_state.pop(cache_key, None)
+                clear_resource_image_caches()
                 st.session_state[f"{review_key_prefix}_load_image_review"] = True
                 review_data = build_ready_review_data(
                     profile=item.get("profile"),
@@ -10612,6 +10722,8 @@ def main() -> None:
     design_color_preview_entries = preview_image_data.get("design_color_preview_entries", [])
     parent_main_image_options = preview_image_data.get("parent_main_image_options", [])
     garment_resource_entries = preview_image_data.get("garment_resource_entries", [])
+    garment_resource_group_root_entries = preview_image_data.get("garment_resource_group_root_entries", [])
+    garment_resource_group_entries = preview_image_data.get("garment_resource_group_entries", [])
     global_resource_entries = preview_image_data.get("global_resource_entries", [])
     staged_variant_entries = preview_image_data.get("staged_variant_entries", [])
     preview_color_image_map = preview_image_data.get("color_image_map", {})
@@ -10801,6 +10913,8 @@ def main() -> None:
             selected_variants=selected_variants,
             staged_resource_entries=staged_resource_entries,
             garment_resource_entries=garment_resource_entries,
+            garment_resource_group_root_entries=garment_resource_group_root_entries,
+            garment_resource_group_entries=garment_resource_group_entries,
             global_resource_entries=global_resource_entries,
             parent_main_image_options=parent_main_image_options,
             variant_dimensions=variant_dimensions,
@@ -10813,6 +10927,8 @@ def main() -> None:
             global_brand_name=GLOBAL_BRAND_NAME,
             render_active_product_context=render_active_product_context,
             render_stage_images_zip_upload=render_stage_images_zip_upload,
+            upload_resource_images_to_folder=upload_resource_images_to_folder,
+            clear_resource_image_caches=clear_resource_image_caches,
             build_variants_summary=build_variants_summary,
             render_path_grid=render_path_grid,
             selectbox_index_without_state_conflict=selectbox_index_without_state_conflict,
