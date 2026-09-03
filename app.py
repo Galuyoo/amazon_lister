@@ -42,6 +42,7 @@ from services.christmas_group_publication import (
     is_ready_listing_visible,
     publish_christmas_group,
 )
+from services.approved_batch_identity import assess_grouped_christmas_mpn_changes
 from services.quality_checks import (
     build_child_title_for_validation,
     find_oversized_child_titles,
@@ -6177,6 +6178,7 @@ def generate_approved_listings_combined(
 
     prepared_payloads: list[dict[str, Any]] = []
     prepared_profiles: list[dict[str, Any]] = []
+    prepared_items: list[dict[str, Any]] = []
 
     for item in valid_items:
         folder_name = item["folder_name"]
@@ -6221,6 +6223,8 @@ def generate_approved_listings_combined(
                 raise ValueError("; ".join(prep["errors"]))
 
             payload = dict(prep["payload"])
+            if "mpn" in listing_memory:
+                payload["mpn"] = listing_memory.get("mpn")
             selected_variants = dict(payload.get("selected_variants", {}))
             payload["assets_prepared_by"] = listing_memory.get("assets_prepared_by", "")
             payload["content_prepared_by"] = listing_memory.get("content_prepared_by", "")
@@ -6257,6 +6261,11 @@ def generate_approved_listings_combined(
 
             prepared_payloads.append(payload)
             prepared_profiles.append(profile_i)
+            prepared_items.append({
+                "item": item,
+                "profile": profile_i,
+                "payload": payload,
+            })
         except Exception as exc:
             raise ValueError(f"{folder_name}: {exc}") from exc
 
@@ -6272,6 +6281,7 @@ def generate_approved_listings_combined(
         "output_path": str(output_path),
         "output_name": output_path.name,
         "timings": timings,
+        "prepared_items": prepared_items,
     }
 
 
@@ -7462,6 +7472,13 @@ def resolve_grouped_child_listing_code_for_review(
         return normalized
 
     if prefer_source_listing_code:
+        identity_override = listing_memory.get("identity_override")
+        if isinstance(identity_override, dict):
+            overridden_code = sanitize_sku(
+                str(identity_override.get("new_listing_code", "") or "")
+            ).upper()
+            if overridden_code:
+                return overridden_code
         explicit_source_code = sanitize_sku(
             str(source_group.get("source_listing_code", "") or "")
         ).upper()
@@ -9302,6 +9319,18 @@ def render_generation_results(
     ]
     st.dataframe(summary_rows, width="stretch", hide_index=True)
 
+    daily_report_text = str(st.session_state.get("approved_daily_mpn_change_report", "") or "")
+    if daily_report_text:
+        report_date = str(st.session_state.get("approved_daily_mpn_change_report_date", "") or "")
+        st.download_button(
+            "Download daily MPN change report",
+            data=daily_report_text,
+            file_name=f"amazon_listing_mpn_changes_{report_date or datetime.now().strftime('%Y-%m-%d')}.txt",
+            mime="text/plain",
+            key=f"{download_key_prefix}_daily_mpn_change_report",
+            width="content",
+        )
+
     success_results = [
         result for result in results
         if result.get("status") == "Success" and result.get("output_path")
@@ -9671,13 +9700,411 @@ def render_review_queue_view(
     return
 
 
+def get_reserved_approved_listing_codes(
+    approved_lookup: dict[str, dict[str, Any]],
+) -> set[str]:
+    return {
+        sanitize_sku(str(item.get("listing_memory", {}).get("sku_listing_code", "") or "")).upper()
+        for item in approved_lookup.values()
+        if sanitize_sku(str(item.get("listing_memory", {}).get("sku_listing_code", "") or "")).upper()
+    }
+
+
+def is_grouped_christmas_approved_memory(listing_memory: dict[str, Any]) -> bool:
+    if is_grouped_christmas_memory(listing_memory):
+        return True
+    source_group = listing_memory.get("source_group")
+    return bool(
+        isinstance(source_group, dict)
+        and str(source_group.get("group_type", "") or "").strip().casefold()
+        == "christmas_project"
+    )
+
+
+def assess_approved_grouped_christmas_mpn_changes(
+    target_folders: list[str],
+    approved_lookup: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    selected_items = [
+        approved_lookup[folder_name]
+        for folder_name in target_folders
+        if folder_name in approved_lookup
+    ]
+    missing_folders = [
+        folder_name for folder_name in target_folders
+        if folder_name not in approved_lookup
+    ]
+    assessment = assess_grouped_christmas_mpn_changes(
+        selected_items,
+        reserved_listing_codes=get_reserved_approved_listing_codes(approved_lookup),
+    )
+    if missing_folders:
+        assessment = dict(assessment)
+        assessment["valid"] = False
+        assessment["errors"] = list(assessment.get("errors", [])) + [
+            "Approved folder could not be loaded: " + ", ".join(missing_folders)
+        ]
+    assessment["selected_folders"] = list(target_folders)
+    return assessment
+
+
+def apply_assessed_grouped_christmas_mpn_changes(
+    assessment: dict[str, Any],
+    approved_lookup: dict[str, dict[str, Any]],
+    dropbox_cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not assessment.get("valid"):
+        raise ValueError("The MPN assessment is not valid and cannot be applied.")
+    changes = list(assessment.get("changes", []))
+    if not changes:
+        return []
+
+    selected_folders = list(assessment.get("selected_folders", []))
+    fresh_assessment = assess_approved_grouped_christmas_mpn_changes(
+        selected_folders,
+        approved_lookup,
+    )
+    if fresh_assessment.get("fingerprint") != assessment.get("fingerprint"):
+        raise ValueError("The approved listing identities changed after assessment. Assess MPN changes again.")
+    fresh_changes = {
+        row["folder_name"]: row
+        for row in fresh_assessment.get("changes", [])
+    }
+    if {
+        row.get("folder_name") for row in changes
+    } != set(fresh_changes):
+        raise ValueError("The proposed MPN changes are stale. Assess MPN changes again.")
+
+    prepared_updates: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]] = []
+    changed_at = format_workflow_timestamp()
+    for assessed_change in changes:
+        folder_name = str(assessed_change.get("folder_name", "") or "")
+        change = fresh_changes[folder_name]
+        item = approved_lookup.get(folder_name, {})
+        profile = item.get("profile")
+        listing_memory = item.get("listing_memory")
+        if not profile or not isinstance(listing_memory, dict) or not listing_memory:
+            raise ValueError(f"{folder_name}: approved listing could not be loaded for update.")
+
+        payload = deepcopy(listing_memory)
+        old_code = str(change["old_listing_code"])
+        new_code = str(change["new_listing_code"])
+        if len(new_code) != len(old_code):
+            raise ValueError(f"{folder_name}: replacement MPN length changed unexpectedly.")
+
+        payload["mpn"] = new_code
+        payload["manual_sku_listing_code"] = new_code
+        payload["generated_sku_listing_code"] = new_code
+        payload["sku_listing_code"] = new_code
+        payload["parent_sku"] = change["new_parent_sku"]
+        payload["parent_sku_override"] = change["new_parent_sku"]
+        identity_change = {
+            "changed_at": changed_at,
+            "reason": "Automatic duplicate grouped Christmas MPN repair",
+            "task_id": change["task_id"],
+            "member_key": change["member_key"],
+            "old_listing_code": old_code,
+            "new_listing_code": new_code,
+            "old_parent_sku": change["old_parent_sku"],
+            "new_parent_sku": change["new_parent_sku"],
+        }
+        identity_changes = list(payload.get("identity_changes", []))
+        identity_changes.append(identity_change)
+        payload["identity_changes"] = identity_changes[-50:]
+        payload["identity_override"] = dict(identity_change)
+        append_workflow_event(
+            payload,
+            action="repair_duplicate_grouped_christmas_mpn",
+            actor="",
+            from_state="approved",
+            to_state="approved",
+            folder_path=build_approved_folder_path(dropbox_cfg, folder_name),
+            details=identity_change,
+        )
+        prepared_updates.append((item, profile, payload, folder_name))
+
+    results: list[dict[str, Any]] = []
+    for item, profile, payload, folder_name in prepared_updates:
+        folder_path = build_approved_folder_path(dropbox_cfg, folder_name)
+        save_listing_inputs_json_to_dropbox(
+            profile=profile,
+            payload=payload,
+            folder_path=folder_path,
+        )
+        item["listing_memory"] = payload
+        clear_cached_listing_memory(folder_path)
+        identity_override = payload["identity_override"]
+        results.append({
+            "folder_name": folder_name,
+            "task_id": identity_override["task_id"],
+            "member_key": identity_override["member_key"],
+            "old_listing_code": identity_override["old_listing_code"],
+            "new_listing_code": identity_override["new_listing_code"],
+            "old_parent_sku": identity_override["old_parent_sku"],
+            "new_parent_sku": identity_override["new_parent_sku"],
+            "status": "Applied",
+        })
+    return results
+
+
+def persist_combined_chunk_listing_result(
+    prepared_item: dict[str, Any],
+    output_path: Path,
+    dropbox_cfg: dict[str, Any],
+) -> dict[str, Any]:
+    item = prepared_item["item"]
+    profile = prepared_item["profile"]
+    payload = dict(prepared_item["payload"])
+    listing_memory = item["listing_memory"]
+    folder_name = str(item["folder_name"])
+    approved_folder_path = build_approved_folder_path(dropbox_cfg, folder_name)
+    original_finished_folder_name = str(
+        listing_memory.get("original_finished_folder_name", "") or ""
+    ).strip()
+    final_sku, finished_folder_path = choose_finished_folder_target(
+        dropbox_cfg=dropbox_cfg,
+        parent_sku=str(payload.get("parent_sku", "") or ""),
+        reuse_finished_folder_name=original_finished_folder_name,
+    )
+    payload["finished_folder_sku"] = final_sku
+    payload["pending_finished_folder_path"] = finished_folder_path
+    generated_artifact = save_generated_artifacts_to_dropbox(
+        profile=profile,
+        payload=payload,
+        finished_folder_path=approved_folder_path,
+        output_path=output_path,
+    )
+    append_workflow_event(
+        payload,
+        action="generate_approved_listing_combined_chunk",
+        actor=str(payload.get("reviewed_by", "") or ""),
+        from_state="approved",
+        to_state="approved",
+        folder_path=approved_folder_path,
+        details={
+            "output_name": output_path.name,
+            "combined_chunk_size": 2,
+            "pending_finished_folder_path": finished_folder_path,
+        },
+    )
+    save_listing_inputs_json_to_dropbox(
+        profile=profile,
+        payload=payload,
+        folder_path=approved_folder_path,
+    )
+    return {
+        "folder_name": folder_name,
+        "status": "Success",
+        "message": f"Generated in {output_path.name}. Moving to Finished before download.",
+        "output_path": str(output_path),
+        "output_name": output_path.name,
+        "approved_folder_name": folder_name,
+        "approved_folder_path": approved_folder_path,
+        "pending_finished_folder_path": finished_folder_path,
+        "pending_finished_folder_sku": final_sku,
+        "parent_sku": payload.get("parent_sku", ""),
+        "generated_artifact": generated_artifact,
+    }
+
+
+def generate_optimized_grouped_christmas_batch(
+    selected_items: list[dict[str, Any]],
+    profiles: list[dict[str, Any]],
+    dropbox_cfg: dict[str, Any],
+    chunk_size: int = 2,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if chunk_size != 2:
+        raise ValueError("Christmas optimized generation currently requires two parents per workbook.")
+
+    grouped_items: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for item in selected_items:
+        identity = get_combined_workbook_group_identity(item["profile"])
+        grouped_items.setdefault(identity, []).append(item)
+
+    display_results: list[dict[str, Any]] = []
+    move_candidates: list[dict[str, Any]] = []
+    for compatible_items in grouped_items.values():
+        compatible_items = sorted(
+            compatible_items,
+            key=lambda item: str(item.get("folder_name", "")),
+        )
+        for offset in range(0, len(compatible_items), chunk_size):
+            chunk = compatible_items[offset:offset + chunk_size]
+            if len(chunk) == 1:
+                item = chunk[0]
+                try:
+                    move_candidates.append(generate_approved_listing(
+                        profile=item["profile"],
+                        listing_memory=item["listing_memory"],
+                        approved_folder_name=item["folder_name"],
+                        dropbox_cfg=dropbox_cfg,
+                    ))
+                except Exception as exc:
+                    display_results.append({
+                        "folder_name": item.get("folder_name", ""),
+                        "status": "Failed",
+                        "message": str(exc),
+                    })
+                continue
+
+            try:
+                combined_result = generate_approved_listings_combined(chunk, dropbox_cfg)
+                output_path = Path(combined_result["output_path"])
+                prepared_items = list(combined_result.pop("prepared_items", []))
+                parent_part = "_".join(
+                    sanitize_sku(str(row.get("payload", {}).get("parent_sku", "") or ""))
+                    for row in prepared_items
+                )
+                if parent_part:
+                    chunk_output_path = output_path.with_name(
+                        f"{output_path.stem}_{parent_part[:120]}{output_path.suffix}"
+                    )
+                    if chunk_output_path != output_path:
+                        output_path.replace(chunk_output_path)
+                        output_path = chunk_output_path
+                        combined_result["output_path"] = str(output_path)
+                        combined_result["output_name"] = output_path.name
+
+                persisted_count = 0
+                for prepared_item in prepared_items:
+                    try:
+                        move_candidates.append(persist_combined_chunk_listing_result(
+                            prepared_item=prepared_item,
+                            output_path=output_path,
+                            dropbox_cfg=dropbox_cfg,
+                        ))
+                        persisted_count += 1
+                    except Exception as exc:
+                        display_results.append({
+                            "folder_name": prepared_item.get("item", {}).get("folder_name", ""),
+                            "status": "Failed",
+                            "message": f"Combined workbook was built, but this listing could not be saved: {exc}",
+                        })
+                if persisted_count:
+                    combined_result["message"] = (
+                        f"Generated one optimized workbook for {persisted_count} of "
+                        f"{len(prepared_items)} compatible listing(s): {output_path.name}"
+                    )
+                    display_results.append(combined_result)
+            except Exception as exc:
+                display_results.append({
+                    "folder_name": "Christmas optimized workbook",
+                    "status": "Failed",
+                    "message": str(exc),
+                })
+
+    moved_candidates, move_results = move_successful_generation_results_to_finished(
+        results=move_candidates,
+        profiles=profiles,
+        dropbox_cfg=dropbox_cfg,
+    )
+    display_results.extend(
+        result for result in moved_candidates
+        if result.get("status") != "Success"
+    )
+    return display_results, move_results
+
+
+def build_daily_mpn_change_report(
+    applied_changes: list[dict[str, Any]],
+    move_results: list[dict[str, Any]],
+    generation_results: list[dict[str, Any]],
+) -> str:
+    moved_by_folder = {
+        str(row.get("folder_name", "")): row
+        for row in move_results
+        if row.get("status") == "Success"
+    }
+    report_changes = [
+        change for change in applied_changes
+        if str(change.get("folder_name", "")) in moved_by_folder
+    ]
+    if not report_changes:
+        return ""
+
+    generated_at = format_workflow_timestamp()
+    lines = [
+        f"Amazon listing identity changes - {generated_at[:10]}",
+        f"Generated: {generated_at}",
+        f"Changed listings moved to Finished: {len(report_changes)}",
+        "",
+    ]
+    for change in report_changes:
+        folder_name = str(change.get("folder_name", ""))
+        move_result = moved_by_folder[folder_name]
+        finished_path = str(move_result.get("finished_folder_path", "") or "")
+        try:
+            finished_link = get_cached_dropbox_shared_link(finished_path) if finished_path else ""
+        except Exception:
+            finished_link = ""
+        lines.extend([
+            f"Folder: {folder_name}",
+            f"Task: {change.get('task_id', '')}",
+            f"Garment: {change.get('member_key', '')}",
+            f"MPN/design code: {change.get('old_listing_code', '')} -> {change.get('new_listing_code', '')}",
+            f"Parent SKU: {change.get('old_parent_sku', '')} -> {change.get('new_parent_sku', '')}",
+            f"Finished folder: {finished_path}",
+            f"Dropbox link: {finished_link or '[link unavailable]'}",
+            "",
+        ])
+
+    workbook_names = sorted({
+        str(result.get("output_name", "") or "")
+        for result in generation_results
+        if result.get("status") == "Success" and result.get("output_name")
+    })
+    if workbook_names:
+        lines.append("Generated workbooks:")
+        lines.extend(f"- {name}" for name in workbook_names)
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def generate_approved_output_batch(
     *,
     target_folders: list[str],
     approved_lookup: dict[str, dict[str, Any]],
     profiles: list[dict[str, Any]],
     dropbox_cfg: dict[str, Any],
+    optimize_grouped_christmas: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    selected_items = [
+        approved_lookup.get(folder_name)
+        for folder_name in target_folders
+        if approved_lookup.get(folder_name)
+    ]
+    all_grouped_christmas = bool(selected_items) and len(selected_items) == len(target_folders) and all(
+        is_grouped_christmas_approved_memory(item.get("listing_memory", {}))
+        for item in selected_items
+    )
+    if optimize_grouped_christmas and all_grouped_christmas and len(selected_items) >= 2:
+        parent_skus = [
+            str(
+                item.get("listing_memory", {}).get("parent_sku_override")
+                or item.get("listing_memory", {}).get("parent_sku")
+                or ""
+            ).strip().upper()
+            for item in selected_items
+        ]
+        duplicate_parent_skus = sorted(
+            sku for sku, count in Counter(parent_skus).items()
+            if sku and count > 1
+        )
+        if duplicate_parent_skus:
+            return ([{
+                "folder_name": "Christmas MPN assessment required",
+                "status": "Failed",
+                "message": (
+                    "Duplicate parent SKUs must be assessed and repaired before generation: "
+                    + ", ".join(duplicate_parent_skus)
+                ),
+            }], [])
+        return generate_optimized_grouped_christmas_batch(
+            selected_items=selected_items,
+            profiles=profiles,
+            dropbox_cfg=dropbox_cfg,
+        )
+
     results: list[dict[str, Any]] = []
     for folder_name in target_folders:
         item = approved_lookup.get(folder_name)
@@ -9813,6 +10240,7 @@ def render_approved_queue_view(
 
     generate_selected = False
     generate_all = False
+    assess_mpn_changes = False
     selected_approved_folders: list[str] = []
 
     if active_approved_output_section == "Generate":
@@ -9826,11 +10254,94 @@ def render_approved_queue_view(
                     placeholder="Choose approved folders to generate",
                 )
 
-                col1, col2 = st.columns(2)
+                st.checkbox(
+                    "Use faster Christmas batch workbooks",
+                    value=True,
+                    key="approved_queue_optimize_christmas_batch",
+                    help=(
+                        "Grouped Christmas listings are written in compatible chunks of two parents per workbook. "
+                        "Each parent remains independent and keeps its own Finished folder."
+                    ),
+                )
+
+                col1, col2, col3 = st.columns(3)
                 with col1:
-                    generate_selected = st.form_submit_button("Generate selected", width="stretch")
+                    assess_mpn_changes = st.form_submit_button(
+                        "Assess changes in MPN",
+                        width="stretch",
+                    )
                 with col2:
+                    generate_selected = st.form_submit_button("Generate selected", width="stretch")
+                with col3:
                     generate_all = st.form_submit_button("Generate all approved", width="stretch")
+
+        if assess_mpn_changes:
+            if not selected_approved_folders:
+                st.warning("Select grouped Christmas folders before assessing MPN changes.")
+            else:
+                assessment = assess_approved_grouped_christmas_mpn_changes(
+                    selected_approved_folders,
+                    approved_lookup,
+                )
+                st.session_state["approved_queue_mpn_assessment"] = assessment
+
+        mpn_assessment = st.session_state.get("approved_queue_mpn_assessment")
+        if isinstance(mpn_assessment, dict):
+            assessed_folders = list(mpn_assessment.get("selected_folders", []))
+            selection_is_current = assessed_folders == list(selected_approved_folders)
+            with st.expander("MPN change assessment", expanded=True):
+                if not selection_is_current:
+                    st.warning("The approved folder selection changed. Assess MPN changes again.")
+                for error in mpn_assessment.get("errors", []):
+                    st.error(error)
+                for warning in mpn_assessment.get("warnings", []):
+                    st.info(warning)
+                assessment_changes = list(mpn_assessment.get("changes", []))
+                if assessment_changes:
+                    st.dataframe(
+                        [
+                            {
+                                "Folder": row.get("folder_name", ""),
+                                "Task": row.get("task_id", ""),
+                                "Garment": row.get("member_key", ""),
+                                "Old MPN": row.get("old_listing_code", ""),
+                                "New MPN": row.get("new_listing_code", ""),
+                                "Characters": row.get("code_length", ""),
+                                "Old parent SKU": row.get("old_parent_sku", ""),
+                                "New parent SKU": row.get("new_parent_sku", ""),
+                            }
+                            for row in assessment_changes
+                        ],
+                        width="stretch",
+                        hide_index=True,
+                    )
+                    if st.button(
+                        "Apply assessed MPN changes",
+                        key="approved_queue_apply_mpn_assessment_btn",
+                        type="primary",
+                        width="content",
+                        disabled=not bool(mpn_assessment.get("valid") and selection_is_current),
+                    ):
+                        try:
+                            applied_changes = apply_assessed_grouped_christmas_mpn_changes(
+                                assessment=mpn_assessment,
+                                approved_lookup=approved_lookup,
+                                dropbox_cfg=dropbox_cfg,
+                            )
+                            st.session_state["approved_queue_applied_mpn_changes"] = applied_changes
+                            st.session_state.pop("approved_queue_mpn_assessment", None)
+                            st.session_state.pop("approved_queue_items_cache", None)
+                            clear_cached_listing_memory()
+                            set_workflow_flash(
+                                "success",
+                                f"Applied {len(applied_changes)} MPN/SKU identity change(s).",
+                                "Review the selected folders, then generate them.",
+                            )
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Could not apply assessed MPN changes: {exc}")
+                elif mpn_assessment.get("valid"):
+                    st.success("No duplicate grouped Christmas MPN changes are required.")
 
         if stored_results:
             stored_results, move_results = move_successful_generation_results_to_finished(
@@ -10010,9 +10521,31 @@ def render_approved_queue_view(
         approved_lookup=approved_lookup,
         profiles=profiles,
         dropbox_cfg=dropbox_cfg,
+        optimize_grouped_christmas=bool(
+            st.session_state.get("approved_queue_optimize_christmas_batch", True)
+        ),
     )
     if move_results:
         st.session_state["approved_queue_move_generated_results"] = move_results
+
+    applied_mpn_changes = [
+        row
+        for row in st.session_state.get("approved_queue_applied_mpn_changes", [])
+        if row.get("folder_name") in target_folders
+    ]
+    daily_mpn_change_report = build_daily_mpn_change_report(
+        applied_changes=applied_mpn_changes,
+        move_results=move_results,
+        generation_results=results,
+    )
+    if daily_mpn_change_report:
+        st.session_state["approved_daily_mpn_change_report"] = daily_mpn_change_report
+        st.session_state["approved_daily_mpn_change_report_date"] = datetime.now().strftime("%Y-%m-%d")
+        st.session_state["approved_queue_applied_mpn_changes"] = [
+            row
+            for row in st.session_state.get("approved_queue_applied_mpn_changes", [])
+            if row.get("folder_name") not in target_folders
+        ]
 
     approved_generation_elapsed_ms = round(
         (time.perf_counter() - approved_generation_started_at) * 1000,

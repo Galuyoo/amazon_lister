@@ -511,6 +511,209 @@ def test_combined_group_identity_error_is_reported_not_hidden(monkeypatch) -> No
     assert "template path is invalid" in skipped["message"]
 
 
+def approved_grouped_task(task_id: str, code: str) -> list[dict]:
+    return [
+        {
+            "folder_name": f"folder-{task_id}-{member}",
+            "profile": {"template_key": template},
+            "load_error": "",
+            "listing_memory": {
+                "title": f"Title {member}",
+                "sku_decoration_code": "DEF",
+                "mpn": code,
+                "manual_sku_listing_code": code,
+                "generated_sku_listing_code": code,
+                "sku_listing_code": code,
+                "parent_sku": f"DEF-{code}-{suffix}",
+                "parent_sku_override": f"DEF-{code}-{suffix}",
+                "source_group": {
+                    "group_type": "christmas_project",
+                    "task_id": task_id,
+                    "member_key": member,
+                    "source_mpn": code,
+                    "source_listing_code": code,
+                },
+            },
+        }
+        for member, suffix, template in [
+            ("tshirt", "T", "GENERIC_SHIRTS"),
+            ("sweatshirt", "S", "GENERIC_SWEATSHIRTS"),
+            ("hoodie", "H", "GENERIC_HOODIES"),
+        ]
+    ]
+
+
+def test_assessed_mpn_changes_update_mpn_and_complete_sku_identity(monkeypatch) -> None:
+    items = approved_grouped_task("task-a", "ABC") + approved_grouped_task("task-b", "ABC")
+    approved_lookup = {item["folder_name"]: item for item in items}
+    saved = []
+    monkeypatch.setattr(
+        app,
+        "save_listing_inputs_json_to_dropbox",
+        lambda **kwargs: saved.append(kwargs),
+    )
+    monkeypatch.setattr(app, "clear_cached_listing_memory", lambda *_args: None)
+
+    assessment = app.assess_approved_grouped_christmas_mpn_changes(
+        list(approved_lookup),
+        approved_lookup,
+    )
+    changes = app.apply_assessed_grouped_christmas_mpn_changes(
+        assessment,
+        approved_lookup,
+        {"approved_folder": "/Amazon/approved"},
+    )
+
+    assert len(changes) == 3
+    assert len(saved) == 3
+    new_code = changes[0]["new_listing_code"]
+    assert len(new_code) == 3
+    for change in changes:
+        memory = approved_lookup[change["folder_name"]]["listing_memory"]
+        assert memory["mpn"] == new_code
+        assert memory["manual_sku_listing_code"] == new_code
+        assert memory["generated_sku_listing_code"] == new_code
+        assert memory["sku_listing_code"] == new_code
+        assert memory["parent_sku"] == change["new_parent_sku"]
+        assert memory["parent_sku_override"] == change["new_parent_sku"]
+        assert memory["source_group"]["source_listing_code"] == "ABC"
+        assert memory["identity_override"]["new_listing_code"] == new_code
+
+
+def test_stale_mpn_assessment_is_rejected_before_writes(monkeypatch) -> None:
+    items = approved_grouped_task("task-a", "ABC") + approved_grouped_task("task-b", "ABC")
+    approved_lookup = {item["folder_name"]: item for item in items}
+    assessment = app.assess_approved_grouped_christmas_mpn_changes(list(approved_lookup), approved_lookup)
+    approved_lookup["folder-task-b-hoodie"]["listing_memory"]["sku_listing_code"] = "XYZ"
+    saved = []
+    monkeypatch.setattr(app, "save_listing_inputs_json_to_dropbox", lambda **kwargs: saved.append(kwargs))
+
+    with pytest.raises(ValueError, match="changed after assessment"):
+        app.apply_assessed_grouped_christmas_mpn_changes(assessment, approved_lookup, {})
+    assert saved == []
+
+
+def test_optimized_christmas_generation_builds_compatible_pairs_only(monkeypatch, tmp_path) -> None:
+    items = approved_grouped_task("task-a", "ABC") + approved_grouped_task("task-b", "XYZ")
+    combined_calls = []
+    persisted = []
+
+    monkeypatch.setattr(
+        app,
+        "get_combined_workbook_group_identity",
+        lambda profile: (profile["template_key"],),
+    )
+
+    def generate_combined(chunk, _cfg):
+        combined_calls.append([item["folder_name"] for item in chunk])
+        output_path = tmp_path / f"combined-{len(combined_calls)}.xlsm"
+        output_path.write_bytes(b"workbook")
+        return {
+            "folder_name": f"Combined {len(combined_calls)}",
+            "status": "Success",
+            "output_path": str(output_path),
+            "output_name": output_path.name,
+            "prepared_items": [
+                {"item": item, "profile": item["profile"], "payload": {"parent_sku": item["listing_memory"]["parent_sku"]}}
+                for item in chunk
+            ],
+        }
+
+    def persist(prepared_item, output_path, dropbox_cfg):
+        persisted.append((prepared_item["item"]["folder_name"], output_path.name))
+        return {
+            "folder_name": prepared_item["item"]["folder_name"],
+            "approved_folder_name": prepared_item["item"]["folder_name"],
+            "status": "Success",
+        }
+
+    monkeypatch.setattr(app, "generate_approved_listings_combined", generate_combined)
+    monkeypatch.setattr(app, "persist_combined_chunk_listing_result", persist)
+    monkeypatch.setattr(
+        app,
+        "generate_approved_listing",
+        lambda **_kwargs: pytest.fail("six compatible listings should not use individual generation"),
+    )
+    monkeypatch.setattr(
+        app,
+        "move_successful_generation_results_to_finished",
+        lambda **kwargs: (kwargs["results"], [{"status": "Success"} for _ in kwargs["results"]]),
+    )
+
+    results, move_results = app.generate_optimized_grouped_christmas_batch(items, [], {})
+
+    assert len(combined_calls) == 3
+    assert all(len(call) == 2 for call in combined_calls)
+    assert all(
+        len({approved_grouped[folder]["profile"]["template_key"] for folder in call}) == 1
+        for approved_grouped in [{item["folder_name"]: item for item in items}]
+        for call in combined_calls
+    )
+    assert len(persisted) == 6
+    assert len({output_name for _folder, output_name in persisted}) == 3
+    assert len(results) == 3
+    assert len(move_results) == 6
+
+
+def test_optimized_generation_blocks_duplicate_parent_skus_before_build(monkeypatch) -> None:
+    items = approved_grouped_task("task-a", "ABC") + approved_grouped_task("task-b", "ABC")
+    approved_lookup = {item["folder_name"]: item for item in items}
+    monkeypatch.setattr(
+        app,
+        "generate_optimized_grouped_christmas_batch",
+        lambda **_kwargs: pytest.fail("duplicate identities must be blocked before generation"),
+    )
+
+    results, move_results = app.generate_approved_output_batch(
+        target_folders=list(approved_lookup),
+        approved_lookup=approved_lookup,
+        profiles=[],
+        dropbox_cfg={},
+        optimize_grouped_christmas=True,
+    )
+
+    assert move_results == []
+    assert results[0]["status"] == "Failed"
+    assert "assessment" in results[0]["folder_name"]
+
+
+def test_daily_mpn_report_contains_finished_link_and_identity_changes(monkeypatch) -> None:
+    monkeypatch.setattr(app, "format_workflow_timestamp", lambda: "2026-09-03 12:34:56")
+    monkeypatch.setattr(app, "get_cached_dropbox_shared_link", lambda path: f"https://dropbox.test{path}")
+
+    report = app.build_daily_mpn_change_report(
+        applied_changes=[{
+            "folder_name": "folder-task-b-tshirt",
+            "task_id": "task-b",
+            "member_key": "tshirt",
+            "old_listing_code": "ABC",
+            "new_listing_code": "X7Q",
+            "old_parent_sku": "DEF-ABC-T",
+            "new_parent_sku": "DEF-X7Q-T",
+        }],
+        move_results=[{
+            "folder_name": "folder-task-b-tshirt",
+            "status": "Success",
+            "finished_folder_path": "/Amazon/finished/DEF-X7Q-T",
+        }],
+        generation_results=[{"status": "Success", "output_name": "batch.xlsm"}],
+    )
+
+    assert "ABC -> X7Q" in report
+    assert "DEF-ABC-T -> DEF-X7Q-T" in report
+    assert "/Amazon/finished/DEF-X7Q-T" in report
+    assert "https://dropbox.test/Amazon/finished/DEF-X7Q-T" in report
+    assert "batch.xlsm" in report
+
+
+def test_approved_generation_ui_exposes_mpn_assessment_and_optimization_controls() -> None:
+    source = Path(app.__file__).read_text(encoding="utf-8")
+
+    assert '"Assess changes in MPN"' in source
+    assert 'key="approved_queue_apply_mpn_assessment_btn"' in source
+    assert 'key="approved_queue_optimize_christmas_batch"' in source
+
+
 def test_combined_workbook_writes_three_distinct_parent_rows(monkeypatch, tmp_path) -> None:
     template_path = tmp_path / "template.xlsm"
     template_path.write_bytes(b"template")

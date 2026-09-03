@@ -273,6 +273,22 @@ def test_group_submission_ledger_is_additive_and_preserved_without_mutation() ->
     assert "group_submission" not in build_listing_memory_payload(sample_profile(), sample_payload())
 
 
+def test_identity_change_metadata_is_additive_and_preserved_without_mutation() -> None:
+    payload = sample_payload()
+    payload["identity_override"] = {
+        "old_listing_code": "ABC",
+        "new_listing_code": "X7Q",
+    }
+    payload["identity_changes"] = [{"old_parent_sku": "DEF-ABC-T", "new_parent_sku": "DEF-X7Q-T"}]
+
+    memory = build_listing_memory_payload(sample_profile(), payload)
+    memory["identity_override"]["new_listing_code"] = "changed"
+    memory["identity_changes"][0]["new_parent_sku"] = "changed"
+
+    assert payload["identity_override"]["new_listing_code"] == "X7Q"
+    assert payload["identity_changes"][0]["new_parent_sku"] == "DEF-X7Q-T"
+
+
 def test_importing_listing_memory_does_not_import_streamlit_or_dropbox() -> None:
     for module_name in list(sys.modules):
         if module_name == "services.listing_memory" or module_name.startswith("streamlit"):

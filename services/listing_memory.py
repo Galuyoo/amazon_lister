@@ -116,6 +116,12 @@ def build_listing_memory_payload(profile: dict[str, Any], payload: dict[str, Any
     if isinstance(payload.get("ignored_generations"), list):
         memory_payload["ignored_generations"] = list(payload.get("ignored_generations", []))
 
+    if isinstance(payload.get("identity_override"), dict):
+        memory_payload["identity_override"] = deepcopy(payload.get("identity_override", {}))
+
+    if isinstance(payload.get("identity_changes"), list):
+        memory_payload["identity_changes"] = deepcopy(payload.get("identity_changes", []))
+
     for field_name in [
         "generation_status",
         "ignored_at",
