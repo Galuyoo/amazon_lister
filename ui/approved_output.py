@@ -21,11 +21,168 @@ def render_approved_output(
     clear_runtime_caches: Callable[..., None],
     set_workflow_flash: Callable[..., None],
     get_cached_folder_names: Callable[..., list[str]],
+    build_finished_generation_history_rows: Callable[..., list[dict[str, Any]]],
     render_approved_queue_view: Callable[..., None],
 ) -> None:
     st.caption("Generate selected or all approved folders and download completed workbooks.")
 
-    with st.expander("Bring finished folders back", expanded=bool(st.session_state.get("finished_restage_results", []))):
+    with st.expander(
+        "Bring finished folders back",
+        expanded=bool(
+            st.session_state.get("finished_restage_results", [])
+            or st.session_state.get("finished_output_history_loaded", False)
+            or st.session_state.get("finished_output_history_refresh_requested", False)
+        ),
+    ):
+        st.markdown("**Finished generation history**")
+        st.caption(
+            "Inspect finished listings before returning them. Grouped Christmas identity comes from "
+            "saved task metadata; older ordinary batches are grouped by their recorded generation minute."
+        )
+        refresh_finished_history = st.button(
+            "Load / refresh finished history",
+            key="load_finished_output_history_btn",
+            width="content",
+        )
+        if refresh_finished_history:
+            st.session_state["active_perf_action_label"] = "load finished generation history"
+            st.session_state["pending_perf_action_label"] = "load finished generation history"
+            refresh_cached_folder_names("finished")
+            clear_cached_listing_memory()
+            st.session_state["finished_output_history_refresh_requested"] = True
+            st.rerun()
+
+        if st.session_state.pop("finished_output_history_refresh_requested", False):
+            with st.spinner("Loading finished generation history..."):
+                st.session_state["finished_output_history_rows"] = build_finished_generation_history_rows(
+                    finished_folder_names,
+                    profiles,
+                    dropbox_cfg,
+                )
+            st.session_state["finished_output_history_loaded"] = True
+
+        filtered_history_rows = list(st.session_state.get("finished_output_history_rows", []))
+        if st.session_state.get("finished_output_history_loaded", False):
+            history_rows = list(st.session_state.get("finished_output_history_rows", []))
+            history_dates = sorted(
+                {
+                    str(row.get("generated_date", "Unknown") or "Unknown")
+                    for row in history_rows
+                },
+                reverse=True,
+            )
+            history_origins = sorted({
+                str(row.get("origin", "Unknown") or "Unknown")
+                for row in history_rows
+            })
+            history_date_options = ["All dates", *history_dates]
+            history_origin_options = ["All types", *history_origins]
+            if st.session_state.get("finished_output_history_date_filter") not in history_date_options:
+                st.session_state["finished_output_history_date_filter"] = "All dates"
+            if st.session_state.get("finished_output_history_origin_filter") not in history_origin_options:
+                st.session_state["finished_output_history_origin_filter"] = "All types"
+            filter_col1, filter_col2 = st.columns(2)
+            with filter_col1:
+                selected_history_date = st.selectbox(
+                    "Generated date",
+                    history_date_options,
+                    key="finished_output_history_date_filter",
+                )
+            with filter_col2:
+                selected_history_origin = st.selectbox(
+                    "Listing origin",
+                    history_origin_options,
+                    key="finished_output_history_origin_filter",
+                )
+            history_search = st.text_input(
+                "Search finished history",
+                key="finished_output_history_search",
+                placeholder="Folder, title, parent SKU, workbook, or task ID",
+            ).strip().casefold()
+
+            filtered_history_rows = [
+                row
+                for row in history_rows
+                if (
+                    selected_history_date == "All dates"
+                    or row.get("generated_date") == selected_history_date
+                )
+                and (
+                    selected_history_origin == "All types"
+                    or row.get("origin") == selected_history_origin
+                )
+                and (
+                    not history_search
+                    or history_search in " ".join(
+                        str(row.get(field, "") or "")
+                        for field in [
+                            "folder_name",
+                            "title",
+                            "parent_sku",
+                            "workbook",
+                            "christmas_task_id",
+                        ]
+                    ).casefold()
+                )
+            ]
+
+            metric_col1, metric_col2, metric_col3 = st.columns(3)
+            metric_col1.metric("Finished", len(history_rows))
+            metric_col2.metric("Shown", len(filtered_history_rows))
+            metric_col3.metric(
+                "Grouped Christmas",
+                sum(1 for row in filtered_history_rows if row.get("origin") == "Grouped Christmas"),
+            )
+            if filtered_history_rows:
+                st.dataframe(
+                    [
+                        {
+                            "Generated": row.get("generated_at", ""),
+                            "History group": row.get("history_group", ""),
+                            "Folder": row.get("folder_name", ""),
+                            "Origin": row.get("origin", ""),
+                            "Christmas member": row.get("christmas_member", ""),
+                            "Template": row.get("template", ""),
+                            "Parent SKU": row.get("parent_sku", ""),
+                            "Title": row.get("title", ""),
+                            "Workbook": row.get("workbook", ""),
+                            "Status": row.get("generation_status", ""),
+                            "Load status": row.get("load_status", ""),
+                        }
+                        for row in filtered_history_rows
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.info("No finished generations match the current filters.")
+
+            select_col, clear_col = st.columns(2)
+            with select_col:
+                if st.button(
+                    "Select all shown",
+                    key="finished_output_history_select_all_btn",
+                    width="stretch",
+                    disabled=not bool(filtered_history_rows),
+                ):
+                    st.session_state["finished_output_restage_selected"] = [
+                        row["folder_name"]
+                        for row in filtered_history_rows
+                        if row.get("folder_name") in finished_folder_names
+                    ]
+                    st.rerun()
+            with clear_col:
+                if st.button(
+                    "Clear selection",
+                    key="finished_output_history_clear_selection_btn",
+                    width="stretch",
+                ):
+                    st.session_state["finished_output_restage_selected"] = []
+                    st.rerun()
+        else:
+            st.info("Load finished history to see generation dates, templates, and grouped identity.")
+
+        st.divider()
         existing_finished_restage_selection = list(st.session_state.get("finished_output_restage_selected", []))
         valid_finished_restage_selection = [
             folder_name for folder_name in existing_finished_restage_selection
@@ -89,6 +246,8 @@ def render_approved_output(
                 ]
 
                 st.session_state["finished_restage_results"] = restage_results
+                st.session_state.pop("finished_output_history_rows", None)
+                st.session_state["finished_output_history_loaded"] = False
 
                 if len(selected_finished_folders_to_restage) == 1 and len(success_results) == 1:
                     if target_state == "approved":

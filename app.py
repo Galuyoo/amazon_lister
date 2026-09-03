@@ -8732,6 +8732,108 @@ def build_approved_queue_items(
     )
 
 
+CHRISTMAS_GROUP_MEMBER_LABELS = {
+    "tshirt": "T-Shirt",
+    "sweatshirt": "Sweatshirt",
+    "hoodie": "Hoodie",
+}
+
+
+def classify_finished_listing_origin(listing_memory: dict[str, Any]) -> tuple[str, str, str]:
+    source_group = listing_memory.get("source_group")
+    source_group = source_group if isinstance(source_group, dict) else {}
+    if str(source_group.get("group_type", "") or "").strip().casefold() == "christmas_project":
+        member_key = str(source_group.get("member_key", "") or "").strip().casefold()
+        member_label = CHRISTMAS_GROUP_MEMBER_LABELS.get(member_key, member_key or "Unknown")
+        task_id = str(source_group.get("task_id", "") or "").strip()
+        return "Grouped Christmas", member_label, task_id
+
+    template_key = str(listing_memory.get("template_key", "") or "").strip().upper()
+    if template_key in {"GENERIC_SHIRTS", "GENERIC_SWEATSHIRTS", "GENERIC_HOODIES"}:
+        return "Generic listing", "", ""
+    if template_key == "CP":
+        return "Christmas Project (single)", "", ""
+    return "Standard listing", "", ""
+
+
+def build_finished_generation_history_rows(
+    finished_folder_names: list[str],
+    profiles: list[dict[str, Any]],
+    dropbox_cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for folder_name in finished_folder_names:
+        folder_path = build_finished_folder_path(dropbox_cfg, folder_name)
+        try:
+            listing_memory = load_listing_memory_from_dropbox(folder_path)
+            if not listing_memory:
+                raise FileNotFoundError("listing_inputs.json is missing or empty.")
+
+            profile = find_profile_for_listing_memory(profiles, listing_memory)
+            template_label = str(
+                (profile or {}).get("label")
+                or listing_memory.get("template_label")
+                or listing_memory.get("template_key")
+                or "Unknown"
+            )
+            generated_outputs = listing_memory.get("generated_outputs")
+            generated_outputs = generated_outputs if isinstance(generated_outputs, list) else []
+            latest_output = next(
+                (output for output in reversed(generated_outputs) if isinstance(output, dict)),
+                {},
+            )
+            sku_manifest = listing_memory.get("sku_manifest")
+            sku_manifest = sku_manifest if isinstance(sku_manifest, dict) else {}
+            generated_at = str(
+                latest_output.get("created_at")
+                or sku_manifest.get("created_at")
+                or ""
+            ).strip()
+            origin, christmas_member, task_id = classify_finished_listing_origin(listing_memory)
+            history_group = task_id or (generated_at[:16] if generated_at else "Unknown time")
+            rows.append({
+                "folder_name": folder_name,
+                "generated_at": generated_at,
+                "generated_date": generated_at[:10] if len(generated_at) >= 10 else "Unknown",
+                "history_group": history_group,
+                "origin": origin,
+                "christmas_member": christmas_member,
+                "christmas_task_id": task_id,
+                "template": template_label,
+                "parent_sku": str(listing_memory.get("parent_sku", "") or ""),
+                "title": str(listing_memory.get("title", "") or ""),
+                "workbook": str(
+                    latest_output.get("workbook_name")
+                    or sku_manifest.get("output_workbook_name")
+                    or ""
+                ),
+                "generation_status": str(listing_memory.get("generation_status", "") or "Finished"),
+                "load_status": "Loaded",
+            })
+        except Exception as exc:
+            rows.append({
+                "folder_name": folder_name,
+                "generated_at": "",
+                "generated_date": "Unknown",
+                "history_group": "Unknown time",
+                "origin": "Unknown",
+                "christmas_member": "",
+                "christmas_task_id": "",
+                "template": "Unknown",
+                "parent_sku": "",
+                "title": "",
+                "workbook": "",
+                "generation_status": "Unknown",
+                "load_status": f"Could not load: {exc}",
+            })
+
+    return sorted(
+        rows,
+        key=lambda row: (str(row.get("generated_at", "")), str(row.get("folder_name", ""))),
+        reverse=True,
+    )
+
+
 
 def build_sku_manifest(
     profile: dict[str, Any],
@@ -11065,6 +11167,7 @@ def main() -> None:
             clear_runtime_caches=clear_runtime_caches,
             set_workflow_flash=set_workflow_flash,
             get_cached_folder_names=get_cached_folder_names,
+            build_finished_generation_history_rows=build_finished_generation_history_rows,
             render_approved_queue_view=render_approved_queue_view,
         )
 

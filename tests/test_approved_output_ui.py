@@ -66,6 +66,12 @@ def test_approved_output_widget_labels_and_keys_are_preserved() -> None:
         widget_calls.append((call.func.attr, label, key))
 
     assert widget_calls == [
+        ("button", "'Load / refresh finished history'", "'load_finished_output_history_btn'"),
+        ("selectbox", "'Generated date'", "'finished_output_history_date_filter'"),
+        ("selectbox", "'Listing origin'", "'finished_output_history_origin_filter'"),
+        ("text_input", "'Search finished history'", "'finished_output_history_search'"),
+        ("button", "'Select all shown'", "'finished_output_history_select_all_btn'"),
+        ("button", "'Clear selection'", "'finished_output_history_clear_selection_btn'"),
         ("multiselect", "'Select finished folders'", "'finished_output_restage_selected'"),
         ("radio", "'Bring back to'", "'finished_output_return_destination'"),
         ("form_submit_button", "'Bring selected finished folders back'", None),
@@ -119,6 +125,11 @@ def test_approved_output_form_and_session_state_keys_are_preserved() -> None:
         "approved_output_tab_loaded",
         "approved_queue_items_cache",
         "finished_ignore_results",
+        "finished_output_history_date_filter",
+        "finished_output_history_loaded",
+        "finished_output_history_origin_filter",
+        "finished_output_history_refresh_requested",
+        "finished_output_history_rows",
         "finished_output_ignore_selected",
         "finished_output_restage_selected",
         "finished_restage_results",
