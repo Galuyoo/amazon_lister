@@ -1,6 +1,7 @@
 from __future__ import annotations
 from datetime import datetime
 import hashlib
+import inspect
 import io
 import os
 import time
@@ -11152,24 +11153,28 @@ def main() -> None:
         )
 
     if active_workflow_tab == "Approved output":
-        render_approved_output(
-            finished_folder_names=finished_folder_names,
-            approved_folder_names=approved_folder_names,
-            approved_root=approved_root,
-            dropbox_cfg=dropbox_cfg,
-            profiles=profiles,
-            profile=profile,
-            WORKFLOW_ASSIGNEES=WORKFLOW_ASSIGNEES,
-            restage_finished_listing_for_review=restage_finished_listing_for_review,
-            mark_finished_generation_ignored=mark_finished_generation_ignored,
-            refresh_cached_folder_names=refresh_cached_folder_names,
-            clear_cached_listing_memory=clear_cached_listing_memory,
-            clear_runtime_caches=clear_runtime_caches,
-            set_workflow_flash=set_workflow_flash,
-            get_cached_folder_names=get_cached_folder_names,
-            build_finished_generation_history_rows=build_finished_generation_history_rows,
-            render_approved_queue_view=render_approved_queue_view,
-        )
+        approved_output_kwargs = {
+            "finished_folder_names": finished_folder_names,
+            "approved_folder_names": approved_folder_names,
+            "approved_root": approved_root,
+            "dropbox_cfg": dropbox_cfg,
+            "profiles": profiles,
+            "profile": profile,
+            "WORKFLOW_ASSIGNEES": WORKFLOW_ASSIGNEES,
+            "restage_finished_listing_for_review": restage_finished_listing_for_review,
+            "mark_finished_generation_ignored": mark_finished_generation_ignored,
+            "refresh_cached_folder_names": refresh_cached_folder_names,
+            "clear_cached_listing_memory": clear_cached_listing_memory,
+            "clear_runtime_caches": clear_runtime_caches,
+            "set_workflow_flash": set_workflow_flash,
+            "get_cached_folder_names": get_cached_folder_names,
+            "render_approved_queue_view": render_approved_queue_view,
+        }
+        if "build_finished_generation_history_rows" in inspect.signature(render_approved_output).parameters:
+            approved_output_kwargs["build_finished_generation_history_rows"] = (
+                build_finished_generation_history_rows
+            )
+        render_approved_output(**approved_output_kwargs)
 
     render_inline_loading_debug()
     render_rerun_cause_debug()
