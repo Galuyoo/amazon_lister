@@ -116,6 +116,53 @@ def test_christmas_resource_upload_validates_all_files_before_writing(
     upload_binary.assert_not_called()
 
 
+def test_grouped_christmas_resource_upload_routes_all_groups_with_one_call(monkeypatch) -> None:
+    upload_folder = Mock(
+        side_effect=lambda path, images: [f"{path}/{filename}" for filename, _content in images]
+    )
+    monkeypatch.setattr(app, "upload_resource_images_to_folder", upload_folder)
+
+    result = app.upload_grouped_resource_images([
+        {
+            "key": "tshirt",
+            "path": "/resources/Christmas Project/Shirt",
+            "images": [("shirt.png", PNG_BYTES)],
+        },
+        {
+            "key": "hoodie",
+            "path": "/resources/Christmas Project/Hoodie",
+            "images": [("hoodie.jpg", JPG_BYTES)],
+        },
+    ])
+
+    assert result == {
+        "tshirt": ["/resources/Christmas Project/Shirt/shirt.png"],
+        "hoodie": ["/resources/Christmas Project/Hoodie/hoodie.jpg"],
+    }
+    assert upload_folder.call_count == 2
+
+
+def test_grouped_resource_upload_validates_every_group_before_first_write(monkeypatch) -> None:
+    upload_folder = Mock()
+    monkeypatch.setattr(app, "upload_resource_images_to_folder", upload_folder)
+
+    with pytest.raises(ValueError, match="not a valid JPG"):
+        app.upload_grouped_resource_images([
+            {
+                "key": "tshirt",
+                "path": "/resources/Christmas Project/Shirt",
+                "images": [("shirt.png", PNG_BYTES)],
+            },
+            {
+                "key": "hoodie",
+                "path": "/resources/Christmas Project/Hoodie",
+                "images": [("hoodie.jpg", PNG_BYTES)],
+            },
+        ])
+
+    upload_folder.assert_not_called()
+
+
 def test_product_setup_has_grouped_resource_upload_contract_and_normal_fallback() -> None:
     source = inspect.getsource(product_setup.render_product_setup)
 
@@ -123,8 +170,19 @@ def test_product_setup_has_grouped_resource_upload_contract_and_normal_fallback(
     assert 'type=["png", "jpg", "jpeg"]' in source
     assert "accept_multiple_files=True" in source
     assert 'key=f"christmas_resource_{group_key}_upload"' in source
-    assert 'key=f"christmas_resource_{group_key}_upload_btn"' in source
-    assert "upload_resource_images_to_folder(" in source
+    assert 'key="christmas_resource_upload_all_btn"' in source
+    assert '"Upload all selected resources"' in source
+    assert "upload_grouped_resource_images(" in source
+    assert 'key=f"christmas_resource_{group_key}_upload_btn"' not in source
+    upload_section = source[
+        source.index('with st.expander("Add Christmas resource images"'):
+        source.index("load_images_disabled =")
+    ]
+    assert "load_image_mappings_now" not in upload_section
+    assert "clear_loaded_image_mapping_state(st.session_state)" in upload_section
+    assert source.index('with st.expander("Add Christmas resource images"') < source.index(
+        'st.subheader("Image review")'
+    )
     assert '"Christmas Project shared resources"' in source
     assert '"Fallback garment support images"' in source
     assert '"Fallback global resource images"' in source

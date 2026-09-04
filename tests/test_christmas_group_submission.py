@@ -292,7 +292,7 @@ def test_tshirt_target_translates_all_kids_sizes_and_exact_price_keys() -> None:
     )["children"]["tshirt"]["payload"]
 
     translation = {
-        "2 YRS": "1Yr",
+        "2 YRS": "2Yr",
         "3/4 YRS": "3Yr",
         "5/6 YRS": "5Yr",
         "7/8 YRS": "7Yr",

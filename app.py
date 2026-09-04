@@ -43,6 +43,12 @@ from services.christmas_group_publication import (
     publish_christmas_group,
 )
 from services.approved_batch_identity import assess_grouped_christmas_mpn_changes
+from services.sku_replacement import (
+    apply_sku_component_replace_rules,
+    apply_sku_replace_rules,
+    build_sku_replacement_fingerprint,
+    parse_sku_replace_rules,
+)
 from services.quality_checks import (
     build_child_title_for_validation,
     find_oversized_child_titles,
@@ -89,6 +95,7 @@ BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 CONFIG_DIR = BASE_DIR / "config"
 OUTPUT_DIR = BASE_DIR / "outputs"
+MAX_AMAZON_COMBINED_WORKBOOK_BYTES = 14_000_000
 
 LOAD_EVENT_LIMIT = 160
 FORBIDDEN_TITLE_PHRASES = [
@@ -892,6 +899,9 @@ def get_profile_size_range_end(profile: dict[str, Any], size: str) -> str:
         compact_source = str(source_size or "").replace("/", "-")
         match = re.search(r"(\d+)\s*-\s*(\d+)", compact_source)
         if match:
+            target_match = re.search(r"(\d+)", normalized_size)
+            if target_match and int(target_match.group(1)) == int(match.group(2)):
+                return ""
             return format_year_size(int(match.group(2)))
     return ""
 
@@ -1366,6 +1376,7 @@ def apply_apparel_size_fields(
         or values.get("shirt_body_type")
         or ("Regular" if normalized_size else "")
     )
+    shirt_body_type = "Regular" if size_class == "Age" else body_type
     height_type = "" if size_class == "Age" else str(
         values.get("apparel_height_type")
         or values.get("shirt_height_type")
@@ -1384,13 +1395,33 @@ def apply_apparel_size_fields(
         "shirt_size_class": size_class,
         "shirt_size": shirt_size,
         "shirt_size_to": shirt_size_to,
-        "shirt_body_type": body_type,
+        "shirt_body_type": shirt_body_type,
         "shirt_height_type": height_type,
     }
 
     for field, value in size_values.items():
         values[field] = value
 
+    return values
+
+
+def finalize_apparel_size_fields(
+    values: dict[str, Any],
+    size_value: str,
+    *,
+    is_apparel: bool,
+    profile: dict[str, Any] | None,
+    field_aliases: dict[str, list[str]],
+) -> dict[str, Any]:
+    values = apply_apparel_size_fields(
+        values,
+        size_value,
+        is_apparel=is_apparel,
+        profile=profile,
+    )
+    values = expand_field_aliases(values, field_aliases)
+    if is_apparel and get_apparel_size_class(normalize_size(size_value)) == "Age":
+        values["shirt_body_type"] = "Regular"
     return values
 
 
@@ -2778,6 +2809,44 @@ def upload_resource_images_to_folder(
         upload_binary_file(f"{target_folder_path}/{safe_filename}", content)
         for safe_filename, content in validated_images
     ]
+
+
+def upload_grouped_resource_images(
+    resource_groups: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    prepared_groups: list[dict[str, Any]] = []
+    for resource_group in resource_groups:
+        group_key = str(resource_group.get("key", "") or "").strip()
+        group_path = str(resource_group.get("path", "") or "").rstrip("/")
+        images = list(resource_group.get("images", []) or [])
+        if not group_key or not group_path or not images:
+            continue
+
+        validated_images: list[tuple[str, bytes]] = []
+        seen_filenames: set[str] = set()
+        for filename, content in images:
+            safe_filename = validate_review_resource_image(filename, content)
+            filename_key = safe_filename.casefold()
+            if filename_key in seen_filenames:
+                raise ValueError(f"Duplicate resource image filename in {group_key}: {safe_filename}")
+            seen_filenames.add(filename_key)
+            validated_images.append((safe_filename, content))
+        prepared_groups.append({
+            "key": group_key,
+            "path": group_path,
+            "images": validated_images,
+        })
+
+    if not prepared_groups:
+        raise ValueError("Choose at least one PNG or JPG resource image.")
+
+    return {
+        resource_group["key"]: upload_resource_images_to_folder(
+            resource_group["path"],
+            resource_group["images"],
+        )
+        for resource_group in prepared_groups
+    }
 
 
 def is_ignored_zip_member(parts: list[str]) -> bool:
@@ -5626,13 +5695,13 @@ def write_child_rows(
             variant_values,
         )
         values = prepare_row_values(values, field_aliases, extra_child_fields)
-        values = apply_apparel_size_fields(
+        values = finalize_apparel_size_fields(
             values,
             normalized_size,
             is_apparel=is_apparel,
             profile=profile,
+            field_aliases=field_aliases,
         )
-        values = expand_field_aliases(values, field_aliases)
         values["size_name"] = normalized_display_size
         values["item_sku"] = item_sku
         values["update_delete"] = update_delete_value
@@ -9748,6 +9817,203 @@ def assess_approved_grouped_christmas_mpn_changes(
     return assessment
 
 
+def assess_approved_sku_replacements(
+    target_folders: list[str],
+    approved_lookup: dict[str, dict[str, Any]],
+    raw_rules: str,
+) -> dict[str, Any]:
+    parsed = parse_sku_replace_rules(raw_rules)
+    errors = list(parsed["errors"])
+    rules = list(parsed["rules"])
+    rows: list[dict[str, Any]] = []
+    fingerprint_rows: list[dict[str, Any]] = []
+
+    for folder_name in target_folders:
+        item = approved_lookup.get(folder_name)
+        if not item or not item.get("profile") or not item.get("listing_memory"):
+            errors.append(f"{folder_name}: approved listing could not be loaded.")
+            continue
+        profile = item["profile"]
+        memory = item["listing_memory"]
+        current_decoration = get_default_sku_decoration_code(profile, memory)
+        current_code = resolve_grouped_child_listing_code_for_review(
+            memory,
+            memory.get("sku_listing_code") or memory.get("mpn") or "",
+            prefer_source_listing_code=True,
+            profile=profile,
+        )
+        current_parent = (
+            get_listing_generation_parent_sku_override(memory, profile)
+            or build_review_parent_sku(memory, profile, current_decoration, current_code)
+        )
+        selected_variants = dict(memory.get("selected_variants", {}))
+        current_report = build_child_sku_length_report(
+            profile,
+            current_parent,
+            selected_variants,
+            sku_decoration_code=current_decoration,
+            sku_listing_code=current_code,
+        )
+
+        new_decoration = sanitize_sku(
+            apply_sku_component_replace_rules(current_decoration, rules)
+        ).upper()
+        new_code = sanitize_sku(
+            apply_sku_component_replace_rules(current_code, rules)
+        ).upper()
+        new_parent = sanitize_sku(
+            apply_sku_replace_rules(current_parent, rules)
+        ).upper()
+        if not new_decoration:
+            errors.append(f"{folder_name}: replacement rules remove the entire decoration code.")
+        if not new_code:
+            errors.append(f"{folder_name}: replacement rules remove the entire MPN/listing code.")
+        if not new_parent:
+            errors.append(f"{folder_name}: replacement rules remove the entire parent SKU.")
+
+        proposed_report = build_child_sku_length_report(
+            profile,
+            new_parent,
+            selected_variants,
+            sku_decoration_code=new_decoration,
+            sku_listing_code=new_code,
+        )
+        current_longest = current_report["longest"][0]["sku"] if current_report["longest"] else ""
+        proposed_longest = proposed_report["longest"][0]["sku"] if proposed_report["longest"] else ""
+        changed = any([
+            new_decoration != current_decoration,
+            new_code != current_code,
+            new_parent != current_parent,
+        ])
+        source_group = memory.get("source_group")
+        source_group = source_group if isinstance(source_group, dict) else {}
+        rows.append({
+            "folder_name": folder_name,
+            "task_id": str(source_group.get("task_id", "") or ""),
+            "member_key": str(source_group.get("member_key", "") or ""),
+            "old_decoration_code": current_decoration,
+            "new_decoration_code": new_decoration,
+            "old_listing_code": current_code,
+            "new_listing_code": new_code,
+            "old_parent_sku": current_parent,
+            "new_parent_sku": new_parent,
+            "parent_length_before": len(current_parent),
+            "parent_length_after": len(new_parent),
+            "longest_child_before": current_longest,
+            "longest_child_after": proposed_longest,
+            "child_max_before": current_report["max_length"],
+            "child_max_after": proposed_report["max_length"],
+            "child_count": proposed_report["count"],
+            "oversized_after": bool(
+                len(new_parent) > MAX_AMAZON_SKU_LENGTH
+                or proposed_report["oversized"]
+            ),
+            "changed": changed,
+        })
+        fingerprint_rows.append({
+            "folder_name": folder_name,
+            "decoration_code": current_decoration,
+            "listing_code": current_code,
+            "parent_sku": current_parent,
+            "selected_variants": selected_variants,
+        })
+
+    proposed_parents = [row["new_parent_sku"] for row in rows if row["new_parent_sku"]]
+    duplicate_parents = sorted(
+        sku for sku, count in Counter(proposed_parents).items() if count > 1
+    )
+    if duplicate_parents:
+        errors.append("Replacement rules create duplicate parent SKUs: " + ", ".join(duplicate_parents[:10]))
+
+    changed_cp_tasks: dict[str, set[str]] = {}
+    for row in rows:
+        if row["task_id"] and row["old_listing_code"] != row["new_listing_code"]:
+            changed_cp_tasks.setdefault(row["task_id"], set()).add(row["member_key"])
+    for task_id, members in changed_cp_tasks.items():
+        if members != {"tshirt", "sweatshirt", "hoodie"}:
+            errors.append(
+                f"Christmas task {task_id}: select T-Shirt, Sweatshirt, and Hoodie together when changing its MPN."
+            )
+
+    return {
+        "valid": bool(parsed["valid"]) and not errors,
+        "safe": not errors and not any(row["oversized_after"] for row in rows),
+        "max_sku_length": MAX_AMAZON_SKU_LENGTH,
+        "rules": rules,
+        "raw_rules": raw_rules,
+        "selected_folders": list(target_folders),
+        "fingerprint": build_sku_replacement_fingerprint(fingerprint_rows, rules),
+        "rows": rows,
+        "errors": errors,
+    }
+
+
+def apply_assessed_sku_replacements(
+    assessment: dict[str, Any],
+    approved_lookup: dict[str, dict[str, Any]],
+    dropbox_cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not assessment.get("valid") or not assessment.get("safe"):
+        raise ValueError(
+            "The SKU replacement assessment must be valid and within the SKU length limit before it can be applied."
+        )
+    fresh = assess_approved_sku_replacements(
+        list(assessment.get("selected_folders", [])),
+        approved_lookup,
+        str(assessment.get("raw_rules", "") or ""),
+    )
+    if fresh.get("fingerprint") != assessment.get("fingerprint"):
+        raise ValueError("The approved SKU identities changed after assessment. Assess the rules again.")
+
+    changed_at = format_workflow_timestamp()
+    results: list[dict[str, Any]] = []
+    for change in fresh["rows"]:
+        if not change["changed"]:
+            continue
+        folder_name = change["folder_name"]
+        item = approved_lookup[folder_name]
+        payload = deepcopy(item["listing_memory"])
+        payload["sku_decoration_code"] = change["new_decoration_code"]
+        payload["mpn"] = change["new_listing_code"]
+        payload["manual_sku_listing_code"] = change["new_listing_code"]
+        payload["generated_sku_listing_code"] = change["new_listing_code"]
+        payload["sku_listing_code"] = change["new_listing_code"]
+        payload["parent_sku"] = change["new_parent_sku"]
+        payload["parent_sku_override"] = change["new_parent_sku"]
+        identity_change = {
+            "changed_at": changed_at,
+            "reason": "Approved SKU replacement rules",
+            "rules": list(fresh["rules"]),
+            "task_id": change["task_id"],
+            "member_key": change["member_key"],
+            "old_listing_code": change["old_listing_code"],
+            "new_listing_code": change["new_listing_code"],
+            "old_parent_sku": change["old_parent_sku"],
+            "new_parent_sku": change["new_parent_sku"],
+        }
+        payload["identity_override"] = dict(identity_change)
+        payload["identity_changes"] = (
+            list(payload.get("identity_changes", [])) + [identity_change]
+        )[-50:]
+        append_workflow_event(
+            payload,
+            action="apply_approved_sku_replace_rules",
+            actor="",
+            from_state="approved",
+            to_state="approved",
+            folder_path=build_approved_folder_path(dropbox_cfg, folder_name),
+            details=identity_change,
+        )
+        folder_path = build_approved_folder_path(dropbox_cfg, folder_name)
+        save_listing_inputs_json_to_dropbox(
+            profile=item["profile"], payload=payload, folder_path=folder_path
+        )
+        item["listing_memory"] = payload
+        clear_cached_listing_memory(folder_path)
+        results.append({**change, "status": "Applied"})
+    return results
+
+
 def apply_assessed_grouped_christmas_mpn_changes(
     assessment: dict[str, Any],
     approved_lookup: dict[str, dict[str, Any]],
@@ -9851,6 +10117,7 @@ def persist_combined_chunk_listing_result(
     prepared_item: dict[str, Any],
     output_path: Path,
     dropbox_cfg: dict[str, Any],
+    combined_listing_count: int,
 ) -> dict[str, Any]:
     item = prepared_item["item"]
     profile = prepared_item["profile"]
@@ -9883,7 +10150,7 @@ def persist_combined_chunk_listing_result(
         folder_path=approved_folder_path,
         details={
             "output_name": output_path.name,
-            "combined_chunk_size": 2,
+            "combined_chunk_size": combined_listing_count,
             "pending_finished_folder_path": finished_folder_path,
         },
     )
@@ -9911,11 +10178,7 @@ def generate_optimized_grouped_christmas_batch(
     selected_items: list[dict[str, Any]],
     profiles: list[dict[str, Any]],
     dropbox_cfg: dict[str, Any],
-    chunk_size: int = 2,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    if chunk_size != 2:
-        raise ValueError("Christmas optimized generation currently requires two parents per workbook.")
-
     grouped_items: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
     for item in selected_items:
         identity = get_combined_workbook_group_identity(item["profile"])
@@ -9923,75 +10186,92 @@ def generate_optimized_grouped_christmas_batch(
 
     display_results: list[dict[str, Any]] = []
     move_candidates: list[dict[str, Any]] = []
-    for compatible_items in grouped_items.values():
-        compatible_items = sorted(
-            compatible_items,
-            key=lambda item: str(item.get("folder_name", "")),
-        )
-        for offset in range(0, len(compatible_items), chunk_size):
-            chunk = compatible_items[offset:offset + chunk_size]
-            if len(chunk) == 1:
-                item = chunk[0]
-                try:
-                    move_candidates.append(generate_approved_listing(
-                        profile=item["profile"],
-                        listing_memory=item["listing_memory"],
-                        approved_folder_name=item["folder_name"],
-                        dropbox_cfg=dropbox_cfg,
-                    ))
-                except Exception as exc:
+    def generate_compatible_group(group_items: list[dict[str, Any]]) -> None:
+        if len(group_items) == 1:
+            item = group_items[0]
+            try:
+                result = generate_approved_listing(
+                    profile=item["profile"],
+                    listing_memory=item["listing_memory"],
+                    approved_folder_name=item["folder_name"],
+                    dropbox_cfg=dropbox_cfg,
+                )
+                output_path = Path(str(result.get("output_path", "") or ""))
+                if output_path.exists() and output_path.stat().st_size > MAX_AMAZON_COMBINED_WORKBOOK_BYTES:
                     display_results.append({
                         "folder_name": item.get("folder_name", ""),
                         "status": "Failed",
-                        "message": str(exc),
+                        "message": "The single-listing workbook exceeds the 14 MB upload limit.",
                     })
-                continue
-
-            try:
-                combined_result = generate_approved_listings_combined(chunk, dropbox_cfg)
-                output_path = Path(combined_result["output_path"])
-                prepared_items = list(combined_result.pop("prepared_items", []))
-                parent_part = "_".join(
-                    sanitize_sku(str(row.get("payload", {}).get("parent_sku", "") or ""))
-                    for row in prepared_items
-                )
-                if parent_part:
-                    chunk_output_path = output_path.with_name(
-                        f"{output_path.stem}_{parent_part[:120]}{output_path.suffix}"
-                    )
-                    if chunk_output_path != output_path:
-                        output_path.replace(chunk_output_path)
-                        output_path = chunk_output_path
-                        combined_result["output_path"] = str(output_path)
-                        combined_result["output_name"] = output_path.name
-
-                persisted_count = 0
-                for prepared_item in prepared_items:
-                    try:
-                        move_candidates.append(persist_combined_chunk_listing_result(
-                            prepared_item=prepared_item,
-                            output_path=output_path,
-                            dropbox_cfg=dropbox_cfg,
-                        ))
-                        persisted_count += 1
-                    except Exception as exc:
-                        display_results.append({
-                            "folder_name": prepared_item.get("item", {}).get("folder_name", ""),
-                            "status": "Failed",
-                            "message": f"Combined workbook was built, but this listing could not be saved: {exc}",
-                        })
-                if persisted_count:
-                    combined_result["message"] = (
-                        f"Generated one optimized workbook for {persisted_count} of "
-                        f"{len(prepared_items)} compatible listing(s): {output_path.name}"
-                    )
-                    display_results.append(combined_result)
+                else:
+                    move_candidates.append(result)
             except Exception as exc:
                 display_results.append({
-                    "folder_name": "Christmas optimized workbook",
+                    "folder_name": item.get("folder_name", ""),
                     "status": "Failed",
                     "message": str(exc),
                 })
+            return
+
+        try:
+            combined_result = generate_approved_listings_combined(group_items, dropbox_cfg)
+            output_path = Path(combined_result["output_path"])
+            prepared_items = list(combined_result.pop("prepared_items", []))
+            if output_path.stat().st_size > MAX_AMAZON_COMBINED_WORKBOOK_BYTES:
+                output_path.unlink(missing_ok=True)
+                midpoint = (len(group_items) + 1) // 2
+                generate_compatible_group(group_items[:midpoint])
+                generate_compatible_group(group_items[midpoint:])
+                return
+
+            parent_part = "_".join(
+                sanitize_sku(str(row.get("payload", {}).get("parent_sku", "") or ""))
+                for row in prepared_items
+            )
+            if parent_part:
+                chunk_output_path = output_path.with_name(
+                    f"{output_path.stem}_{parent_part[:120]}{output_path.suffix}"
+                )
+                if chunk_output_path != output_path:
+                    output_path.replace(chunk_output_path)
+                    output_path = chunk_output_path
+                    combined_result["output_path"] = str(output_path)
+                    combined_result["output_name"] = output_path.name
+
+            persisted_count = 0
+            for prepared_item in prepared_items:
+                try:
+                    move_candidates.append(persist_combined_chunk_listing_result(
+                        prepared_item=prepared_item,
+                        output_path=output_path,
+                        dropbox_cfg=dropbox_cfg,
+                        combined_listing_count=len(prepared_items),
+                    ))
+                    persisted_count += 1
+                except Exception as exc:
+                    display_results.append({
+                        "folder_name": prepared_item.get("item", {}).get("folder_name", ""),
+                        "status": "Failed",
+                        "message": f"Combined workbook was built, but this listing could not be saved: {exc}",
+                    })
+            if persisted_count:
+                combined_result["message"] = (
+                    f"Generated one optimized workbook for {persisted_count} of "
+                    f"{len(prepared_items)} compatible listing(s): {output_path.name}"
+                )
+                display_results.append(combined_result)
+        except Exception as exc:
+            display_results.append({
+                "folder_name": "Christmas optimized workbook",
+                "status": "Failed",
+                "message": str(exc),
+            })
+
+    for compatible_items in grouped_items.values():
+        generate_compatible_group(sorted(
+            compatible_items,
+            key=lambda item: str(item.get("folder_name", "")),
+        ))
 
     moved_candidates, move_results = move_successful_generation_results_to_finished(
         results=move_candidates,
@@ -10241,6 +10521,7 @@ def render_approved_queue_view(
     generate_selected = False
     generate_all = False
     assess_mpn_changes = False
+    assess_sku_rules = False
     selected_approved_folders: list[str] = []
 
     if active_approved_output_section == "Generate":
@@ -10255,24 +10536,37 @@ def render_approved_queue_view(
                 )
 
                 st.checkbox(
-                    "Use faster Christmas batch workbooks",
+                    "Use fewer Christmas batch workbooks",
                     value=True,
                     key="approved_queue_optimize_christmas_batch",
                     help=(
-                        "Grouped Christmas listings are written in compatible chunks of two parents per workbook. "
-                        "Each parent remains independent and keeps its own Finished folder."
+                        "Builds one workbook per compatible template group and splits it only when the saved file "
+                        "would exceed 14 MB. Each parent remains independent and keeps its own Finished folder."
                     ),
                 )
 
-                col1, col2, col3 = st.columns(3)
+                st.text_area(
+                    "SKU replacement rules (optional)",
+                    key="approved_queue_sku_replace_rules",
+                    placeholder="MPNLONG=>MPNSHORT\nPRINT-=>DEF-",
+                    help="One literal replacement per line. Rules are previewed before they can be applied.",
+                )
+
+                col1, col2 = st.columns(2)
                 with col1:
                     assess_mpn_changes = st.form_submit_button(
                         "Assess changes in MPN",
                         width="stretch",
                     )
                 with col2:
-                    generate_selected = st.form_submit_button("Generate selected", width="stretch")
+                    assess_sku_rules = st.form_submit_button(
+                        "Assess SKU lengths / rules",
+                        width="stretch",
+                    )
+                col3, col4 = st.columns(2)
                 with col3:
+                    generate_selected = st.form_submit_button("Generate selected", width="stretch")
+                with col4:
                     generate_all = st.form_submit_button("Generate all approved", width="stretch")
 
         if assess_mpn_changes:
@@ -10342,6 +10636,89 @@ def render_approved_queue_view(
                             st.error(f"Could not apply assessed MPN changes: {exc}")
                 elif mpn_assessment.get("valid"):
                     st.success("No duplicate grouped Christmas MPN changes are required.")
+
+        if assess_sku_rules:
+            if not selected_approved_folders:
+                st.warning("Select approved folders before assessing SKU lengths or replacement rules.")
+            else:
+                st.session_state["approved_queue_sku_rule_assessment"] = assess_approved_sku_replacements(
+                    selected_approved_folders,
+                    approved_lookup,
+                    str(st.session_state.get("approved_queue_sku_replace_rules", "") or ""),
+                )
+
+        sku_rule_assessment = st.session_state.get("approved_queue_sku_rule_assessment")
+        if isinstance(sku_rule_assessment, dict):
+            assessed_folders = list(sku_rule_assessment.get("selected_folders", []))
+            selection_is_current = assessed_folders == list(selected_approved_folders)
+            rules_are_current = str(sku_rule_assessment.get("raw_rules", "") or "") == str(
+                st.session_state.get("approved_queue_sku_replace_rules", "") or ""
+            )
+            with st.expander("SKU length and replacement assessment", expanded=True):
+                st.caption(
+                    f"Amazon/app seller SKU maximum: {sku_rule_assessment.get('max_sku_length', MAX_AMAZON_SKU_LENGTH)} characters."
+                )
+                if not selection_is_current or not rules_are_current:
+                    st.warning("The folder selection or replacement rules changed. Assess again before applying.")
+                for error in sku_rule_assessment.get("errors", []):
+                    st.error(error)
+                st.dataframe(
+                    [
+                        {
+                            "Folder": row.get("folder_name", ""),
+                            "Parent before": row.get("old_parent_sku", ""),
+                            "Parent chars": row.get("parent_length_before", 0),
+                            "Parent after": row.get("new_parent_sku", ""),
+                            "New parent chars": row.get("parent_length_after", 0),
+                            "Longest child before": row.get("longest_child_before", ""),
+                            "Child chars": row.get("child_max_before", 0),
+                            "Longest child after": row.get("longest_child_after", ""),
+                            "New child chars": row.get("child_max_after", 0),
+                            "Within 30": not row.get("oversized_after", False),
+                        }
+                        for row in sku_rule_assessment.get("rows", [])
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+                changed_rows = [
+                    row for row in sku_rule_assessment.get("rows", []) if row.get("changed")
+                ]
+                if changed_rows and st.button(
+                    "Apply assessed SKU replacement rules",
+                    key="approved_queue_apply_sku_replace_rules_btn",
+                    type="primary",
+                    width="content",
+                    disabled=not bool(
+                        sku_rule_assessment.get("valid")
+                        and sku_rule_assessment.get("safe")
+                        and selection_is_current
+                        and rules_are_current
+                    ),
+                ):
+                    try:
+                        applied_changes = apply_assessed_sku_replacements(
+                            sku_rule_assessment,
+                            approved_lookup,
+                            dropbox_cfg,
+                        )
+                        existing_changes = list(
+                            st.session_state.get("approved_queue_applied_mpn_changes", [])
+                        )
+                        st.session_state["approved_queue_applied_mpn_changes"] = (
+                            existing_changes + applied_changes
+                        )
+                        st.session_state.pop("approved_queue_sku_rule_assessment", None)
+                        st.session_state.pop("approved_queue_items_cache", None)
+                        clear_cached_listing_memory()
+                        set_workflow_flash(
+                            "success",
+                            f"Applied SKU replacement rules to {len(applied_changes)} listing(s).",
+                            "Review the updated lengths, then generate.",
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not apply SKU replacement rules: {exc}")
 
         if stored_results:
             stored_results, move_results = move_successful_generation_results_to_finished(
@@ -11563,8 +11940,9 @@ def main() -> None:
             global_brand_name=GLOBAL_BRAND_NAME,
             render_active_product_context=render_active_product_context,
             render_stage_images_zip_upload=render_stage_images_zip_upload,
-            upload_resource_images_to_folder=upload_resource_images_to_folder,
+            upload_grouped_resource_images=upload_grouped_resource_images,
             clear_resource_image_caches=clear_resource_image_caches,
+            clear_loaded_image_mapping_state=clear_loaded_image_mapping_state,
             build_variants_summary=build_variants_summary,
             render_path_grid=render_path_grid,
             selectbox_index_without_state_conflict=selectbox_index_without_state_conflict,

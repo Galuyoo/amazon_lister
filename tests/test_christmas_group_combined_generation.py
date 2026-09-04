@@ -593,7 +593,7 @@ def test_stale_mpn_assessment_is_rejected_before_writes(monkeypatch) -> None:
     assert saved == []
 
 
-def test_optimized_christmas_generation_builds_compatible_pairs_only(monkeypatch, tmp_path) -> None:
+def test_optimized_christmas_generation_keeps_one_compatible_workbook_under_limit(monkeypatch, tmp_path) -> None:
     items = approved_grouped_task("task-a", "ABC") + approved_grouped_task("task-b", "XYZ")
     combined_calls = []
     persisted = []
@@ -601,7 +601,7 @@ def test_optimized_christmas_generation_builds_compatible_pairs_only(monkeypatch
     monkeypatch.setattr(
         app,
         "get_combined_workbook_group_identity",
-        lambda profile: (profile["template_key"],),
+        lambda _profile: ("shared-workbook",),
     )
 
     def generate_combined(chunk, _cfg):
@@ -619,8 +619,12 @@ def test_optimized_christmas_generation_builds_compatible_pairs_only(monkeypatch
             ],
         }
 
-    def persist(prepared_item, output_path, dropbox_cfg):
-        persisted.append((prepared_item["item"]["folder_name"], output_path.name))
+    def persist(prepared_item, output_path, dropbox_cfg, combined_listing_count):
+        persisted.append((
+            prepared_item["item"]["folder_name"],
+            output_path.name,
+            combined_listing_count,
+        ))
         return {
             "folder_name": prepared_item["item"]["folder_name"],
             "approved_folder_name": prepared_item["item"]["folder_name"],
@@ -642,17 +646,63 @@ def test_optimized_christmas_generation_builds_compatible_pairs_only(monkeypatch
 
     results, move_results = app.generate_optimized_grouped_christmas_batch(items, [], {})
 
-    assert len(combined_calls) == 3
-    assert all(len(call) == 2 for call in combined_calls)
-    assert all(
-        len({approved_grouped[folder]["profile"]["template_key"] for folder in call}) == 1
-        for approved_grouped in [{item["folder_name"]: item for item in items}]
-        for call in combined_calls
-    )
+    assert len(combined_calls) == 1
+    assert len(combined_calls[0]) == 6
     assert len(persisted) == 6
-    assert len({output_name for _folder, output_name in persisted}) == 3
-    assert len(results) == 3
+    assert {count for _folder, _output_name, count in persisted} == {6}
+    assert len({output_name for _folder, output_name, _count in persisted}) == 1
+    assert len(results) == 1
     assert len(move_results) == 6
+
+
+def test_optimized_christmas_generation_splits_only_after_actual_file_exceeds_limit(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    items = approved_grouped_task("task-a", "ABC") + approved_grouped_task("task-b", "XYZ")
+    combined_sizes = []
+    persisted_counts = []
+    monkeypatch.setattr(app, "MAX_AMAZON_COMBINED_WORKBOOK_BYTES", 10)
+    monkeypatch.setattr(app, "get_combined_workbook_group_identity", lambda _profile: ("shared",))
+
+    def generate_combined(chunk, _cfg):
+        combined_sizes.append(len(chunk))
+        output_path = tmp_path / f"combined-{len(combined_sizes)}.xlsm"
+        output_path.write_bytes(b"x" * (11 if len(chunk) > 3 else 5))
+        return {
+            "folder_name": f"Combined {len(combined_sizes)}",
+            "status": "Success",
+            "output_path": str(output_path),
+            "output_name": output_path.name,
+            "prepared_items": [
+                {"item": item, "profile": item["profile"], "payload": {"parent_sku": item["listing_memory"]["parent_sku"]}}
+                for item in chunk
+            ],
+        }
+
+    def persist(prepared_item, output_path, dropbox_cfg, combined_listing_count):
+        persisted_counts.append(combined_listing_count)
+        return {
+            "folder_name": prepared_item["item"]["folder_name"],
+            "approved_folder_name": prepared_item["item"]["folder_name"],
+            "status": "Success",
+        }
+
+    monkeypatch.setattr(app, "generate_approved_listings_combined", generate_combined)
+    monkeypatch.setattr(app, "persist_combined_chunk_listing_result", persist)
+    monkeypatch.setattr(
+        app,
+        "move_successful_generation_results_to_finished",
+        lambda **kwargs: (kwargs["results"], [{"status": "Success"} for _ in kwargs["results"]]),
+    )
+
+    results, move_results = app.generate_optimized_grouped_christmas_batch(items, [], {})
+
+    assert combined_sizes == [6, 3, 3]
+    assert persisted_counts == [3, 3, 3, 3, 3, 3]
+    assert len(results) == 2
+    assert len(move_results) == 6
+    assert not (tmp_path / "combined-1.xlsm").exists()
 
 
 def test_optimized_generation_blocks_duplicate_parent_skus_before_build(monkeypatch) -> None:
@@ -712,6 +762,116 @@ def test_approved_generation_ui_exposes_mpn_assessment_and_optimization_controls
     assert '"Assess changes in MPN"' in source
     assert 'key="approved_queue_apply_mpn_assessment_btn"' in source
     assert 'key="approved_queue_optimize_christmas_batch"' in source
+
+
+def test_sku_rule_assessment_previews_real_parent_and_child_lengths(monkeypatch) -> None:
+    items = approved_grouped_task("task-a", "MPNLONG")
+    approved_lookup = {item["folder_name"]: item for item in items}
+
+    def length_report(_profile, parent_sku, _variants, **_kwargs):
+        child = f"{parent_sku}-HEATHERGREY-11Y"
+        return {
+            "max_length": len(child),
+            "longest": [{"sku": child, "length": len(child)}],
+            "oversized": [child] if len(child) > app.MAX_AMAZON_SKU_LENGTH else [],
+            "count": 1,
+        }
+
+    monkeypatch.setattr(app, "build_child_sku_length_report", length_report)
+    assessment = app.assess_approved_sku_replacements(
+        list(approved_lookup),
+        approved_lookup,
+        '"MPNLONG"=>"MPN"\n"DEF-"=>"D-"',
+    )
+
+    assert assessment["valid"] is True
+    assert assessment["safe"] is True
+    assert len(assessment["rows"]) == 3
+    for row in assessment["rows"]:
+        assert row["old_parent_sku"].startswith("DEF-MPNLONG-")
+        assert row["new_parent_sku"].startswith("D-MPN-")
+        assert row["new_listing_code"] == "MPN"
+        assert row["new_decoration_code"] == "D"
+        assert row["child_max_after"] < row["child_max_before"]
+
+
+def test_sku_rule_apply_updates_saved_identity_and_rejects_stale_rules(monkeypatch) -> None:
+    items = approved_grouped_task("task-a", "MPNLONG")
+    approved_lookup = {item["folder_name"]: item for item in items}
+    monkeypatch.setattr(
+        app,
+        "build_child_sku_length_report",
+        lambda _profile, parent, _variants, **_kwargs: {
+            "max_length": len(parent) + 2,
+            "longest": [{"sku": f"{parent}-S", "length": len(parent) + 2}],
+            "oversized": [],
+            "count": 1,
+        },
+    )
+    saved = []
+    monkeypatch.setattr(app, "save_listing_inputs_json_to_dropbox", lambda **kwargs: saved.append(kwargs))
+    monkeypatch.setattr(app, "clear_cached_listing_memory", lambda *_args: None)
+    assessment = app.assess_approved_sku_replacements(
+        list(approved_lookup), approved_lookup, "MPNLONG=>MPN"
+    )
+
+    applied = app.apply_assessed_sku_replacements(assessment, approved_lookup, {})
+
+    assert len(applied) == 3
+    assert len(saved) == 3
+    assert {item["listing_memory"]["mpn"] for item in items} == {"MPN"}
+    assert {item["listing_memory"]["sku_listing_code"] for item in items} == {"MPN"}
+    assert all("-MPN-" in item["listing_memory"]["parent_sku"] for item in items)
+
+    with pytest.raises(ValueError, match="changed after assessment"):
+        app.apply_assessed_sku_replacements(assessment, approved_lookup, {})
+
+
+def test_sku_rule_assessment_requires_all_christmas_members_for_mpn_change(monkeypatch) -> None:
+    items = approved_grouped_task("task-a", "LONG")[:2]
+    monkeypatch.setattr(
+        app,
+        "build_child_sku_length_report",
+        lambda *_args, **_kwargs: {"max_length": 10, "longest": [], "oversized": [], "count": 1},
+    )
+    result = app.assess_approved_sku_replacements(
+        [item["folder_name"] for item in items],
+        {item["folder_name"]: item for item in items},
+        "LONG=>X",
+    )
+    assert result["valid"] is False
+    assert any("select T-Shirt, Sweatshirt, and Hoodie" in error for error in result["errors"])
+
+
+def test_overlong_sku_replacement_remains_blocked(monkeypatch) -> None:
+    items = approved_grouped_task("task-a", "LONG")
+    approved_lookup = {item["folder_name"]: item for item in items}
+    monkeypatch.setattr(
+        app,
+        "build_child_sku_length_report",
+        lambda _profile, parent, _variants, **_kwargs: {
+            "max_length": len(parent) + 20,
+            "longest": [{"sku": f"{parent}-A-VERY-LONG-VARIANT", "length": len(parent) + 20}],
+            "oversized": [f"{parent}-A-VERY-LONG-VARIANT"] if len(parent) + 20 > 30 else [],
+            "count": 1,
+        },
+    )
+    result = app.assess_approved_sku_replacements(
+        list(approved_lookup), approved_lookup, "LONG=>STILLTOOLONG"
+    )
+
+    assert result["valid"] is True
+    assert result["safe"] is False
+    with pytest.raises(ValueError, match="within the SKU length limit"):
+        app.apply_assessed_sku_replacements(result, approved_lookup, {})
+
+
+def test_approved_generation_ui_exposes_sku_rule_preview_and_apply_controls() -> None:
+    source = Path(app.__file__).read_text(encoding="utf-8")
+    assert 'key="approved_queue_sku_replace_rules"' in source
+    assert '"Assess SKU lengths / rules"' in source
+    assert 'key="approved_queue_apply_sku_replace_rules_btn"' in source
+    assert "Amazon/app seller SKU maximum" in source
 
 
 def test_combined_workbook_writes_three_distinct_parent_rows(monkeypatch, tmp_path) -> None:
@@ -881,11 +1041,14 @@ def test_generic_shirts_historical_size_values_normalize_without_losing_prices()
         "Kids T-Shirt||12-13 Years": 14.5,
     })
 
-    assert selected["size"] == ["1Yr", "11Yr"]
+    assert selected["size"] == ["2Yr", "11Yr"]
     assert prices == {
-        "Kids T-Shirt||1Yr": 12.5,
+        "Kids T-Shirt||2Yr": 12.5,
         "Kids T-Shirt||11Yr": 14.5,
     }
+    assert app.normalize_saved_variant_values_for_profile(profile, {
+        "size": ["1Yr"],
+    })["size"] == ["2Yr"]
 
 
 @pytest.mark.parametrize(
@@ -923,7 +1086,7 @@ def test_amazon_apparel_size_fields_use_template_values(
 @pytest.mark.parametrize(
     ("size", "expected_size", "expected_size_to"),
     [
-        ("1Yr", "1 Year", "2 Years"),
+        ("2Yr", "2 Years", ""),
         ("3Yr", "3 Years", "4 Years"),
         ("5Yr", "5 Years", "6 Years"),
         ("7Yr", "7 Years", "8 Years"),
@@ -958,7 +1121,8 @@ def test_generic_shirt_compact_kids_sizes_restore_configured_ranges(
 @pytest.mark.parametrize(
     ("template_key", "size", "expected_size", "expected_size_to"),
     [
-        ("GENERIC_SHIRTS", "1Yr", "1 Year", "2 Years"),
+        ("GENERIC_SHIRTS", "2Yr", "2 Years", ""),
+        ("UC301", "2 Years", "2 Years", ""),
         ("UC301", "9-11 Years", "9 Years", "11 Years"),
         ("CP", "11/13 YRS", "11 Years", "13 Years"),
     ],
@@ -995,12 +1159,12 @@ def test_generic_uc301_and_special_projects_share_amazon_age_size_rules(
     assert values["shirt_size_to"] == expected_size_to
     assert values["apparel_body_type"] == ""
     assert values["apparel_height_type"] == ""
-    assert values["shirt_body_type"] == ""
+    assert values["shirt_body_type"] == "Regular"
     assert values["shirt_height_type"] == ""
 
 
 @pytest.mark.parametrize("size", ["1Yr", "3/4 YRS", "11/13 YRS"])
-def test_amazon_age_sizes_omit_disallowed_body_and_height_types(size) -> None:
+def test_amazon_age_sizes_keep_only_required_shirt_body_type(size) -> None:
     values = app.apply_apparel_size_fields(
         {
             "apparel_body_type": "Regular",
@@ -1013,7 +1177,7 @@ def test_amazon_age_sizes_omit_disallowed_body_and_height_types(size) -> None:
     )
 
     assert values["apparel_body_type"] == ""
-    assert values["shirt_body_type"] == ""
+    assert values["shirt_body_type"] == "Regular"
     assert values["apparel_height_type"] == ""
     assert values["shirt_height_type"] == ""
 
@@ -1027,7 +1191,7 @@ def test_amazon_alpha_sizes_keep_regular_body_and_height_types() -> None:
     assert values["shirt_height_type"] == "Regular"
 
 
-def test_age_size_normalization_clears_all_configured_body_type_aliases() -> None:
+def test_age_size_normalization_keeps_only_required_shirt_body_type_alias() -> None:
     aliases = app.get_field_aliases({})
     values = app.prepare_row_values(
         {},
@@ -1035,13 +1199,52 @@ def test_age_size_normalization_clears_all_configured_body_type_aliases() -> Non
         {"apparel_body_type": "Regular", "apparel_height_type": "Regular"},
     )
 
-    values = app.apply_apparel_size_fields(values, "3/4 YRS", is_apparel=True)
-    values = app.expand_field_aliases(values, aliases)
+    values = app.finalize_apparel_size_fields(
+        values,
+        "3/4 YRS",
+        is_apparel=True,
+        profile={},
+        field_aliases=aliases,
+    )
 
-    for field in ["apparel_body_type", *aliases["apparel_body_type"]]:
+    assert values["shirt_body_type"] == "Regular"
+    for field in ["apparel_body_type", "tops_body_type", "outerwear_body_type"]:
         assert values[field] == ""
     for field in ["apparel_height_type", *aliases["apparel_height_type"]]:
         assert values[field] == ""
+
+
+@pytest.mark.parametrize(
+    ("template_key", "size"),
+    [
+        ("GENERIC_SHIRTS", "2Yr"),
+        ("GENERIC_HOODIES", "2 YRS"),
+        ("UC301", "2 Years"),
+        ("CP", "2 YRS"),
+    ],
+)
+def test_kids_shirt_and_hoodie_rows_finalize_with_regular_shirt_body_type(
+    template_key,
+    size,
+) -> None:
+    profile = next(
+        item
+        for item in app.list_template_profiles()
+        if item.get("template_key") == template_key
+    )
+    aliases = app.get_field_aliases(profile)
+
+    values = app.finalize_apparel_size_fields(
+        app.prepare_row_values({}, aliases, app.get_extra_child_fields(profile)),
+        size,
+        is_apparel=True,
+        profile=profile,
+        field_aliases=aliases,
+    )
+
+    assert values["apparel_body_type"] == ""
+    assert values["shirt_body_type"] == "Regular"
+    assert values["shirt_height_type"] == ""
 
 
 @pytest.mark.parametrize(

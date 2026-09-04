@@ -559,8 +559,9 @@ def render_product_setup(
     global_brand_name: str,
     render_active_product_context: Callable[..., None],
     render_stage_images_zip_upload: Callable[..., None],
-    upload_resource_images_to_folder: Callable[..., list[str]],
+    upload_grouped_resource_images: Callable[..., dict[str, list[str]]],
     clear_resource_image_caches: Callable[[], None],
+    clear_loaded_image_mapping_state: Callable[[Any], None],
     build_variants_summary: Callable[..., str],
     render_path_grid: Callable[..., None],
     selectbox_index_without_state_conflict: Callable[..., int],
@@ -583,6 +584,74 @@ def render_product_setup(
         image_mapping_detail=image_mapping_detail,
     )
     render_stage_images_zip_upload(dropbox_cfg, staged_folder_name)
+
+    resource_upload_groups = garment_resource_group_entries or [
+        {**resource_group, "entries": []}
+        for resource_group in dropbox_overview.get("garment_resource_groups", [])
+    ]
+    if resource_upload_groups:
+        upload_notice = st.session_state.pop("christmas_resource_upload_notice", "")
+        if upload_notice:
+            st.success(upload_notice)
+
+        with st.expander("Add Christmas resource images", expanded=False):
+            st.caption(
+                "Choose files for any garment folders, then upload everything with one button."
+            )
+            pending_resource_uploads: list[dict[str, Any]] = []
+            for resource_group in resource_upload_groups:
+                group_key = str(resource_group.get("key", "")).strip()
+                group_label = str(resource_group.get("label", group_key)).strip()
+                group_path = str(resource_group.get("path", "")).strip()
+                uploaded_images = st.file_uploader(
+                    f"Add {group_label} resource images",
+                    type=["png", "jpg", "jpeg"],
+                    accept_multiple_files=True,
+                    key=f"christmas_resource_{group_key}_upload",
+                )
+                if group_path and uploaded_images:
+                    pending_resource_uploads.append({
+                        "key": group_key,
+                        "label": group_label,
+                        "path": group_path,
+                        "images": [
+                            (uploaded_image.name, uploaded_image.getvalue())
+                            for uploaded_image in uploaded_images
+                        ],
+                    })
+
+            pending_resource_count = sum(
+                len(resource_group["images"])
+                for resource_group in pending_resource_uploads
+            )
+            if pending_resource_count:
+                st.caption(
+                    f"{pending_resource_count} resource image(s) ready across "
+                    f"{len(pending_resource_uploads)} garment folder(s)."
+                )
+            if st.button(
+                "Upload all selected resources",
+                key="christmas_resource_upload_all_btn",
+                type="primary",
+                width="content",
+                disabled=not bool(pending_resource_uploads),
+            ):
+                try:
+                    uploaded_groups = upload_grouped_resource_images(
+                        pending_resource_uploads
+                    )
+                    uploaded_count = sum(
+                        len(paths) for paths in uploaded_groups.values()
+                    )
+                    clear_resource_image_caches()
+                    clear_loaded_image_mapping_state(st.session_state)
+                    st.session_state["christmas_resource_upload_notice"] = (
+                        f"Uploaded {uploaded_count} resource image(s) across "
+                        f"{len(uploaded_groups)} garment folder(s)."
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not upload Christmas resource images: {exc}")
 
     load_images_disabled = not bool(staged_folder_name)
     if st.button(
@@ -668,10 +737,6 @@ def render_product_setup(
                         image_width=150,
                     )
                     if garment_resource_group_entries:
-                        upload_notice = st.session_state.pop("christmas_resource_upload_notice", "")
-                        if upload_notice:
-                            st.success(upload_notice)
-
                         if (
                             dropbox_overview.get("garment_resource_group_root_warning")
                             and not garment_resource_group_root_entries
@@ -687,39 +752,7 @@ def render_product_setup(
                         for resource_group in garment_resource_group_entries:
                             group_key = str(resource_group.get("key", "")).strip()
                             group_label = str(resource_group.get("label", group_key)).strip()
-                            group_path = str(resource_group.get("path", "")).strip()
                             st.markdown(f"**{group_label} resources**")
-                            uploaded_images = st.file_uploader(
-                                f"Add {group_label} resource images",
-                                type=["png", "jpg", "jpeg"],
-                                accept_multiple_files=True,
-                                key=f"christmas_resource_{group_key}_upload",
-                            )
-                            if st.button(
-                                f"Upload {group_label} resources",
-                                key=f"christmas_resource_{group_key}_upload_btn",
-                                width="content",
-                                disabled=not bool(group_path and uploaded_images),
-                            ):
-                                try:
-                                    uploaded_paths = upload_resource_images_to_folder(
-                                        group_path,
-                                        [
-                                            (uploaded_image.name, uploaded_image.getvalue())
-                                            for uploaded_image in uploaded_images
-                                        ],
-                                    )
-                                    clear_resource_image_caches()
-                                    st.session_state["load_image_mappings_now"] = True
-                                    st.session_state["image_mappings_loaded_folder"] = staged_folder_name
-                                    st.session_state["image_mappings_loaded_context"] = image_mapping_context_key
-                                    st.session_state["christmas_resource_upload_notice"] = (
-                                        f"Uploaded {len(uploaded_paths)} {group_label} resource image(s)."
-                                    )
-                                    st.rerun()
-                                except Exception as exc:
-                                    st.error(f"Could not upload {group_label} resource images: {exc}")
-
                             if resource_group.get("warning") and not resource_group.get("entries"):
                                 st.warning(resource_group["warning"])
                             render_path_grid(

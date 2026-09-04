@@ -30,7 +30,7 @@ GENERIC_TARGET_TEMPLATE_KEYS = {
     "hoodie": "GENERIC_HOODIES",
 }
 TSHIRT_KIDS_SIZE_MAP = {
-    "2 YRS": "1Yr",
+    "2 YRS": "2Yr",
     "3/4 YRS": "3Yr",
     "5/6 YRS": "5Yr",
     "7/8 YRS": "7Yr",

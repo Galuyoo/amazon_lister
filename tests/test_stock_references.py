@@ -64,9 +64,18 @@ def test_generic_shirts_config_contract() -> None:
     assert profile["design_sku_map"]["Adult T-Shirt"] == "T01"
     assert profile["design_sku_map"]["Kids T-Shirt"] == "T02"
     assert profile["color_sku_map"]["Red"] == "RED"
-    assert profile["size_code_map"]["1Yr"] == "1Y"
+    assert profile["size_code_map"]["2Yr"] == "2Y"
     assert profile["size_code_map"]["11Yr"] == "11Y"
-    assert profile["saved_variant_value_aliases"]["size"]["1-2 Years"] == "1Yr"
+    assert profile["saved_variant_value_aliases"]["size"]["1-2 Years"] == "2Yr"
+
+
+def test_uc301_first_kids_size_is_exactly_two_years() -> None:
+    profile = load_profile("templates/SHIRT/UC301/config.json")
+
+    assert "2 Years" in profile["sizes"]
+    assert "1-2 Years" not in profile["sizes"]
+    assert profile["size_code_map"]["2 Years"] == "2Y"
+    assert profile["saved_variant_value_aliases"]["size"]["1-2 Years"] == "2 Years"
 
 
 def test_generic_shirts_kids_child_sku_order() -> None:
@@ -78,11 +87,11 @@ def test_generic_shirts_kids_child_sku_order() -> None:
         {
             "design": "Kids T-Shirt",
             "color": "Red",
-            "size": "1Yr",
+            "size": "2Yr",
         },
     )
 
-    assert sku == "PRINT-IMBSE-RED-1Y"
+    assert sku == "PRINT-IMBSE-RED-2Y"
 
 
 def test_generic_shirts_adult_child_sku_order() -> None:
